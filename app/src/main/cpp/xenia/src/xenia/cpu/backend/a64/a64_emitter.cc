@@ -1016,12 +1016,10 @@ static const vec128_t v_consts[] = {
     /* V2To32               */ vec128f(0x1.0p32f),
 };
 
-// First location to try and place constants.
-static const uintptr_t kConstDataLocationLow = 0x20000000;
 static const uintptr_t kConstDataSize = sizeof(v_consts);
 
 // Increment the location by this amount for every allocation failure.
-static const uintptr_t kConstDataIncrement = 0x00001000;
+//static const uintptr_t kConstDataIncrement = 0x00001000;
 
 // This function places constant data that is used by the emitter later on.
 // Only called once and used by multiple instances of the emitter.
@@ -1029,16 +1027,11 @@ static const uintptr_t kConstDataIncrement = 0x00001000;
 // TODO(DrChat): This should be placed in the code cache with the code, but
 // doing so requires RIP-relative addressing, which is difficult to support
 // given the current setup.
-uintptr_t A64Emitter::PlaceConstData(uintptr_t high_address) {
-  uint8_t* ptr = reinterpret_cast<uint8_t*>(high_address|kConstDataLocationLow);
-  void* mem = nullptr;
-  while (!mem) {
-    mem = memory::AllocFixed(
+uintptr_t A64Emitter::PlaceConstData(uintptr_t address) {
+  uint8_t* ptr = reinterpret_cast<uint8_t*>(address);
+  void* mem = memory::AllocFixed(
         ptr, xe::round_up(kConstDataSize, memory::page_size()),
         memory::AllocationType::kReserveCommit, memory::PageAccess::kReadWrite);
-
-    ptr += kConstDataIncrement;
-  }
 
   // The pointer must not be greater than 31 bits.
   //assert_zero(reinterpret_cast<uintptr_t>(mem) & ~0x7FFFFFFF);

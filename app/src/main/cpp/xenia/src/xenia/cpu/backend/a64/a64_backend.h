@@ -42,13 +42,6 @@ typedef void (*ResolveFunctionThunk)();
    clobber/reuse an existing memory range The xboxkrnl range is already used by
    export trampolines (see kernel/kernel_module.cc)
 */
-    static constexpr uint32_t GUEST_TRAMPOLINE_BASE = 0x80000000;
-    static constexpr uint32_t GUEST_TRAMPOLINE_END = 0x80040000;
-
-    static constexpr uint32_t GUEST_TRAMPOLINE_MIN_LEN = 8;
-
-    static constexpr uint32_t MAX_GUEST_TRAMPOLINES =
-            (GUEST_TRAMPOLINE_END - GUEST_TRAMPOLINE_BASE) / GUEST_TRAMPOLINE_MIN_LEN;
 
 #define RESERVE_BLOCK_SHIFT 16
 

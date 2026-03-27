@@ -136,7 +136,7 @@ class A64Emitter : public oaknut::VectorCodeGenerator {
   Processor* processor() const { return processor_; }
   A64Backend* backend() const { return backend_; }
 
-  static uintptr_t PlaceConstData(uintptr_t high_address);
+  static uintptr_t PlaceConstData(uintptr_t address);
   static void FreeConstData(uintptr_t data);
 
   bool Emit(GuestFunction* function, hir::HIRBuilder* builder,

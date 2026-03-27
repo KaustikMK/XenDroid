@@ -142,6 +142,20 @@ class A64CodeCache : public CodeCache {
   // in analysis triggering.
   static const size_t kMaximumFunctionCount = 100000;
 
+public:
+// First location to try and place constants.
+    static const uintptr_t kConstDataLocationLow = 0x20000000;
+
+    static constexpr uint32_t GUEST_TRAMPOLINE_BASE = 0x80000000;
+    static constexpr uint32_t GUEST_TRAMPOLINE_END = 0x80040000;
+
+    static constexpr uint32_t GUEST_TRAMPOLINE_MIN_LEN = 8;
+
+    static constexpr uint32_t MAX_GUEST_TRAMPOLINES =
+            (GUEST_TRAMPOLINE_END - GUEST_TRAMPOLINE_BASE) / GUEST_TRAMPOLINE_MIN_LEN;
+
+protected:
+
   struct UnwindReservation {
     size_t data_size = 0;
     size_t table_slot = 0;

@@ -110,7 +110,7 @@ private:
             0xd61f0200,//br x16
     };
 
-    static constexpr uint32_t GUEST_TRAMPOLINE_MEMORY_SIZE = sizeof(guest_trampoline_template)*MAX_GUEST_TRAMPOLINES;
+    static constexpr uint32_t GUEST_TRAMPOLINE_MEMORY_SIZE = sizeof(guest_trampoline_template)*A64CodeCache::MAX_GUEST_TRAMPOLINES;
     static_assert(GUEST_TRAMPOLINE_MEMORY_SIZE <0x2000'0000);
 
     static uint32_t enc_movz(uint32_t reg, uint32_t imm16) {
@@ -158,10 +158,10 @@ A64Backend::A64Backend() : Backend(), code_cache_(nullptr) {
 
     guest_trampoline_memory_ = reinterpret_cast<uint8_t*>(memory::AllocFixed(
             (void*)(uintptr_t)code_cache_->execute_address_high(),
-            sizeof(guest_trampoline_template) * MAX_GUEST_TRAMPOLINES,
+            sizeof(guest_trampoline_template) * A64CodeCache::MAX_GUEST_TRAMPOLINES,
             xe::memory::AllocationType::kReserveCommit,
             xe::memory::PageAccess::kExecuteReadWrite));
-    guest_trampoline_address_bitmap_.Resize(MAX_GUEST_TRAMPOLINES);
+    guest_trampoline_address_bitmap_.Resize(A64CodeCache::MAX_GUEST_TRAMPOLINES);
 
 }
 
@@ -176,7 +176,7 @@ A64Backend::~A64Backend() {
     if (guest_trampoline_memory_) {
         memory::DeallocFixed(
                 guest_trampoline_memory_,
-                sizeof(guest_trampoline_template) * MAX_GUEST_TRAMPOLINES,
+                sizeof(guest_trampoline_template) * A64CodeCache::MAX_GUEST_TRAMPOLINES,
                 memory::DeallocationType::kRelease);
         guest_trampoline_memory_ = nullptr;
     }
@@ -206,11 +206,11 @@ bool A64Backend::Initialize(Processor* processor) {
     return false;
   }
     // HV range
-    code_cache()->CommitExecutableRange(GUEST_TRAMPOLINE_BASE,
-                                        GUEST_TRAMPOLINE_END);
+    code_cache()->CommitExecutableRange(A64CodeCache::GUEST_TRAMPOLINE_BASE,
+                                        A64CodeCache::GUEST_TRAMPOLINE_END);
 
     // Allocate emitter constant data.
-    emitter_data_ = A64Emitter::PlaceConstData(code_cache_->execute_address_high());
+    emitter_data_ = A64Emitter::PlaceConstData(A64CodeCache::execute_address_high()|A64CodeCache::kConstDataLocationLow);
 
   // Generate thunks used to transition between jitted code and host code.
   A64ThunkEmitter thunk_emitter(this);
@@ -942,8 +942,8 @@ void A64ThunkEmitter::EmitLoadNonvolatileRegs() {
         }
 
         uint32_t indirection_guest_addr =
-                GUEST_TRAMPOLINE_BASE +
-                (static_cast<uint32_t>(new_index) * GUEST_TRAMPOLINE_MIN_LEN);
+                A64CodeCache::GUEST_TRAMPOLINE_BASE +
+                (static_cast<uint32_t>(new_index) * A64CodeCache::GUEST_TRAMPOLINE_MIN_LEN);
 
         XELOGI("CreateGuestTrampoline->AddIndirection: {:08x} -> {:08x}", indirection_guest_addr
                ,static_cast<uint32_t>(reinterpret_cast<uintptr_t>(write_pos)));
@@ -959,7 +959,7 @@ void A64ThunkEmitter::EmitLoadNonvolatileRegs() {
                 xenia_assert(trampoline_addr >= GUEST_TRAMPOLINE_BASE &&
                              trampoline_addr < GUEST_TRAMPOLINE_END);
         size_t index =
-                (trampoline_addr - GUEST_TRAMPOLINE_BASE) / GUEST_TRAMPOLINE_MIN_LEN;
+                (trampoline_addr - A64CodeCache::GUEST_TRAMPOLINE_BASE) / A64CodeCache::GUEST_TRAMPOLINE_MIN_LEN;
         guest_trampoline_address_bitmap_.Release(index);
     }
 }  // namespace a64
