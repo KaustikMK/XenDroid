@@ -56,6 +56,10 @@ public class AboutActivity extends AppCompatActivity {
                 + " *修复手柄摇杆\n"
                 + " *修复xex格式支持\n"
                 + " *添加zar格式支持\n"
+                +"1.15(2026-04-01)\n"
+                + " *部分优化与修正\n"
+                + " *适配不支持触屏的设备\n"
+                + " *自定义驱动支持(仅adreno)\n"
                 + " \n";
 
         return log;
