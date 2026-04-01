@@ -992,8 +992,8 @@ void A64ThunkEmitter::EmitLoadNonvolatileRegs() {
 
     void A64Backend::FreeGuestTrampoline(uint32_t trampoline_addr) {
     XELOGI("FreeGuestTrampoline");
-                xenia_assert(trampoline_addr >= GUEST_TRAMPOLINE_BASE &&
-                             trampoline_addr < GUEST_TRAMPOLINE_END);
+                xenia_assert(trampoline_addr >= A64CodeCache::GUEST_TRAMPOLINE_BASE &&
+                             trampoline_addr < A64CodeCache::GUEST_TRAMPOLINE_END);
         size_t index =
                 (trampoline_addr - A64CodeCache::GUEST_TRAMPOLINE_BASE) / A64CodeCache::GUEST_TRAMPOLINE_MIN_LEN;
         guest_trampoline_address_bitmap_.Release(index);

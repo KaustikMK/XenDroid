@@ -34,6 +34,7 @@ import android.view.Menu;
 import android.view.MenuItem;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.Window;
 import android.widget.AdapterView;
 import android.widget.ArrayAdapter;
 import android.widget.BaseAdapter;
@@ -42,9 +43,9 @@ import android.widget.ListView;
 import android.widget.ProgressBar;
 import android.widget.TextView;
 
-import androidx.activity.EdgeToEdge;
 import androidx.annotation.NonNull;
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.appcompat.widget.Toolbar;
 import androidx.core.graphics.Insets;
 import androidx.core.view.ViewCompat;
 import androidx.core.view.WindowInsetsCompat;
@@ -143,6 +144,14 @@ public class MainActivity extends AppCompatActivity {
                 "--log_file=/storage/emulated/0/Download/ax360e/xe.log",
         });*/
         setContentView(R.layout.activity_main);
+        
+        // Setup Toolbar
+        Toolbar toolbar = findViewById(R.id.toolbar);
+        setSupportActionBar(toolbar);
+        if(getSupportActionBar() != null) {
+            getSupportActionBar().setTitle(R.string.app_name);
+        }
+        
         list_view=findViewById(R.id.game_list);
         list_view.setOnItemClickListener(item_click_l);
         list_view.setEmptyView(findViewById(R.id.game_list_is_empty));
@@ -171,6 +180,7 @@ _on_create();
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
+        supportRequestWindowFeature(Window.FEATURE_NO_TITLE);
         super.onCreate(savedInstanceState);
 
         if(!Application.device_support_vulkan()){
@@ -218,6 +228,49 @@ AppOpenAdManager.getInstance(this).showAdIfAvailable( this);}
         super.onCreateOptionsMenu(menu);
         getMenuInflater().inflate(R.menu.main,menu);
         return true;
+    }
+    @Override
+    public boolean onKeyDown(int keyCode,KeyEvent event){
+        if(keyCode==KeyEvent.KEYCODE_BACK){
+            finish();
+            return true;
+        }
+        if (keyCode == KeyEvent.KEYCODE_MENU) {
+            openOptionsMenu();
+            return true;
+        }
+        Toolbar toolbar = findViewById(R.id.toolbar);
+
+        if (keyCode == KeyEvent.KEYCODE_DPAD_UP) {
+            ListView listView = findViewById(R.id.game_list);
+            if (listView != null && listView.getSelectedItemPosition() <= 0) {
+                if (toolbar != null && toolbar.getChildCount() > 0) {
+                    View lastChild = toolbar.getChildAt(toolbar.getChildCount() - 1);
+                    if (lastChild instanceof ViewGroup) {
+                        ViewGroup group = (ViewGroup) lastChild;
+                        if (group.getChildCount() > 0) {
+                            View lastMenuItem = group.getChildAt(group.getChildCount() - 1);
+                            lastMenuItem.setFocusable(true);
+                            lastMenuItem.setFocusableInTouchMode(true);
+                            lastMenuItem.requestFocus();
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+        if (keyCode == KeyEvent.KEYCODE_DPAD_DOWN) {
+            if (toolbar != null && toolbar.hasFocus()) {
+                ListView listView = findViewById(R.id.game_list);
+                if (listView != null) {
+                    listView.requestFocus();
+                    listView.setSelection(0);
+                    return true;
+                }
+            }
+        }
+
+        return super.onKeyDown(keyCode,event);
     }
 
     @Override
@@ -268,7 +321,6 @@ AppOpenAdManager.getInstance(this).showAdIfAvailable( this);}
 
     static void open_file_manager(Activity activity)
     {
-
         try{
             activity.startActivity(get_file_manager_intent("com.android.documentsui"));
             return;
