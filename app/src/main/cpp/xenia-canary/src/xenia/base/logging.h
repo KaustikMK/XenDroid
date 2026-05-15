@@ -209,7 +209,7 @@ void XELOGAPU(std::string_view format, const Args&... args) {
 
 template <typename... Args>
 void XELOGGPU(std::string_view format, const Args&... args) {
-  xe::logging::AppendLogLineFormat(xe::LogSrc::Gpu, xe::LogLevel::Info, 'G',
+  xe::logging::AppendLogLineFormat(xe::LogSrc::Gpu, xe::LogLevel::Debug, 'G',
                                    format, args...);
 }
 

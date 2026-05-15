@@ -446,7 +446,9 @@ public class EmulatorSettings extends AppCompatActivity {
                 pref.setOnPreferenceClickListener(this);
             }
 
+
             findPreference(Vulkan$vulkan_lib_path).setOnPreferenceClickListener(this);
+            setup_costom_driver_library_path(config.load_config_entry(Vulkan$vulkan_lib_path));
             if(!Emulator.get.support_custom_driver()){
                 findPreference(Vulkan$vulkan_lib_path).setEnabled(false);
                 findPreference("Vulkan|adrenotools_force_max_clocks").setEnabled(false);
@@ -592,14 +594,17 @@ public class EmulatorSettings extends AppCompatActivity {
         }
         void setup_costom_driver_library_path(String new_path) {
             final String key=Vulkan$vulkan_lib_path;
+            final String _default_path=getString(R.string._default);
             if(new_path==null||new_path.isEmpty()){
-                String _default_path=getString(R.string._default);
                 findPreference( key).setSummary(_default_path);
                 return;
             }
 
             config.save_config_entry(key,new_path);
-            findPreference(key).setSummary(new_path);
+            if(new_path.equals("default"))//FIXME:
+                findPreference(key).setSummary(_default_path);
+            else
+                findPreference(key).setSummary(new_path);
         }
         @Override
         public boolean onPreferenceChange(@NonNull Preference preference, Object newValue) {

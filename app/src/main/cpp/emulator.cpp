@@ -340,16 +340,38 @@ static void j_save_config_entry(JNIEnv* env, jobject self, toml::table* config_t
         table = result.first->second.as_table();
     }
 
+    auto is_float_number = [](const std::string& str) {
+        if(std::count(str.begin(), str.end(), '.')!=1) return false;
+        try{
+            std::stof(str);
+            return true;
+        }
+        catch(...){
+            return false;
+        }
+    };
+
+    auto is_int_number = [](const std::string& str) {
+        if(str.empty()) return false;
+        if(str.length()>1&&str[0]=='-')
+            return std::all_of(str.begin()+1, str.end(), [](char c) {
+                return std::isdigit(c);
+            });
+        else
+            return std::all_of(str.begin(), str.end(), [](char c) {
+                return std::isdigit(c);
+            });
+    };
+
     if (val_str == "true" || val_str == "false") {
         LOGE("save_config_entry Z %s %s", tag_str.c_str(), val_str.c_str());
         table->insert_or_assign(key_name, val_str == "true");
     }
-    else if (val_str.find('.') != std::string::npos) {
+    else if (is_float_number(val_str)) {
         LOGE("save_config_entry F %s %s", tag_str.c_str(), val_str.c_str());
         table->insert_or_assign(key_name, std::stod(val_str));
     }
-    else if (const auto begin = val_str[0] != '-' ? val_str.begin() : ++val_str.begin();
-            std::all_of(begin, val_str.end(), ::isdigit)) {
+    else if (is_int_number(val_str)) {
         LOGE("save_config_entry I %s %s", tag_str.c_str(), val_str.c_str());
         try {
             table->insert_or_assign(key_name, std::stoi(val_str));
