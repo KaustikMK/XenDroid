@@ -15,14 +15,14 @@ add_compile_options(-march=armv8-a)
 add_compile_options(-stdlib=libc++)
 add_compile_options(-fPIC)
 
+add_link_options(-Wl,-z,max-page-size=16384)
+
 add_library(hardware_ProcessorInfo SHARED hardware_ProcessorInfo.cpp)
 target_link_libraries(hardware_ProcessorInfo PRIVATE vulkan)
 
 add_compile_options(-fno-omit-frame-pointer)
 add_compile_options(-funwind-tables)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
-
-add_link_options(-Wl,-z,max-page-size=16384)
 
 set(CMAKE_CXX_STANDARD 20)
 
