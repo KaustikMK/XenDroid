@@ -2136,6 +2136,24 @@ void VulkanCommandProcessor::BindExternalGraphicsPipeline(
     dynamic_stencil_reference_front_update_needed_ = true;
     dynamic_stencil_reference_back_update_needed_ = true;
   }
+  // VK_EXT_extended_dynamic_state (EDS1) - Stage 1. External graphics pipelines
+  // (RT ownership transfer, gamma swap) declare only viewport / scissor /
+  // conditional stencil-write-mask as dynamic; binding them makes the EDS1
+  // states (cull / front-face / depth / stencil-op) undefined for any
+  // subsequently-bound guest pipeline that declares them dynamic. None of the
+  // external bind call sites set these states, so always force re-emission on
+  // the next guest draw. Gated on the device bool so non-EDS devices are
+  // unaffected (the flags are otherwise never read on those devices).
+  if (GetVulkanDevice()->properties().extendedDynamicState) {
+    dynamic_cull_mode_update_needed_ = true;
+    dynamic_front_face_update_needed_ = true;
+    dynamic_depth_test_enable_update_needed_ = true;
+    dynamic_depth_write_enable_update_needed_ = true;
+    dynamic_depth_compare_op_update_needed_ = true;
+    dynamic_stencil_test_enable_update_needed_ = true;
+    dynamic_stencil_op_front_update_needed_ = true;
+    dynamic_stencil_op_back_update_needed_ = true;
+  }
   if (current_external_graphics_pipeline_ == pipeline) {
     return;
   }
@@ -3244,6 +3262,16 @@ bool VulkanCommandProcessor::BeginSubmission(bool is_guest_command) {
     dynamic_stencil_write_mask_back_update_needed_ = true;
     dynamic_stencil_reference_front_update_needed_ = true;
     dynamic_stencil_reference_back_update_needed_ = true;
+    // VK_EXT_extended_dynamic_state (EDS1) - Stage 1. Force re-emission on the
+    // first draw of the new command buffer.
+    dynamic_cull_mode_update_needed_ = true;
+    dynamic_front_face_update_needed_ = true;
+    dynamic_depth_test_enable_update_needed_ = true;
+    dynamic_depth_write_enable_update_needed_ = true;
+    dynamic_depth_compare_op_update_needed_ = true;
+    dynamic_stencil_test_enable_update_needed_ = true;
+    dynamic_stencil_op_front_update_needed_ = true;
+    dynamic_stencil_op_back_update_needed_ = true;
     current_render_pass_ = VK_NULL_HANDLE;
     current_framebuffer_ = nullptr;
     current_guest_graphics_pipeline_ = VK_NULL_HANDLE;
@@ -3908,8 +3936,187 @@ void VulkanCommandProcessor::UpdateDynamicState(
     }
   }
 
-  // TODO(Triang3l): VK_EXT_extended_dynamic_state and
-  // VK_EXT_extended_dynamic_state2.
+  // VK_EXT_extended_dynamic_state (EDS1) - Stage 1. Emit cull mode, front face,
+  // depth test/write/compare-op and stencil test-enable + per-face stencil ops
+  // dynamically (these were removed from the baked pipeline key in
+  // GetCurrentStateDescription under the same device gate). Values are re-derived
+  // from the SAME registers the key used, so dynamic == baked. Each state uses
+  // the compare-to-cached / set-update-needed / emit-on-change / clear-flag
+  // pattern (mirroring the stencil-mask code above) to avoid per-draw vkCmdSet*
+  // spam, while still always re-emitting after a command-buffer (re)start or an
+  // external-pipeline bind invalidates the dynamic state.
+  //
+  // Stage 2 (deferred): EDS3 per-RT blend (enable / equation / color write
+  // mask) + topology, including recomputing the constant-alpha->constant-color
+  // remap at draw time.
+  if (GetVulkanDevice()->properties().extendedDynamicState) {
+    // All Stage-1 EDS states are dynamic only on the host render target path:
+    // cull/front-face/depth/stencil are zeroed in the key and appended to the
+    // dynamic-state array under the same !edram_fragment_shader_interlock ==
+    // kHostRenderTargets gate. On the FSI path they stay baked in the pipeline,
+    // so emission is guarded identically (otherwise the FSI command stream would
+    // carry ignored, redundant vkCmdSet* calls).
+    if (render_target_cache_->GetPath() ==
+        RenderTargetCache::Path::kHostRenderTargets) {
+      auto pa_su_sc_mode_cntl = regs.Get<reg::PA_SU_SC_MODE_CNTL>();
+
+      // Cull mode and front face. Derived identically to
+      // GetCurrentStateDescription: culling and winding are only meaningful for
+      // polygonal primitives - mirror the key (which leaves cull = NONE and
+      // front_face = CCW for non-polygonal primitives).
+      VkCullModeFlags cull_mode = VK_CULL_MODE_NONE;
+      VkFrontFace front_face = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+      if (primitive_polygonal) {
+        if (pa_su_sc_mode_cntl.cull_front) {
+          cull_mode |= VK_CULL_MODE_FRONT_BIT;
+        }
+        if (pa_su_sc_mode_cntl.cull_back) {
+          cull_mode |= VK_CULL_MODE_BACK_BIT;
+        }
+        front_face = pa_su_sc_mode_cntl.face != 0
+                         ? VK_FRONT_FACE_CLOCKWISE
+                         : VK_FRONT_FACE_COUNTER_CLOCKWISE;
+      }
+      dynamic_cull_mode_update_needed_ |= dynamic_cull_mode_ != cull_mode;
+      if (dynamic_cull_mode_update_needed_) {
+        dynamic_cull_mode_ = cull_mode;
+        deferred_command_buffer_.CmdVkSetCullMode(cull_mode);
+        dynamic_cull_mode_update_needed_ = false;
+      }
+      dynamic_front_face_update_needed_ |= dynamic_front_face_ != front_face;
+      if (dynamic_front_face_update_needed_) {
+        dynamic_front_face_ = front_face;
+        deferred_command_buffer_.CmdVkSetFrontFace(front_face);
+        dynamic_front_face_update_needed_ = false;
+      }
+      // Depth test/write/compare-op. Derive EXACTLY as the baked path
+      // (vulkan_pipeline_cache.cc): depth_compare_op defaults to kAlways, is the
+      // guest zfunc only when z_enable; depth_write_enable only when z_enable;
+      // and depth_test_enable is TRUE only when write is on or compare != ALWAYS
+      // (so the dynamic value equals the now-removed key value for every
+      // register combination).
+      xenos::CompareFunction depth_compare_func = xenos::CompareFunction::kAlways;
+      bool depth_write = false;
+      if (normalized_depth_control.z_enable) {
+        depth_write = normalized_depth_control.z_write_enable != 0;
+        depth_compare_func = normalized_depth_control.zfunc;
+      }
+      VkBool32 depth_write_enable = depth_write ? VK_TRUE : VK_FALSE;
+      VkCompareOp depth_compare_op =
+          VkCompareOp(uint32_t(VK_COMPARE_OP_NEVER) +
+                      uint32_t(depth_compare_func));
+      VkBool32 depth_test_enable =
+          (depth_write || depth_compare_func != xenos::CompareFunction::kAlways)
+              ? VK_TRUE
+              : VK_FALSE;
+
+      dynamic_depth_test_enable_update_needed_ |=
+          dynamic_depth_test_enable_ != depth_test_enable;
+      if (dynamic_depth_test_enable_update_needed_) {
+        dynamic_depth_test_enable_ = depth_test_enable;
+        deferred_command_buffer_.CmdVkSetDepthTestEnable(depth_test_enable);
+        dynamic_depth_test_enable_update_needed_ = false;
+      }
+      dynamic_depth_write_enable_update_needed_ |=
+          dynamic_depth_write_enable_ != depth_write_enable;
+      if (dynamic_depth_write_enable_update_needed_) {
+        dynamic_depth_write_enable_ = depth_write_enable;
+        deferred_command_buffer_.CmdVkSetDepthWriteEnable(depth_write_enable);
+        dynamic_depth_write_enable_update_needed_ = false;
+      }
+      dynamic_depth_compare_op_update_needed_ |=
+          dynamic_depth_compare_op_ != depth_compare_op;
+      if (dynamic_depth_compare_op_update_needed_) {
+        dynamic_depth_compare_op_ = depth_compare_op;
+        deferred_command_buffer_.CmdVkSetDepthCompareOp(depth_compare_op);
+        dynamic_depth_compare_op_update_needed_ = false;
+      }
+
+      // Stencil test-enable.
+      VkBool32 stencil_test_enable =
+          normalized_depth_control.stencil_enable ? VK_TRUE : VK_FALSE;
+      dynamic_stencil_test_enable_update_needed_ |=
+          dynamic_stencil_test_enable_ != stencil_test_enable;
+      if (dynamic_stencil_test_enable_update_needed_) {
+        dynamic_stencil_test_enable_ = stencil_test_enable;
+        deferred_command_buffer_.CmdVkSetStencilTestEnable(stencil_test_enable);
+        dynamic_stencil_test_enable_update_needed_ = false;
+      }
+
+      // Per-face stencil ops. Front always uses the front register fields; back
+      // uses the back-face fields only when (primitive_polygonal &&
+      // backface_enable), otherwise mirrors front - IDENTICAL to the key
+      // derivation in GetCurrentStateDescription. Convert guest enums with the
+      // same VK_STENCIL_OP_KEEP / VK_COMPARE_OP_NEVER offsets the baked path
+      // uses.
+      VkStencilOp front_fail_op =
+          VkStencilOp(uint32_t(VK_STENCIL_OP_KEEP) +
+                      uint32_t(normalized_depth_control.stencilfail));
+      VkStencilOp front_pass_op =
+          VkStencilOp(uint32_t(VK_STENCIL_OP_KEEP) +
+                      uint32_t(normalized_depth_control.stencilzpass));
+      VkStencilOp front_depth_fail_op =
+          VkStencilOp(uint32_t(VK_STENCIL_OP_KEEP) +
+                      uint32_t(normalized_depth_control.stencilzfail));
+      VkCompareOp front_compare_op =
+          VkCompareOp(uint32_t(VK_COMPARE_OP_NEVER) +
+                      uint32_t(normalized_depth_control.stencilfunc));
+      VkStencilOp back_fail_op;
+      VkStencilOp back_pass_op;
+      VkStencilOp back_depth_fail_op;
+      VkCompareOp back_compare_op;
+      if (primitive_polygonal && normalized_depth_control.backface_enable) {
+        back_fail_op =
+            VkStencilOp(uint32_t(VK_STENCIL_OP_KEEP) +
+                        uint32_t(normalized_depth_control.stencilfail_bf));
+        back_pass_op =
+            VkStencilOp(uint32_t(VK_STENCIL_OP_KEEP) +
+                        uint32_t(normalized_depth_control.stencilzpass_bf));
+        back_depth_fail_op =
+            VkStencilOp(uint32_t(VK_STENCIL_OP_KEEP) +
+                        uint32_t(normalized_depth_control.stencilzfail_bf));
+        back_compare_op =
+            VkCompareOp(uint32_t(VK_COMPARE_OP_NEVER) +
+                        uint32_t(normalized_depth_control.stencilfunc_bf));
+      } else {
+        back_fail_op = front_fail_op;
+        back_pass_op = front_pass_op;
+        back_depth_fail_op = front_depth_fail_op;
+        back_compare_op = front_compare_op;
+      }
+
+      dynamic_stencil_op_front_update_needed_ |=
+          dynamic_stencil_front_fail_op_ != front_fail_op ||
+          dynamic_stencil_front_pass_op_ != front_pass_op ||
+          dynamic_stencil_front_depth_fail_op_ != front_depth_fail_op ||
+          dynamic_stencil_front_compare_op_ != front_compare_op;
+      if (dynamic_stencil_op_front_update_needed_) {
+        dynamic_stencil_front_fail_op_ = front_fail_op;
+        dynamic_stencil_front_pass_op_ = front_pass_op;
+        dynamic_stencil_front_depth_fail_op_ = front_depth_fail_op;
+        dynamic_stencil_front_compare_op_ = front_compare_op;
+        deferred_command_buffer_.CmdVkSetStencilOp(
+            VK_STENCIL_FACE_FRONT_BIT, front_fail_op, front_pass_op,
+            front_depth_fail_op, front_compare_op);
+        dynamic_stencil_op_front_update_needed_ = false;
+      }
+      dynamic_stencil_op_back_update_needed_ |=
+          dynamic_stencil_back_fail_op_ != back_fail_op ||
+          dynamic_stencil_back_pass_op_ != back_pass_op ||
+          dynamic_stencil_back_depth_fail_op_ != back_depth_fail_op ||
+          dynamic_stencil_back_compare_op_ != back_compare_op;
+      if (dynamic_stencil_op_back_update_needed_) {
+        dynamic_stencil_back_fail_op_ = back_fail_op;
+        dynamic_stencil_back_pass_op_ = back_pass_op;
+        dynamic_stencil_back_depth_fail_op_ = back_depth_fail_op;
+        dynamic_stencil_back_compare_op_ = back_compare_op;
+        deferred_command_buffer_.CmdVkSetStencilOp(
+            VK_STENCIL_FACE_BACK_BIT, back_fail_op, back_pass_op,
+            back_depth_fail_op, back_compare_op);
+        dynamic_stencil_op_back_update_needed_ = false;
+      }
+    }
+  }
 }
 
 void VulkanCommandProcessor::UpdateSystemConstantValues(

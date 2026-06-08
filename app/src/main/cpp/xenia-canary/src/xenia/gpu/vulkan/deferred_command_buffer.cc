@@ -246,6 +246,46 @@ void DeferredCommandBuffer::Execute(VkCommandBuffer command_buffer) {
                               args.depth_bias_slope_factor);
       } break;
 
+      // VK_EXT_extended_dynamic_state (EDS1) - Stage 1. dfn.vkCmdSet*<core
+      // name> are populated by the loader from either the core 1.3 or the EXT
+      // entry point, and are only ever recorded when extendedDynamicState is on.
+      case Command::kVkSetCullMode: {
+        auto& args = *reinterpret_cast<const ArgsVkSetU32*>(stream);
+        dfn.vkCmdSetCullMode(command_buffer, VkCullModeFlags(args.value));
+      } break;
+
+      case Command::kVkSetFrontFace: {
+        auto& args = *reinterpret_cast<const ArgsVkSetU32*>(stream);
+        dfn.vkCmdSetFrontFace(command_buffer, VkFrontFace(args.value));
+      } break;
+
+      case Command::kVkSetDepthTestEnable: {
+        auto& args = *reinterpret_cast<const ArgsVkSetU32*>(stream);
+        dfn.vkCmdSetDepthTestEnable(command_buffer, VkBool32(args.value));
+      } break;
+
+      case Command::kVkSetDepthWriteEnable: {
+        auto& args = *reinterpret_cast<const ArgsVkSetU32*>(stream);
+        dfn.vkCmdSetDepthWriteEnable(command_buffer, VkBool32(args.value));
+      } break;
+
+      case Command::kVkSetDepthCompareOp: {
+        auto& args = *reinterpret_cast<const ArgsVkSetU32*>(stream);
+        dfn.vkCmdSetDepthCompareOp(command_buffer, VkCompareOp(args.value));
+      } break;
+
+      case Command::kVkSetStencilTestEnable: {
+        auto& args = *reinterpret_cast<const ArgsVkSetU32*>(stream);
+        dfn.vkCmdSetStencilTestEnable(command_buffer, VkBool32(args.value));
+      } break;
+
+      case Command::kVkSetStencilOp: {
+        auto& args = *reinterpret_cast<const ArgsVkSetStencilOp*>(stream);
+        dfn.vkCmdSetStencilOp(command_buffer, args.face_mask, args.fail_op,
+                              args.pass_op, args.depth_fail_op,
+                              args.compare_op);
+      } break;
+
       case Command::kVkSetScissor: {
         auto& args = *reinterpret_cast<const ArgsVkSetScissor*>(stream);
         dfn.vkCmdSetScissor(

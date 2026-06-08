@@ -138,6 +138,15 @@ class VulkanDevice {
     bool shaderDenormFlushToZeroFloat32 = false;
     bool shaderRoundingModeRTEFloat32 = false;
 
+    // VK_EXT_extended_dynamic_state (#268, promoted to 1.3)
+    // True only when all 7 EDS1 vkCmdSet* setters are loaded (either via core
+    // 1.3 or via the extension). When true, cull mode, front face, depth
+    // test/write/compare-op and stencil test-enable + per-face stencil ops are
+    // moved out of the baked pipeline key into dynamic state. Defaults false so
+    // devices without support behave byte-for-byte identically to before.
+    // Stage 2 (deferred) would add EDS3 dynamic blend on top of this.
+    bool extendedDynamicState = false;
+
     // VK_EXT_fragment_shader_interlock (#252)
 
     bool fragmentShaderSampleInterlock = false;
@@ -174,7 +183,8 @@ class VulkanDevice {
     bool ext_1_2_KHR_spirv_1_4 = false;                 // #237
     bool ext_EXT_memory_budget = false;                 // #238
     // Has optional features not implied by this being true.
-    bool ext_1_3_KHR_maintenance4 = false;  // #414
+    bool ext_1_3_EXT_extended_dynamic_state = false;  // #268
+    bool ext_1_3_KHR_maintenance4 = false;            // #414
   };
 
   const Extensions& extensions() const { return extensions_; }
@@ -194,6 +204,10 @@ class VulkanDevice {
 #include "xenia/ui/vulkan/functions/device_1_1_khr_bind_memory2.inc"
     // VK_KHR_maintenance4 (#414, promoted to 1.3)
 #include "xenia/ui/vulkan/functions/device_1_3_khr_maintenance4.inc"
+    // VK_EXT_extended_dynamic_state (#268, promoted to 1.3)
+    // The members are declared unconditionally (PFN_##core_name exists in the
+    // header); they stay nullptr on devices that never load them.
+#include "xenia/ui/vulkan/functions/device_ext_extended_dynamic_state.inc"
 #undef XE_UI_VULKAN_FUNCTION_PROMOTED
 #undef XE_UI_VULKAN_FUNCTION
   };

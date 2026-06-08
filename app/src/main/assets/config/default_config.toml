@@ -343,6 +343,7 @@ vulkan_allow_present_mode_fifo_relaxed = true     	# When available, allow the r
 vulkan_allow_present_mode_immediate = true        	# When available, allow the immediate presentation mode (1st priority), offering the lowest latency with the possibility of tearing in certain cases, and, depending on the configuration, variable refresh rate.
 vulkan_allow_present_mode_mailbox = true          	# When available, allow the mailbox presentation mode (2nd priority), offering low latency without the possibility of tearing.
 vulkan_device = -1                                	# Index of the preferred Vulkan physical device, or -1 to use any compatible device.
+vulkan_extended_dynamic_state = true              	# Use VK_EXT_extended_dynamic_state (EDS1) to move cull/front-face/depth/stencil out of the baked graphics pipeline into dynamic state, shrinking pipeline-permutation churn. Disable to force the static-pipeline path if a Turnip build mishandles it.
 vulkan_lib_path = ""                              	# Custom Driver Library Path
 vulkan_log_debug_messages = true                  	# Write Vulkan VK_EXT_debug_utils messages to the Xenia log, as opposed to the OS debug output.
 vulkan_sparse_shared_memory = true                	# Enable sparse binding for shared memory emulation. Disabling it increases video memory usage - a 512 MB buffer is created - but allows graphics debuggers that don't support sparse binding to work.

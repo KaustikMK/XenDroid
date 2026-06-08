@@ -805,6 +805,38 @@ bool VulkanPipelineCache::GetCurrentStateDescription(
       }
     }
 
+    // VK_EXT_extended_dynamic_state (EDS1) - Stage 1: collapse the pipeline-key
+    // permutations by zeroing the fields that are now set per-draw via
+    // vkCmdSet*. The matching VK_DYNAMIC_STATE_* are appended to the
+    // dynamic-state array in the pipeline-create function (under the SAME
+    // extendedDynamicState && !edram_fragment_shader_interlock condition), and
+    // UpdateDynamicState emits the values every draw. This whole block is inside
+    // the kHostRenderTargets guard, so the FSI path keeps cull / front-face /
+    // depth / stencil baked (symmetric with the array-append and per-draw
+    // emission, all gated on host-RT) and is byte-for-byte unchanged. The
+    // PipelineDescription layout / kVersion is unchanged - fields are zeroed,
+    // never removed - so on-disk cache compatibility is preserved.
+    // Stage 2 (deferred) would additionally zero the per-RT blend fields here
+    // and append the EDS3 blend dynamic states.
+    if (device_properties.extendedDynamicState) {
+      // Rasterization (cull / front face).
+      description_out.cull_front = 0;
+      description_out.cull_back = 0;
+      description_out.front_face_clockwise = 0;
+      // Depth / stencil.
+      description_out.depth_write_enable = 0;
+      description_out.depth_compare_op = xenos::CompareFunction::kAlways;
+      description_out.stencil_test_enable = 0;
+      description_out.stencil_front_fail_op = xenos::StencilOp::kKeep;
+      description_out.stencil_front_pass_op = xenos::StencilOp::kKeep;
+      description_out.stencil_front_depth_fail_op = xenos::StencilOp::kKeep;
+      description_out.stencil_front_compare_op = xenos::CompareFunction::kNever;
+      description_out.stencil_back_fail_op = xenos::StencilOp::kKeep;
+      description_out.stencil_back_pass_op = xenos::StencilOp::kKeep;
+      description_out.stencil_back_depth_fail_op = xenos::StencilOp::kKeep;
+      description_out.stencil_back_compare_op = xenos::CompareFunction::kNever;
+    }
+
     // Color blending and write masks (filled only for the attachments present
     // in the render pass object).
     uint32_t render_pass_color_rts = render_pass_key.depth_and_color_used >> 1;
@@ -2250,7 +2282,10 @@ bool VulkanPipelineCache::EnsurePipelineCreated(
     color_blend_state.pAttachments = color_blend_attachments;
   }
 
-  std::array<VkDynamicState, 7> dynamic_states;
+  // Capacity: 2 unconditional (viewport, scissor) + 5 host-RT-only (depth bias,
+  // blend constants, stencil compare/write/reference masks) + 7 EDS1 host-RT-
+  // only (cull mode, front face, depth test/write/compare-op, stencil test, op).
+  std::array<VkDynamicState, 16> dynamic_states;
   VkPipelineDynamicStateCreateInfo dynamic_state;
   dynamic_state.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
   dynamic_state.pNext = nullptr;
@@ -2274,6 +2309,31 @@ bool VulkanPipelineCache::EnsurePipelineCreated(
         VK_DYNAMIC_STATE_STENCIL_WRITE_MASK;
     dynamic_states[dynamic_state.dynamicStateCount++] =
         VK_DYNAMIC_STATE_STENCIL_REFERENCE;
+  }
+  // VK_EXT_extended_dynamic_state (EDS1) - Stage 1. Mark cull / front-face /
+  // depth test-write-compare-op / stencil test-enable + op as dynamic so they
+  // no longer participate in the baked pipeline key (zeroed in
+  // GetCurrentStateDescription under the same condition). Same
+  // !edram_fragment_shader_interlock guard as the depth/stencil key-zeroing -
+  // the FSI path keeps everything baked. The static rasterization_state /
+  // depth_stencil_state fields above are spec-ignored when their state is
+  // dynamic, so they are left populated and untouched.
+  if (vulkan_device->properties().extendedDynamicState &&
+      !edram_fragment_shader_interlock) {
+    dynamic_states[dynamic_state.dynamicStateCount++] =
+        VK_DYNAMIC_STATE_CULL_MODE;
+    dynamic_states[dynamic_state.dynamicStateCount++] =
+        VK_DYNAMIC_STATE_FRONT_FACE;
+    dynamic_states[dynamic_state.dynamicStateCount++] =
+        VK_DYNAMIC_STATE_DEPTH_TEST_ENABLE;
+    dynamic_states[dynamic_state.dynamicStateCount++] =
+        VK_DYNAMIC_STATE_DEPTH_WRITE_ENABLE;
+    dynamic_states[dynamic_state.dynamicStateCount++] =
+        VK_DYNAMIC_STATE_DEPTH_COMPARE_OP;
+    dynamic_states[dynamic_state.dynamicStateCount++] =
+        VK_DYNAMIC_STATE_STENCIL_TEST_ENABLE;
+    dynamic_states[dynamic_state.dynamicStateCount++] =
+        VK_DYNAMIC_STATE_STENCIL_OP;
   }
 
   VkGraphicsPipelineCreateInfo pipeline_create_info;

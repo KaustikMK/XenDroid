@@ -305,6 +305,56 @@ class DeferredCommandBuffer {
     args.depth_bias_slope_factor = depth_bias_slope_factor;
   }
 
+  // VK_EXT_extended_dynamic_state (EDS1) setters - Stage 1. Only recorded when
+  // the device advertises extendedDynamicState (function pointers loaded).
+  void CmdVkSetCullMode(VkCullModeFlags cull_mode) {
+    auto& args = *reinterpret_cast<ArgsVkSetU32*>(
+        WriteCommand(Command::kVkSetCullMode, sizeof(ArgsVkSetU32)));
+    args.value = uint32_t(cull_mode);
+  }
+
+  void CmdVkSetFrontFace(VkFrontFace front_face) {
+    auto& args = *reinterpret_cast<ArgsVkSetU32*>(
+        WriteCommand(Command::kVkSetFrontFace, sizeof(ArgsVkSetU32)));
+    args.value = uint32_t(front_face);
+  }
+
+  void CmdVkSetDepthTestEnable(VkBool32 depth_test_enable) {
+    auto& args = *reinterpret_cast<ArgsVkSetU32*>(
+        WriteCommand(Command::kVkSetDepthTestEnable, sizeof(ArgsVkSetU32)));
+    args.value = uint32_t(depth_test_enable);
+  }
+
+  void CmdVkSetDepthWriteEnable(VkBool32 depth_write_enable) {
+    auto& args = *reinterpret_cast<ArgsVkSetU32*>(
+        WriteCommand(Command::kVkSetDepthWriteEnable, sizeof(ArgsVkSetU32)));
+    args.value = uint32_t(depth_write_enable);
+  }
+
+  void CmdVkSetDepthCompareOp(VkCompareOp depth_compare_op) {
+    auto& args = *reinterpret_cast<ArgsVkSetU32*>(
+        WriteCommand(Command::kVkSetDepthCompareOp, sizeof(ArgsVkSetU32)));
+    args.value = uint32_t(depth_compare_op);
+  }
+
+  void CmdVkSetStencilTestEnable(VkBool32 stencil_test_enable) {
+    auto& args = *reinterpret_cast<ArgsVkSetU32*>(
+        WriteCommand(Command::kVkSetStencilTestEnable, sizeof(ArgsVkSetU32)));
+    args.value = uint32_t(stencil_test_enable);
+  }
+
+  void CmdVkSetStencilOp(VkStencilFaceFlags face_mask, VkStencilOp fail_op,
+                         VkStencilOp pass_op, VkStencilOp depth_fail_op,
+                         VkCompareOp compare_op) {
+    auto& args = *reinterpret_cast<ArgsVkSetStencilOp*>(
+        WriteCommand(Command::kVkSetStencilOp, sizeof(ArgsVkSetStencilOp)));
+    args.face_mask = face_mask;
+    args.fail_op = fail_op;
+    args.pass_op = pass_op;
+    args.depth_fail_op = depth_fail_op;
+    args.compare_op = compare_op;
+  }
+
   void CmdVkSetScissor(uint32_t first_scissor, uint32_t scissor_count,
                        const VkRect2D* scissors) {
     constexpr size_t header_size =
@@ -377,9 +427,17 @@ class DeferredCommandBuffer {
     kVkPushConstants,
     kVkSetBlendConstants,
     kVkSetDepthBias,
+    // VK_EXT_extended_dynamic_state (EDS1) setters - Stage 1.
+    kVkSetCullMode,
+    kVkSetDepthCompareOp,
+    kVkSetDepthTestEnable,
+    kVkSetDepthWriteEnable,
+    kVkSetFrontFace,
     kVkSetScissor,
     kVkSetStencilCompareMask,
+    kVkSetStencilOp,
     kVkSetStencilReference,
+    kVkSetStencilTestEnable,
     kVkSetStencilWriteMask,
     kVkSetViewport,
   };
@@ -527,6 +585,21 @@ class DeferredCommandBuffer {
   struct ArgsSetStencilMaskReference {
     VkStencilFaceFlags face_mask;
     uint32_t mask_reference;
+  };
+
+  // VK_EXT_extended_dynamic_state (EDS1) - Stage 1.
+  // Shared scalar args for cull mode (VkCullModeFlags), front face
+  // (VkFrontFace), depth compare op (VkCompareOp), and the VkBool32 enables.
+  struct ArgsVkSetU32 {
+    uint32_t value;
+  };
+
+  struct ArgsVkSetStencilOp {
+    VkStencilFaceFlags face_mask;
+    VkStencilOp fail_op;
+    VkStencilOp pass_op;
+    VkStencilOp depth_fail_op;
+    VkCompareOp compare_op;
   };
 
   struct ArgsVkSetViewport {

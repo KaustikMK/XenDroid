@@ -705,6 +705,36 @@ class VulkanCommandProcessor final : public CommandProcessor {
   bool dynamic_stencil_reference_front_update_needed_;
   bool dynamic_stencil_reference_back_update_needed_;
 
+  // VK_EXT_extended_dynamic_state (EDS1) - Stage 1. Only used / emitted when
+  // GetVulkanDevice()->properties().extendedDynamicState is true. Values are
+  // re-derived from the same registers (PA_SU_SC_MODE_CNTL,
+  // normalized_depth_control) that the baked pipeline key would have used, so
+  // dynamic == baked. update_needed flags are forced true on command-buffer
+  // (re)start and on external-pipeline binds (which invalidate dynamic state).
+  // Seeded so the first draw always emits.
+  VkCullModeFlags dynamic_cull_mode_ = VK_CULL_MODE_FLAG_BITS_MAX_ENUM;
+  VkFrontFace dynamic_front_face_ = VK_FRONT_FACE_MAX_ENUM;
+  VkBool32 dynamic_depth_test_enable_ = VK_FALSE;
+  VkBool32 dynamic_depth_write_enable_ = VK_FALSE;
+  VkCompareOp dynamic_depth_compare_op_ = VK_COMPARE_OP_MAX_ENUM;
+  VkBool32 dynamic_stencil_test_enable_ = VK_FALSE;
+  VkStencilOp dynamic_stencil_front_fail_op_ = VK_STENCIL_OP_MAX_ENUM;
+  VkStencilOp dynamic_stencil_front_pass_op_ = VK_STENCIL_OP_MAX_ENUM;
+  VkStencilOp dynamic_stencil_front_depth_fail_op_ = VK_STENCIL_OP_MAX_ENUM;
+  VkCompareOp dynamic_stencil_front_compare_op_ = VK_COMPARE_OP_MAX_ENUM;
+  VkStencilOp dynamic_stencil_back_fail_op_ = VK_STENCIL_OP_MAX_ENUM;
+  VkStencilOp dynamic_stencil_back_pass_op_ = VK_STENCIL_OP_MAX_ENUM;
+  VkStencilOp dynamic_stencil_back_depth_fail_op_ = VK_STENCIL_OP_MAX_ENUM;
+  VkCompareOp dynamic_stencil_back_compare_op_ = VK_COMPARE_OP_MAX_ENUM;
+  bool dynamic_cull_mode_update_needed_;
+  bool dynamic_front_face_update_needed_;
+  bool dynamic_depth_test_enable_update_needed_;
+  bool dynamic_depth_write_enable_update_needed_;
+  bool dynamic_depth_compare_op_update_needed_;
+  bool dynamic_stencil_test_enable_update_needed_;
+  bool dynamic_stencil_op_front_update_needed_;
+  bool dynamic_stencil_op_back_update_needed_;
+
   // Currently used samplers.
   std::vector<std::pair<VulkanTextureCache::SamplerParameters, VkSampler>>
       current_samplers_vertex_;

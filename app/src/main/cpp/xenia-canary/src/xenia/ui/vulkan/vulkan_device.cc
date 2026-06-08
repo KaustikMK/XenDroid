@@ -10,6 +10,7 @@
 #include "xenia/ui/vulkan/vulkan_device.h"
 
 #include "xenia/base/assert.h"
+#include "xenia/base/cvar.h"
 #include "xenia/base/logging.h"
 #include "xenia/base/platform.h"
 
@@ -18,6 +19,15 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+
+DEFINE_bool(
+    vulkan_extended_dynamic_state, true,
+    "Use VK_EXT_extended_dynamic_state (EDS1) to move cull / front-face / depth "
+    "test+write+compare / stencil test+op out of the baked graphics pipeline "
+    "into dynamic state, shrinking pipeline-permutation churn (less shader "
+    "compile hitching). Disable to force the static-pipeline path, e.g. if a "
+    "Turnip build mishandles extended dynamic state.",
+    "Vulkan");
 
 namespace xe {
 namespace ui {
@@ -150,6 +160,15 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
   if (properties.apiVersion >= VK_MAKE_API_VERSION(0, 1, 1, 0)) {
     // #414.
     XE_UI_VULKAN_STRUCT_PROMOTED_EXTENSION(KHR_maintenance4, 1, 3)
+  }
+  if (with_gpu_emulation && get_physical_device_properties2_supported) {
+    // #268. Extended dynamic state (EDS1). Used to move cull / front-face /
+    // depth-test/write/compare-op / stencil-test+op out of the baked pipeline
+    // key into dynamic state, reducing pipeline-permutation explosion.
+    // On >=1.3 this is promoted to core (request_promoted_extension sets the
+    // bool true without requiring the extension). On <1.3 the EXT feature
+    // struct is queried and its extendedDynamicState feature must be enabled.
+    XE_UI_VULKAN_STRUCT_PROMOTED_EXTENSION(EXT_extended_dynamic_state, 1, 3)
   }
 
   if (with_swapchain) {
@@ -289,6 +308,10 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
       VkPhysicalDeviceNonSeamlessCubeMapFeaturesEXT,
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_NON_SEAMLESS_CUBE_MAP_FEATURES_EXT>
       features_EXT_non_seamless_cube_map;
+  VulkanFeatures<
+      VkPhysicalDeviceExtendedDynamicStateFeaturesEXT,
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_FEATURES_EXT>
+      features_EXT_extended_dynamic_state;
 
   if (get_physical_device_properties2_supported) {
     if (properties.apiVersion >= VK_MAKE_API_VERSION(0, 1, 2, 0)) {
@@ -321,6 +344,16 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
     if (ext_EXT_non_seamless_cube_map) {
       features_EXT_non_seamless_cube_map.Link(supported_features_2,
                                               device_create_info);
+    }
+    // #268. Only the <1.3 (extension) path needs the dedicated feature struct
+    // linked / enabled; on >=1.3 the EDS1 commands are core-guaranteed and the
+    // feature is implied (VkPhysicalDeviceVulkan13Features has no
+    // extendedDynamicState member).
+    if (cvars::vulkan_extended_dynamic_state &&
+        properties.apiVersion < VK_MAKE_API_VERSION(0, 1, 3, 0) &&
+        device->extensions_.ext_1_3_EXT_extended_dynamic_state) {
+      features_EXT_extended_dynamic_state.Link(supported_features_2,
+                                               device_create_info);
     }
     ifn.vkGetPhysicalDeviceProperties2(physical_device, &properties_2);
     ifn.vkGetPhysicalDeviceFeatures2(physical_device, &supported_features_2);
@@ -692,6 +725,26 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
     }
   }
 
+  // #268. Derive the single source-of-truth extendedDynamicState bool.
+  // Only relevant with GPU emulation (the only consumer of the dynamic-state
+  // pipeline path). On >=1.3 the EDS1 setters are core and guaranteed (the
+  // function pointers are loaded by core name below), so the bool is set true
+  // directly. On <1.3, the extension must be advertised AND its
+  // extendedDynamicState feature enabled (the macro copies supported->enabled
+  // and supported->properties_.extendedDynamicState). Either way, the function
+  // loader only #includes the .inc inside the matching version/extension guard,
+  // and a failed load aborts device creation - so any device that comes up with
+  // this bool set has all 7 working pointers.
+  if (with_gpu_emulation && cvars::vulkan_extended_dynamic_state) {
+    if (properties.apiVersion >= VK_MAKE_API_VERSION(0, 1, 3, 0)) {
+      device->properties_.extendedDynamicState = true;
+      XELOGI("* extendedDynamicState (core 1.3)");
+    } else if (device->extensions_.ext_1_3_EXT_extended_dynamic_state) {
+      XE_UI_VULKAN_FEATURE_2(features_EXT_extended_dynamic_state,
+                             extendedDynamicState)
+    }
+  }
+
 #undef XE_UI_VULKAN_LIMIT
 #undef XE_UI_VULKAN_ENUM_LIMIT
 #undef XE_UI_VULKAN_FEATURE
@@ -735,6 +788,12 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
   }
   if (properties.apiVersion >= VK_MAKE_API_VERSION(0, 1, 3, 0)) {
 #include "xenia/ui/vulkan/functions/device_1_3_khr_maintenance4.inc"
+    // #268. EDS1 promoted to core 1.3 - load by core name. Only loaded (and only
+    // failure-checked) when the device advertises 1.3, matching the
+    // extendedDynamicState derivation above.
+    if (device->properties_.extendedDynamicState) {
+#include "xenia/ui/vulkan/functions/device_ext_extended_dynamic_state.inc"
+    }
   }
 #undef XE_UI_VULKAN_FUNCTION_PROMOTED
 
@@ -755,6 +814,13 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
   if (properties.apiVersion < VK_MAKE_API_VERSION(0, 1, 3, 0)) {
     if (device->extensions_.ext_1_3_KHR_maintenance4) {
 #include "xenia/ui/vulkan/functions/device_1_3_khr_maintenance4.inc"
+    }
+    // #268. EDS1 via the extension - load by EXT name. extendedDynamicState is
+    // only true on the <1.3 path when the extension + feature are present, so
+    // gate on the same bool to avoid a spurious load failure aborting device
+    // creation on unsupported devices.
+    if (device->properties_.extendedDynamicState) {
+#include "xenia/ui/vulkan/functions/device_ext_extended_dynamic_state.inc"
     }
   }
   if (device->extensions_.ext_KHR_swapchain) {
