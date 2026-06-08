@@ -449,7 +449,15 @@ Id Builder::makeArrayType(Id element, Id sizeId, int stride)
     type = new Instruction(getUniqueId(), NoType, OpTypeArray);
     type->addIdOperand(element);
     type->addIdOperand(sizeId);
-    groupedTypes[OpTypeArray].push_back(type);
+    // Only register stride-less arrays for deduplication. A strided array
+    // (stride != 0, used as a member of an explicitly laid-out block and given
+    // an ArrayStride decoration by the caller) must never be returned to a
+    // later stride == 0 request, otherwise a Function/Private variable would
+    // inherit an illegal ArrayStride on its type. That is invalid SPIR-V
+    // (VUID-StandaloneSpirv-None-10684) which strict drivers reject by losing
+    // the device (VK_ERROR_DEVICE_LOST), e.g. Adreno 8xx and recent Turnip.
+    if (stride == 0)
+        groupedTypes[OpTypeArray].push_back(type);
     constantsTypesGlobals.push_back(std::unique_ptr<Instruction>(type));
     module.mapInstruction(type);
 
