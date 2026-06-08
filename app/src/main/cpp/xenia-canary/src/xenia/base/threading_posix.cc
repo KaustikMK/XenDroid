@@ -964,9 +964,23 @@ class PosixCondition<Thread> final : public PosixConditionBase {
   static void* ThreadStartRoutine(void* parameter);
   bool signaled() const override { return signaled_; }
   void post_execution() override {
-    if (thread_) {
-      pthread_join(thread_, nullptr);
+    // Wait() runs post_execution() once per waiter, and multiple guest threads
+    // can wait on the same thread handle, so this may be called more than once
+    // (and concurrently on different host threads). Clean up exactly once:
+    // snapshot and clear thread_ under the lock, then do the blocking work
+    // outside it. A later caller sees thread_ == 0 and no-ops -- avoiding
+    // pthread_join on an already-reaped (invalid) pthread_t and a double
+    // sem_destroy.
+    pthread_t to_join;
+    {
+      std::lock_guard<std::mutex> lock(state_mutex_);
+      to_join = thread_;
+      if (!to_join) {
+        return;
+      }
+      thread_ = 0;
     }
+    pthread_join(to_join, nullptr);
     sem_destroy(&suspend_sem_);
   }
   pthread_t thread_;
