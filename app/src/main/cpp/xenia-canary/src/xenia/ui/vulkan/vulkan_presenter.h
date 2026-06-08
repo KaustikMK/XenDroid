@@ -442,6 +442,15 @@ class VulkanPresenter final : public Presenter {
     bool swapchain_is_fifo = false;
     std::vector<VkImage> swapchain_images;
     std::vector<SwapchainFramebuffer> swapchain_framebuffers;
+    // One present (render-finished) semaphore per swapchain image, indexed by
+    // the acquired image index -- NOT per-submission. vkQueuePresentKHR keeps
+    // its wait semaphore in use until that image is re-acquired, so a
+    // submission-pooled semaphore (kSubmissionCount of them) can be re-signaled
+    // by a later paint while a present still references it whenever there are
+    // more images than submissions -> VUID-vkQueueSubmit-pSignalSemaphores-00067.
+    // Re-acquiring an image guarantees its present finished, so indexing by the
+    // acquired image makes reuse safe.
+    std::vector<VkSemaphore> swapchain_image_present_semaphores;
   };
 
   explicit VulkanPresenter(HostGpuLossCallback host_gpu_loss_callback,

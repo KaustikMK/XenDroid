@@ -793,6 +793,35 @@ VulkanPresenter::ConnectOrReconnectPaintingToSurfaceFromUIThread(
     return SurfacePaintConnectResult::kFailure;
   }
 
+  // Create one present (render-finished) semaphore per swapchain image. These
+  // are selected by the acquired image index at present time (not by the
+  // round-robin submission), so vkQueuePresentKHR never waits on a semaphore a
+  // later submission has already re-signaled
+  // (VUID-vkQueueSubmit-pSignalSemaphores-00067).
+  assert_true(paint_context_.swapchain_image_present_semaphores.empty());
+  paint_context_.swapchain_image_present_semaphores.reserve(
+      paint_context_.swapchain_images.size());
+  {
+    VkSemaphoreCreateInfo present_semaphore_create_info;
+    present_semaphore_create_info.sType =
+        VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+    present_semaphore_create_info.pNext = nullptr;
+    present_semaphore_create_info.flags = 0;
+    for (size_t i = 0; i < paint_context_.swapchain_images.size(); ++i) {
+      VkSemaphore present_semaphore;
+      if (dfn.vkCreateSemaphore(device, &present_semaphore_create_info, nullptr,
+                                &present_semaphore) != VK_SUCCESS) {
+        XELOGE(
+            "VulkanPresenter: Failed to create a swapchain image present "
+            "semaphore");
+        paint_context_.DestroySwapchainAndVulkanSurface();
+        return SurfacePaintConnectResult::kFailure;
+      }
+      paint_context_.swapchain_image_present_semaphores.push_back(
+          present_semaphore);
+    }
+  }
+
   // Create the image views and the framebuffers.
   assert_true(paint_context_.swapchain_framebuffers.empty());
   paint_context_.swapchain_framebuffers.reserve(
@@ -1281,6 +1310,12 @@ VkSwapchainKHR VulkanPresenter::PaintContext::PrepareForSwapchainRetirement() {
     dfn.vkDestroyImageView(device, framebuffer.image_view, nullptr);
   }
   swapchain_framebuffers.clear();
+  // All submissions have completed above and the swapchain is being retired, so
+  // the per-image present semaphores are no longer in use.
+  for (VkSemaphore present_semaphore : swapchain_image_present_semaphores) {
+    dfn.vkDestroySemaphore(device, present_semaphore, nullptr);
+  }
+  swapchain_image_present_semaphores.clear();
   swapchain_images.clear();
   swapchain_extent.width = 0;
   swapchain_extent.height = 0;
@@ -2029,7 +2064,12 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(
     paint_context_.ui_setup_command_buffer_current_index = SIZE_MAX;
   }
   command_buffers[command_buffer_count++] = draw_command_buffer;
-  VkSemaphore present_semaphore = paint_submission.present_semaphore();
+  // Per-image present semaphore (indexed by the acquired image), not the
+  // round-robin submission's -- the present engine holds this until the image is
+  // re-acquired, so reusing the submission's would re-signal a semaphore still
+  // in use (VUID-vkQueueSubmit-pSignalSemaphores-00067).
+  VkSemaphore present_semaphore =
+      paint_context_.swapchain_image_present_semaphores[swapchain_image_index];
   VkSubmitInfo submit_info;
   submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
   submit_info.pNext = nullptr;
