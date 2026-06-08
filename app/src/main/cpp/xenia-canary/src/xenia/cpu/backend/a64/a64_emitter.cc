@@ -54,7 +54,12 @@ static uint64_t UndefinedCallExtern(void* raw_context, uint64_t function_ptr) {
   return 0;
 }
 
-static constexpr size_t kMaxCodeSize = 1_MiB;
+// Max host code per translated guest function. 1 MiB was too small for large,
+// FP-heavy guest functions (each PowerPC FP op emits NaN-handling overhead),
+// which overflowed the Xbyak buffer -> uncaught Xbyak_aarch64::Error "code is
+// too big" -> terminate. The buffer is a single per-emitter allocation reused
+// (reset) across functions, so enlarging it is cheap.
+static constexpr size_t kMaxCodeSize = 4_MiB;
 
 // Register maps:
 // GPR allocatable registers: x22, x23, x24, x25, x26, x27, x28
