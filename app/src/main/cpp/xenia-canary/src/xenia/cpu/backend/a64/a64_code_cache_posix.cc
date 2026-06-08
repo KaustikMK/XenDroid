@@ -112,9 +112,15 @@ static size_t WriteULEB128(uint8_t* p, uint64_t value) {
 }
 
 static std::vector<uint8_t> encode_uleb128(uint64_t value) {
-  std::vector<uint8_t> result;
-  result.resize(WriteULEB128(result.data(), value));
-  return result;
+  // WriteULEB128 writes the bytes into the buffer while it computes the length,
+  // so it needs a valid buffer up front. The previous code passed
+  // result.data() of the still-empty vector (a null pointer), so WriteULEB128
+  // wrote through nullptr -> SIGSEGV at address 0 on the very first JIT code
+  // placement, hanging the emulator before any game could boot.
+  // A 64-bit value encodes to at most 10 ULEB128 bytes.
+  uint8_t tmp[10];
+  size_t count = WriteULEB128(tmp, value);
+  return std::vector<uint8_t>(tmp, tmp + count);
 }
 
 static size_t WriteSLEB128(uint8_t* p, int64_t value) {
@@ -618,8 +624,15 @@ void PosixA64CodeCache::InitializeUnwindEntry(
   *reinterpret_cast<uint32_t*>(p) = 0;
   p += 4;
 #endif
+#if !XE_PLATFORM_AX360E
+  // The AX360E path writes unwind data into its own 64 MiB eh_frame_table_
+  // bump buffer (p starts at eh_frame_table_, not at unwind_entry_address, and
+  // the per-function unwind_entry_address reservation is unused). So this
+  // bound compares unrelated pointers (heap vs. code-cache mmap) and does not
+  // apply to it.
   assert_true(static_cast<size_t>(p - unwind_entry_address) <=
               kMaxUnwindInfoSize);
+#endif
 }
 
 }  // namespace a64
