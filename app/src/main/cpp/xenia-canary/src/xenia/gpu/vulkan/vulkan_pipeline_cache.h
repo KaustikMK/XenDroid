@@ -11,7 +11,9 @@
 #define XENIA_GPU_VULKAN_VULKAN_PIPELINE_STATE_CACHE_H_
 
 #include <cstddef>
+#include <cstdint>
 #include <cstring>
+#include <filesystem>
 #include <functional>
 #include <memory>
 #include <unordered_map>
@@ -58,6 +60,17 @@ class VulkanPipelineCache {
 
   bool Initialize();
   void Shutdown();
+
+  // Seeds the persistent host VkPipelineCache from disk for this title and
+  // records where to write it back on shutdown. Safe to call after Initialize.
+  void InitializeShaderStorage(const std::filesystem::path& cache_root,
+                               uint32_t title_id);
+
+  // Persistent host pipeline cache handle (VK_NULL_HANDLE if unavailable);
+  // pass to vkCreate*Pipelines. Purely an optimization.
+  VkPipelineCache GetDevicePipelineCache() const {
+    return device_pipeline_cache_;
+  }
 
   VulkanShader* LoadShader(xenos::ShaderType shader_type,
                            const uint32_t* host_address, uint32_t dword_count);
@@ -278,6 +291,10 @@ class VulkanPipelineCache {
   bool EnsurePipelineCreated(
       const PipelineCreationArguments& creation_arguments);
 
+  // Builds cache_root/"pipeline_cache_vulkan"/"{title_id:08X}.vk_pso_cache".
+  static std::filesystem::path GetDevicePipelineCachePath(
+      const std::filesystem::path& cache_root, uint32_t title_id);
+
   VulkanCommandProcessor& command_processor_;
   const RegisterFile& register_file_;
   VulkanRenderTargetCache& render_target_cache_;
@@ -324,6 +341,14 @@ class VulkanPipelineCache {
   // Previously used pipeline, to avoid lookups if the state wasn't changed.
   const std::pair<const PipelineDescription, Pipeline>* last_pipeline_ =
       nullptr;
+
+  // Persistent host pipeline cache, seeded from disk in InitializeShaderStorage
+  // and written back in Shutdown. VK_NULL_HANDLE if creation failed (treated as
+  // "no cache" by Vulkan).
+  VkPipelineCache device_pipeline_cache_ = VK_NULL_HANDLE;
+  // Where to write the cache blob on shutdown; empty until
+  // InitializeShaderStorage.
+  std::filesystem::path device_pipeline_cache_path_;
 };
 
 }  // namespace vulkan

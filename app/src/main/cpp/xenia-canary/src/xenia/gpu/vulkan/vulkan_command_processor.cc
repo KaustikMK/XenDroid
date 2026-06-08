@@ -97,6 +97,14 @@ void VulkanCommandProcessor::ClearCaches() {
   cache_clear_requested_ = true;
 }
 
+void VulkanCommandProcessor::InitializeShaderStorage(
+    const std::filesystem::path& cache_root, uint32_t title_id, bool blocking) {
+  CommandProcessor::InitializeShaderStorage(cache_root, title_id, blocking);
+  if (pipeline_cache_) {
+    pipeline_cache_->InitializeShaderStorage(cache_root, title_id);
+  }
+}
+
 void VulkanCommandProcessor::TracePlaybackWroteMemory(uint32_t base_ptr,
                                                       uint32_t length) {
   shared_memory_->MemoryInvalidationCallback(base_ptr, length, true);
@@ -1014,12 +1022,13 @@ bool VulkanCommandProcessor::SetupContext() {
       swap_apply_gamma_pixel_shaders[kSwapApplyGammaPixelShader256EntryTable];
   VkResult swap_apply_gamma_pipeline_256_entry_table_create_result =
       dfn.vkCreateGraphicsPipelines(
-          device, VK_NULL_HANDLE, 1, &swap_apply_gamma_pipeline_create_info,
-          nullptr, &swap_apply_gamma_256_entry_table_pipeline_);
+          device, GetDevicePipelineCache(), 1,
+          &swap_apply_gamma_pipeline_create_info, nullptr,
+          &swap_apply_gamma_256_entry_table_pipeline_);
   swap_apply_gamma_pipeline_stages[1].module =
       swap_apply_gamma_pixel_shaders[kSwapApplyGammaPixelShaderPWL];
   VkResult swap_apply_gamma_pipeline_pwl_create_result =
-      dfn.vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1,
+      dfn.vkCreateGraphicsPipelines(device, GetDevicePipelineCache(), 1,
                                     &swap_apply_gamma_pipeline_create_info,
                                     nullptr, &swap_apply_gamma_pwl_pipeline_);
   dfn.vkDestroyShaderModule(device, swap_apply_gamma_pipeline_stages[0].module,

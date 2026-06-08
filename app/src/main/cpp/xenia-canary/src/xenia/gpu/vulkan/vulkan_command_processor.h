@@ -143,6 +143,9 @@ class VulkanCommandProcessor final : public CommandProcessor {
 
   void ClearCaches() override;
 
+  void InitializeShaderStorage(const std::filesystem::path& cache_root,
+                               uint32_t title_id, bool blocking) override;
+
   void TracePlaybackWroteMemory(uint32_t base_ptr, uint32_t length) override;
 
   void RestoreEdramSnapshot(const void* snapshot) override;
@@ -151,6 +154,13 @@ class VulkanCommandProcessor final : public CommandProcessor {
     return static_cast<const ui::vulkan::VulkanProvider*>(
                graphics_system_->provider())
         ->vulkan_device();
+  }
+
+  // Persistent host pipeline cache handle (VK_NULL_HANDLE if unavailable);
+  // pass to vkCreate*Pipelines. Purely an optimization.
+  VkPipelineCache GetDevicePipelineCache() const {
+    return pipeline_cache_ ? pipeline_cache_->GetDevicePipelineCache()
+                           : VK_NULL_HANDLE;
   }
 
   // Returns the deferred drawing command list for the currently open

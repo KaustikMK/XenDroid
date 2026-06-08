@@ -498,7 +498,8 @@ bool VulkanRenderTargetCache::Initialize(uint32_t shared_memory_binding_count) {
         draw_resolution_scaled ? resolve_copy_shader_code.scaled
                                : resolve_copy_shader_code.unscaled,
         draw_resolution_scaled ? resolve_copy_shader_code.scaled_size_bytes
-                               : resolve_copy_shader_code.unscaled_size_bytes);
+                               : resolve_copy_shader_code.unscaled_size_bytes,
+        nullptr, "main", command_processor_.GetDevicePipelineCache());
     if (resolve_copy_pipeline == VK_NULL_HANDLE) {
       XELOGE(
           "VulkanRenderTargetCache: Failed to create the resolve copy "
@@ -566,7 +567,8 @@ bool VulkanRenderTargetCache::Initialize(uint32_t shared_memory_binding_count) {
       VkPipeline host_depth_store_pipeline =
           ui::vulkan::util::CreateComputePipeline(
               vulkan_device, host_depth_store_pipeline_layout_,
-              host_depth_store_shader.first, host_depth_store_shader.second);
+              host_depth_store_shader.first, host_depth_store_shader.second,
+              nullptr, "main", command_processor_.GetDevicePipelineCache());
       if (host_depth_store_pipeline == VK_NULL_HANDLE) {
         XELOGE(
             "VulkanRenderTargetCache: Failed to create the {}-sample host "
@@ -757,7 +759,8 @@ bool VulkanRenderTargetCache::Initialize(uint32_t shared_memory_binding_count) {
         draw_resolution_scaled ? shaders::resolve_clear_32bpp_scaled_cs
                                : shaders::resolve_clear_32bpp_cs,
         draw_resolution_scaled ? sizeof(shaders::resolve_clear_32bpp_scaled_cs)
-                               : sizeof(shaders::resolve_clear_32bpp_cs));
+                               : sizeof(shaders::resolve_clear_32bpp_cs),
+        nullptr, "main", command_processor_.GetDevicePipelineCache());
     if (resolve_fsi_clear_32bpp_pipeline_ == VK_NULL_HANDLE) {
       XELOGE(
           "VulkanRenderTargetCache: Failed to create the 32bpp resolve EDRAM "
@@ -770,7 +773,8 @@ bool VulkanRenderTargetCache::Initialize(uint32_t shared_memory_binding_count) {
         draw_resolution_scaled ? shaders::resolve_clear_64bpp_scaled_cs
                                : shaders::resolve_clear_64bpp_cs,
         draw_resolution_scaled ? sizeof(shaders::resolve_clear_64bpp_scaled_cs)
-                               : sizeof(shaders::resolve_clear_64bpp_cs));
+                               : sizeof(shaders::resolve_clear_64bpp_cs),
+        nullptr, "main", command_processor_.GetDevicePipelineCache());
     if (resolve_fsi_clear_64bpp_pipeline_ == VK_NULL_HANDLE) {
       XELOGE(
           "VulkanRenderTargetCache: Failed to create the 64bpp resolve EDRAM "
@@ -4562,8 +4566,9 @@ VkPipeline const* VulkanRenderTargetCache::GetTransferPipelines(
   pipeline_create_info.subpass = 0;
   pipeline_create_info.basePipelineHandle = VK_NULL_HANDLE;
   pipeline_create_info.basePipelineIndex = -1;
-  if (dfn.vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1,
-                                    &pipeline_create_info, nullptr,
+  if (dfn.vkCreateGraphicsPipelines(device,
+                                    command_processor_.GetDevicePipelineCache(),
+                                    1, &pipeline_create_info, nullptr,
                                     &pipelines[0]) != VK_SUCCESS) {
     XELOGE(
         "VulkanRenderTargetCache: Failed to create the render target ownership "
@@ -4587,9 +4592,9 @@ VkPipeline const* VulkanRenderTargetCache::GetTransferPipelines(
               : i;
       sample_id_specialization_constant = host_sample_index;
       sample_mask = uint32_t(1) << host_sample_index;
-      if (dfn.vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1,
-                                        &pipeline_create_info, nullptr,
-                                        &pipelines[i]) != VK_SUCCESS) {
+      if (dfn.vkCreateGraphicsPipelines(
+              device, command_processor_.GetDevicePipelineCache(), 1,
+              &pipeline_create_info, nullptr, &pipelines[i]) != VK_SUCCESS) {
         XELOGE(
             "VulkanRenderTargetCache: Failed to create the render target "
             "ownership transfer pipeline for render pass 0x{:08X}, shader "
@@ -6050,7 +6055,8 @@ VkPipeline VulkanRenderTargetCache::GetDumpPipeline(DumpPipelineKey key) {
       command_processor_.GetVulkanDevice(),
       key.is_depth ? dump_pipeline_layout_depth_ : dump_pipeline_layout_color_,
       reinterpret_cast<const uint32_t*>(shader_code.data()),
-      sizeof(uint32_t) * shader_code.size());
+      sizeof(uint32_t) * shader_code.size(), nullptr, "main",
+      command_processor_.GetDevicePipelineCache());
   if (pipeline == VK_NULL_HANDLE) {
     XELOGE(
         "VulkanRenderTargetCache: Failed to create a render target dumping "

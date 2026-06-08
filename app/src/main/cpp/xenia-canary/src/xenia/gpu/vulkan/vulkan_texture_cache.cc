@@ -2398,7 +2398,8 @@ bool VulkanTextureCache::Initialize() {
     assert_not_null(current_load_shader_code.first);
     load_pipelines_[i] = ui::vulkan::util::CreateComputePipeline(
         vulkan_device, load_pipeline_layout_, current_load_shader_code.first,
-        current_load_shader_code.second);
+        current_load_shader_code.second, nullptr, "main",
+        command_processor_.GetDevicePipelineCache());
     if (load_pipelines_[i] == VK_NULL_HANDLE) {
       XELOGE(
           "VulkanTextureCache: Failed to create the texture loading pipeline "
@@ -2413,7 +2414,8 @@ bool VulkanTextureCache::Initialize() {
         load_pipelines_scaled_[i] = ui::vulkan::util::CreateComputePipeline(
             vulkan_device, load_pipeline_layout_,
             current_load_shader_code_scaled.first,
-            current_load_shader_code_scaled.second);
+            current_load_shader_code_scaled.second, nullptr, "main",
+            command_processor_.GetDevicePipelineCache());
         if (load_pipelines_scaled_[i] == VK_NULL_HANDLE) {
           XELOGE(
               "VulkanTextureCache: Failed to create the resolution-scaled "
