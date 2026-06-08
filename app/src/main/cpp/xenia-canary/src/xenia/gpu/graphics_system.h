@@ -97,6 +97,11 @@ class GraphicsSystem {
   void InitializeShaderStorage(const std::filesystem::path& cache_root,
                                uint32_t title_id, bool blocking);
 
+  // Best-effort flush of the device pipeline cache. Marshals to the GPU thread
+  // and waits up to timeout_ms (bounded so a stuck GPU thread cannot ANR the
+  // Android UI thread). Returns true if the flush completed within the timeout.
+  bool FlushPipelineCache(uint32_t timeout_ms = 1500);
+
   void RequestFrameTrace();
   void BeginTracing();
   void EndTracing();

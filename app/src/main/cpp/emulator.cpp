@@ -495,6 +495,10 @@ static void j_quit(JNIEnv* env,jobject self){
     ae::quit();
 }
 
+static void j_flush_gpu_caches(JNIEnv* env,jobject self){
+    ae::flush_gpu_caches();
+}
+
 int register_Emulator(JNIEnv* env){
     static const JNINativeMethod methods[] = {
             { "setup_game_path", "(Ljava/lang/String;)V", (void *) j_setup_game_path },
@@ -508,6 +512,7 @@ int register_Emulator(JNIEnv* env){
             { "pause", "()V", (void *) j_pause },
             { "resume", "()V", (void *) j_resume },
             { "change_surface", "(II)V", (void *) j_change_surface },
+            { "flush_gpu_caches", "()V", (void *) j_flush_gpu_caches },
     };
     return env->RegisterNatives(env->FindClass("aenu/emulator/Emulator"),methods, sizeof(methods)/sizeof(methods[0]));
 }

@@ -72,6 +72,16 @@ class VulkanPipelineCache {
     return device_pipeline_cache_;
   }
 
+  // Serializes device_pipeline_cache_ to device_pipeline_cache_path_ (atomic
+  // tmp+rename). MUST run on the command-processor (GPU) thread
+  // (vkGetPipelineCacheData is externally synchronized). No-op if cache/path
+  // unavailable, or if !force and nothing new since the last save. Returns true
+  // if a write happened.
+  bool SerializeDevicePipelineCache(bool force = false);
+  // Throttled per-frame entry: serializes at most once per ~20s and only when
+  // new pipelines exist. Call from the GPU thread at a frame boundary.
+  void SerializeDevicePipelineCacheIfDue();
+
   VulkanShader* LoadShader(xenos::ShaderType shader_type,
                            const uint32_t* host_address, uint32_t dword_count);
   // Analyze shader microcode on the translator thread.
@@ -349,6 +359,14 @@ class VulkanPipelineCache {
   // Where to write the cache blob on shutdown; empty until
   // InitializeShaderStorage.
   std::filesystem::path device_pipeline_cache_path_;
+
+  // Bumped on the GPU thread after each successful vkCreateGraphicsPipelines;
+  // compared to pipelines_serialized_count_ to detect new work. GPU-thread-only,
+  // so no atomics are needed.
+  uint64_t pipelines_created_count_ = 0;
+  uint64_t pipelines_serialized_count_ = 0;
+  // Host-uptime ms of the last successful serialize, for debounce throttling.
+  uint64_t last_serialize_ms_ = 0;
 };
 
 }  // namespace vulkan

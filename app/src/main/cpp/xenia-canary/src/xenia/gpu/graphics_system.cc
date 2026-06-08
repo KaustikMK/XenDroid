@@ -9,6 +9,11 @@
 
 #include "xenia/gpu/graphics_system.h"
 
+#include <chrono>
+#include <condition_variable>
+#include <memory>
+#include <mutex>
+
 #include "xenia/base/byte_stream.h"
 #include "xenia/base/clock.h"
 #include "xenia/base/logging.h"
@@ -387,6 +392,42 @@ void GraphicsSystem::InitializeShaderStorage(
       command_processor_->InitializeShaderStorage(cache_root, title_id, false);
     });
   }
+}
+
+bool GraphicsSystem::FlushPipelineCache(uint32_t timeout_ms) {
+  if (!command_processor_) {
+    return false;
+  }
+  // Always marshal the serialize onto the command-processor (GPU) thread:
+  // device_pipeline_cache_ host access (vkGetPipelineCacheData) must be
+  // externally synchronized with the pipeline creation that runs on that same
+  // thread. Do NOT serialize inline even when is_paused() -- Pause() flips
+  // paused_ true BEFORE the worker actually self-suspends, so an inline GetData
+  // here could race a still-running worker. If the worker is genuinely suspended
+  // the enqueued lambda simply won't run and the bounded wait below times out
+  // (no save, no harm) -- acceptable for a best-effort flush.
+  //
+  // Bounded wait via a heap-allocated condition_variable (Fence::Wait() has no
+  // timeout and would risk an ANR on a wedged GPU thread). The shared_ptr keeps
+  // the state alive even if wait_for times out and this caller returns, so the
+  // lambda completing later on the GPU thread is safe (no use-after-free).
+  struct FlushState {
+    std::mutex m;
+    std::condition_variable cv;
+    bool done = false;
+  };
+  auto state = std::make_shared<FlushState>();
+  command_processor_->CallInThread([this, state]() {
+    command_processor_->SerializeDevicePipelineCache();
+    {
+      std::lock_guard<std::mutex> lk(state->m);
+      state->done = true;
+    }
+    state->cv.notify_all();
+  });
+  std::unique_lock<std::mutex> lk(state->m);
+  return state->cv.wait_for(lk, std::chrono::milliseconds(timeout_ms),
+                            [&] { return state->done; });
 }
 
 void GraphicsSystem::RequestFrameTrace() {

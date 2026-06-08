@@ -189,23 +189,22 @@ public class EmulatorActivity extends Activity implements SurfaceHolder.Callback
         ab.create().show();
     }
 
-    /*@Override
+    @Override
     protected void onPause()
     {
         super.onPause();
-        if(started)
-            if(Emulator.get.is_running())
-                Emulator.get.pause();;
+        // Best-effort: flush the persistent GPU pipeline cache to disk so it
+        // survives a subsequent task-swipe SIGKILL / System.exit(0). Does NOT
+        // pause emulation. The native call marshals to the GPU thread and blocks
+        // at most ~1500 ms (returns immediately if no cache / not dirty).
+        try {
+            if (started && Emulator.get != null) {
+                Emulator.get.flush_gpu_caches();
+            }
+        } catch (Throwable t) {
+            // best-effort; never let onPause throw
+        }
     }
-
-    @Override
-    protected void onResume()
-    {
-        super.onResume();
-        if(started)
-            if(Emulator.get.is_paused())
-                Emulator.get.resume();
-    }*/
 
     @Override
     protected void onDestroy()

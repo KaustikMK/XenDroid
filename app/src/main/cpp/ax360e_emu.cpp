@@ -714,6 +714,14 @@ namespace ae{
     bool is_running(){
         return !g_windowed_app_ref->emu->is_paused();
     }
+    void flush_gpu_caches(){
+        if(!g_windowed_app_ref) return;
+        xe::Emulator* e = g_windowed_app_ref->emu.get();
+        if(!e) return;
+        xe::gpu::GraphicsSystem* gs = e->graphics_system();
+        if(!gs) return;
+        gs->FlushPipelineCache(/*timeout_ms=*/1500);
+    }
     bool is_paused(){
         return g_windowed_app_ref->emu->is_paused();
     }

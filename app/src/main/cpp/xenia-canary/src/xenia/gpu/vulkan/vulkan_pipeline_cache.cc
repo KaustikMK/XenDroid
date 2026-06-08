@@ -17,6 +17,7 @@
 
 #include "third_party/fmt/include/fmt/format.h"
 #include "xenia/base/assert.h"
+#include "xenia/base/clock.h"
 #include "xenia/base/filesystem.h"
 #include "xenia/base/logging.h"
 #include "xenia/base/math.h"
@@ -117,36 +118,7 @@ void VulkanPipelineCache::Shutdown() {
 
   // Serialize the persistent host pipeline cache to disk, then destroy it.
   if (device_pipeline_cache_ != VK_NULL_HANDLE) {
-    if (!device_pipeline_cache_path_.empty()) {
-      size_t data_size = 0;
-      if (dfn.vkGetPipelineCacheData(device, device_pipeline_cache_, &data_size,
-                                     nullptr) == VK_SUCCESS &&
-          data_size > 0) {
-        std::vector<uint8_t> data(data_size);
-        if (dfn.vkGetPipelineCacheData(device, device_pipeline_cache_,
-                                       &data_size, data.data()) == VK_SUCCESS) {
-          data.resize(data_size);
-          std::error_code ec;
-          std::filesystem::create_directories(
-              device_pipeline_cache_path_.parent_path(), ec);
-          std::filesystem::path tmp_path = device_pipeline_cache_path_;
-          tmp_path += ".tmp";
-          FILE* out = xe::filesystem::OpenFile(tmp_path, "wb");
-          if (out) {
-            bool ok = fwrite(data.data(), 1, data.size(), out) == data.size();
-            fclose(out);
-            if (ok) {
-              std::filesystem::rename(tmp_path, device_pipeline_cache_path_, ec);
-              if (ec) {
-                std::filesystem::remove(tmp_path, ec);
-              }
-            } else {
-              std::filesystem::remove(tmp_path, ec);
-            }
-          }
-        }
-      }
-    }
+    SerializeDevicePipelineCache(/*force=*/true);
     dfn.vkDestroyPipelineCache(device, device_pipeline_cache_, nullptr);
     device_pipeline_cache_ = VK_NULL_HANDLE;
   }
@@ -180,6 +152,73 @@ void VulkanPipelineCache::Shutdown() {
 
   // Shut down shader translation.
   shader_translator_.reset();
+}
+
+bool VulkanPipelineCache::SerializeDevicePipelineCache(bool force) {
+  if (device_pipeline_cache_ == VK_NULL_HANDLE ||
+      device_pipeline_cache_path_.empty()) {
+    return false;
+  }
+  if (!force && pipelines_created_count_ == pipelines_serialized_count_) {
+    return false;
+  }
+
+  const ui::vulkan::VulkanDevice* const vulkan_device =
+      command_processor_.GetVulkanDevice();
+  const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
+  const VkDevice device = vulkan_device->device();
+
+  size_t data_size = 0;
+  if (dfn.vkGetPipelineCacheData(device, device_pipeline_cache_, &data_size,
+                                 nullptr) == VK_SUCCESS &&
+      data_size > 0) {
+    std::vector<uint8_t> data(data_size);
+    if (dfn.vkGetPipelineCacheData(device, device_pipeline_cache_, &data_size,
+                                   data.data()) == VK_SUCCESS) {
+      data.resize(data_size);
+      std::error_code ec;
+      std::filesystem::create_directories(
+          device_pipeline_cache_path_.parent_path(), ec);
+      std::filesystem::path tmp_path = device_pipeline_cache_path_;
+      tmp_path += ".tmp";
+      FILE* out = xe::filesystem::OpenFile(tmp_path, "wb");
+      if (out) {
+        bool ok = fwrite(data.data(), 1, data.size(), out) == data.size();
+        fclose(out);
+        if (ok) {
+          std::filesystem::rename(tmp_path, device_pipeline_cache_path_, ec);
+          if (ec) {
+            std::filesystem::remove(tmp_path, ec);
+          } else {
+            // Successful atomic write: reset dirty tracking and the timer.
+            pipelines_serialized_count_ = pipelines_created_count_;
+            last_serialize_ms_ = xe::Clock::QueryHostUptimeMillis();
+            return true;
+          }
+        } else {
+          std::filesystem::remove(tmp_path, ec);
+        }
+      }
+    }
+  }
+  return false;
+}
+
+void VulkanPipelineCache::SerializeDevicePipelineCacheIfDue() {
+  static constexpr uint64_t kSaveIntervalMs = 20000;
+  if (device_pipeline_cache_ == VK_NULL_HANDLE ||
+      device_pipeline_cache_path_.empty()) {
+    return;
+  }
+  if (pipelines_created_count_ == pipelines_serialized_count_) {
+    // Nothing new since the last successful save.
+    return;
+  }
+  uint64_t now = xe::Clock::QueryHostUptimeMillis();
+  if (last_serialize_ms_ != 0 && now - last_serialize_ms_ < kSaveIntervalMs) {
+    return;
+  }
+  SerializeDevicePipelineCache(/*force=*/false);
 }
 
 std::filesystem::path VulkanPipelineCache::GetDevicePipelineCachePath(
@@ -2380,6 +2419,9 @@ bool VulkanPipelineCache::EnsurePipelineCreated(
     return false;
   }
   creation_arguments.pipeline->second.pipeline = pipeline;
+  // Mark the persistent host cache dirty (GPU-thread-only counter; this is the
+  // single point a VkPipeline is first stored).
+  ++pipelines_created_count_;
   return true;
 }
 

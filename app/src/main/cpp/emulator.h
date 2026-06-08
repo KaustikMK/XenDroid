@@ -27,5 +27,6 @@ namespace ae{
     extern void pause();
     extern void resume();
     extern void quit();
+    extern void flush_gpu_caches();
 }
 #endif //APS3E_EMULATOR_H

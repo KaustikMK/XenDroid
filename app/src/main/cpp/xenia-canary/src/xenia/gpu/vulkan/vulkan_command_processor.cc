@@ -106,6 +106,15 @@ void VulkanCommandProcessor::InitializeShaderStorage(
   }
 }
 
+void VulkanCommandProcessor::SerializeDevicePipelineCache() {
+  // Caller MUST be on the command-processor (GPU) thread (Vulkan external sync).
+  // force=true so an explicit flush always writes the latest blob even if <20s
+  // since the last periodic save.
+  if (pipeline_cache_) {
+    pipeline_cache_->SerializeDevicePipelineCache(/*force=*/true);
+  }
+}
+
 void VulkanCommandProcessor::TracePlaybackWroteMemory(uint32_t base_ptr,
                                                       uint32_t length) {
   shared_memory_->MemoryInvalidationCallback(base_ptr, length, true);
@@ -3622,6 +3631,14 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
     // Submission already closed now, so minus 1.
     closed_frame_submissions_[(frame_current_++) % kMaxFramesInFlight] =
         GetCurrentSubmission() - 1;
+
+    // Canonical once-per-frame GPU-thread boundary: persist the host pipeline
+    // cache to disk if dirty and enough time has elapsed (debounced). Runs on
+    // the command-processor thread, satisfying Vulkan external synchronization
+    // for vkGetPipelineCacheData.
+    if (pipeline_cache_) {
+      pipeline_cache_->SerializeDevicePipelineCacheIfDue();
+    }
 
     if (cache_clear_requested_ && AwaitAllQueueOperationsCompletion()) {
       cache_clear_requested_ = false;

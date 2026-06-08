@@ -163,6 +163,12 @@ class VulkanCommandProcessor final : public CommandProcessor {
                            : VK_NULL_HANDLE;
   }
 
+  // Forces serialization of the device pipeline cache to disk. Caller MUST be on
+  // the command-processor (GPU) thread (Vulkan external sync). Reached via
+  // GraphicsSystem::FlushPipelineCache ->
+  // CommandProcessor::SerializeDevicePipelineCache marshaling.
+  void SerializeDevicePipelineCache() override;
+
   // Returns the deferred drawing command list for the currently open
   // submission.
   DeferredCommandBuffer& deferred_command_buffer() {

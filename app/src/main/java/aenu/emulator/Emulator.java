@@ -119,4 +119,6 @@ public class Emulator {
 
     public native void change_surface(int w,int h);
 
+    public native void flush_gpu_caches();
+
 }

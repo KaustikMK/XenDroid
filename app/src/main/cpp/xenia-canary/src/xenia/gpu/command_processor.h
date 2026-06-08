@@ -124,6 +124,11 @@ class CommandProcessor {
   virtual void InitializeShaderStorage(const std::filesystem::path& cache_root,
                                        uint32_t title_id, bool blocking);
 
+  // Serializes any persistent host pipeline cache to disk. Default no-op (null
+  // backend). MUST be invoked on the worker thread (use CallInThread from other
+  // threads).
+  virtual void SerializeDevicePipelineCache() {}
+
   virtual void RequestFrameTrace(const std::filesystem::path& root_path);
   virtual void BeginTracing(const std::filesystem::path& root_path);
   virtual void EndTracing();
