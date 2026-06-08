@@ -102,6 +102,23 @@ void DeferredCommandBuffer::Execute(VkCommandBuffer command_buffer) {
                               args.pipeline);
       } break;
 
+      case Command::kVkBindPipelineDeferred: {
+        // The pipeline cache blocks at the submission boundary
+        // (AwaitCreationCompletion) before this stream is replayed, so the slot
+        // pointer resolves to a fully-created handle by now. It can still be
+        // VK_NULL_HANDLE only if asynchronous creation FAILED for that pipeline
+        // (e.g. OOM); binding a null pipeline is undefined behavior, so skip the
+        // bind in that case (the draw will be rendered with whatever pipeline
+        // was previously bound - a degraded but crash-free outcome, matching the
+        // synchronous path which skips the draw on a creation failure).
+        auto& args =
+            *reinterpret_cast<const ArgsVkBindPipelineDeferred*>(stream);
+        if (*args.pipeline != VK_NULL_HANDLE) {
+          dfn.vkCmdBindPipeline(command_buffer, args.pipeline_bind_point,
+                                *args.pipeline);
+        }
+      } break;
+
       case Command::kVkBindVertexBuffers: {
         auto& args = *reinterpret_cast<const ArgsVkBindVertexBuffers*>(stream);
         size_t offset_bytes =

@@ -2169,7 +2169,7 @@ void VulkanCommandProcessor::BindExternalGraphicsPipeline(
   deferred_command_buffer_.CmdVkBindPipeline(VK_PIPELINE_BIND_POINT_GRAPHICS,
                                              pipeline);
   current_external_graphics_pipeline_ = pipeline;
-  current_guest_graphics_pipeline_ = VK_NULL_HANDLE;
+  current_guest_graphics_pipeline_ = nullptr;
   current_guest_graphics_pipeline_layout_ = VK_NULL_HANDLE;
 }
 
@@ -2448,7 +2448,10 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
   // Create the pipeline (for this, need the render pass from the render target
   // cache), translating the shaders - doing this now to obtain the used
   // textures.
-  VkPipeline pipeline;
+  // Stable pointer to the pipeline cache's VkPipeline slot (the handle itself
+  // may still be VK_NULL_HANDLE if creation is deferred to a worker thread; the
+  // submission-boundary block resolves it before the command buffer replays).
+  const VkPipeline* pipeline;
   const VulkanPipelineCache::PipelineLayoutProvider* pipeline_layout_provider;
   if (!pipeline_cache_->ConfigurePipeline(
           vertex_shader_translation, pixel_shader_translation,
@@ -2472,9 +2475,12 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
   // Update the graphics pipeline, and if the new graphics pipeline has a
   // different layout, invalidate incompatible descriptor sets before updating
   // current_guest_graphics_pipeline_layout_.
+  // Compare slot POINTERS (not handle values): with deferred creation the
+  // handle can be VK_NULL_HANDLE at record time, so a value compare would
+  // mis-deduplicate. Record a deferred bind that resolves the handle at replay.
   if (current_guest_graphics_pipeline_ != pipeline) {
-    deferred_command_buffer_.CmdVkBindPipeline(VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                               pipeline);
+    deferred_command_buffer_.CmdVkBindPipelineDeferred(
+        VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
     current_guest_graphics_pipeline_ = pipeline;
     current_external_graphics_pipeline_ = VK_NULL_HANDLE;
   }
@@ -3283,7 +3289,7 @@ bool VulkanCommandProcessor::BeginSubmission(bool is_guest_command) {
     dynamic_stencil_op_back_update_needed_ = true;
     current_render_pass_ = VK_NULL_HANDLE;
     current_framebuffer_ = nullptr;
-    current_guest_graphics_pipeline_ = VK_NULL_HANDLE;
+    current_guest_graphics_pipeline_ = nullptr;
     current_external_graphics_pipeline_ = VK_NULL_HANDLE;
     current_external_compute_pipeline_ = VK_NULL_HANDLE;
     current_guest_graphics_pipeline_layout_ = nullptr;
@@ -3560,6 +3566,12 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
       XELOGE("Failed to begin a Vulkan command buffer");
       return false;
     }
+    // Submission boundary: block until every pipeline referenced by this
+    // command buffer has finished asynchronous creation, so the deferred
+    // pipeline-bind pointers in the stream all resolve to non-null handles
+    // before replay (no dropped draws, no ubershader fallback). No-op when
+    // asynchronous creation is disabled (vulkan_pipeline_creation_threads == 0).
+    pipeline_cache_->AwaitCreationCompletion();
     deferred_command_buffer_.Execute(command_buffer.buffer);
     if (dfn.vkEndCommandBuffer(command_buffer.buffer) != VK_SUCCESS) {
       XELOGE("Failed to end a Vulkan command buffer");

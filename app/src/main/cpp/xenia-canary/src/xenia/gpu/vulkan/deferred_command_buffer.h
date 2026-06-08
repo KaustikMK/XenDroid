@@ -109,6 +109,21 @@ class DeferredCommandBuffer {
     args.pipeline = pipeline;
   }
 
+  // Deferred-creation variant: records a STABLE pointer to a VkPipeline slot
+  // (e.g. a pipelines_ map node's .pipeline field) instead of a handle value.
+  // The handle is dereferenced at Execute() time, which is safe because the
+  // pipeline cache blocks at the submission boundary (AwaitCreationCompletion)
+  // until every referenced slot is non-null before the stream is replayed. Used
+  // only for guest graphics pipelines whose creation may be asynchronous; the
+  // external / compute bind paths keep using the by-value CmdVkBindPipeline.
+  void CmdVkBindPipelineDeferred(VkPipelineBindPoint pipeline_bind_point,
+                                 const VkPipeline* pipeline) {
+    auto& args = *reinterpret_cast<ArgsVkBindPipelineDeferred*>(WriteCommand(
+        Command::kVkBindPipelineDeferred, sizeof(ArgsVkBindPipelineDeferred)));
+    args.pipeline_bind_point = pipeline_bind_point;
+    args.pipeline = pipeline;
+  }
+
   void CmdVkBindVertexBuffers(uint32_t first_binding, uint32_t binding_count,
                               const VkBuffer* buffers,
                               const VkDeviceSize* offsets) {
@@ -414,6 +429,7 @@ class DeferredCommandBuffer {
     kVkBindDescriptorSets,
     kVkBindIndexBuffer,
     kVkBindPipeline,
+    kVkBindPipelineDeferred,
     kVkBindVertexBuffers,
     kVkClearAttachments,
     kVkClearColorImage,
@@ -478,6 +494,12 @@ class DeferredCommandBuffer {
   struct ArgsVkBindPipeline {
     VkPipelineBindPoint pipeline_bind_point;
     VkPipeline pipeline;
+  };
+
+  struct ArgsVkBindPipelineDeferred {
+    VkPipelineBindPoint pipeline_bind_point;
+    // Stable pointer to a VkPipeline slot; dereferenced at Execute() time.
+    const VkPipeline* pipeline;
   };
 
   struct ArgsVkBindVertexBuffers {

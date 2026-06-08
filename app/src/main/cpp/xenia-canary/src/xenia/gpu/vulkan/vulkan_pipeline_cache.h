@@ -10,17 +10,22 @@
 #ifndef XENIA_GPU_VULKAN_VULKAN_PIPELINE_STATE_CACHE_H_
 #define XENIA_GPU_VULKAN_VULKAN_PIPELINE_STATE_CACHE_H_
 
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <deque>
 #include <filesystem>
 #include <functional>
 #include <memory>
 #include <unordered_map>
 #include <utility>
+#include <vector>
 
 #include "xenia/base/hash.h"
+#include "xenia/base/mutex.h"
 #include "xenia/base/platform.h"
+#include "xenia/base/threading.h"
 #include "xenia/base/xxhash.h"
 #include "xenia/gpu/primitive_processor.h"
 #include "xenia/gpu/register_file.h"
@@ -101,7 +106,13 @@ class VulkanPipelineCache {
 
   bool EnsureShadersTranslated(VulkanShader::VulkanTranslation* vertex_shader,
                                VulkanShader::VulkanTranslation* pixel_shader);
-  // TODO(Triang3l): Return a deferred creation handle.
+  // Deferred-creation aware. pipeline_out receives a STABLE pointer into the
+  // pipelines_ node's VkPipeline slot (unordered_map nodes are address-stable),
+  // NOT a handle value. When asynchronous creation threads are active the slot
+  // may still be VK_NULL_HANDLE on return; it is guaranteed non-null after
+  // AwaitCreationCompletion() runs at the submission boundary. With
+  // vulkan_pipeline_creation_threads == 0 (the default) creation runs inline and
+  // the slot is already filled on return.
   bool ConfigurePipeline(
       VulkanShader::VulkanTranslation* vertex_shader,
       VulkanShader::VulkanTranslation* pixel_shader,
@@ -109,8 +120,16 @@ class VulkanPipelineCache {
       reg::RB_DEPTHCONTROL normalized_depth_control,
       uint32_t normalized_color_mask,
       VulkanRenderTargetCache::RenderPassKey render_pass_key,
-      VkPipeline& pipeline_out,
+      const VkPipeline*& pipeline_out,
       const PipelineLayoutProvider*& pipeline_layout_out);
+
+  // Submission-boundary block (ported from D3D12 PipelineCache::EndSubmission).
+  // Must be called on the command-processor (GPU) thread immediately before
+  // replaying the deferred command buffer. Drains any remaining queued
+  // pipelines on this thread, then waits until no creation thread is busy, so
+  // every deferred pipeline pointer in the stream resolves to a non-null handle.
+  // No-op when no creation threads are active.
+  void AwaitCreationCompletion();
 
  private:
   enum class PipelineGeometryShader : uint32_t {
@@ -297,9 +316,21 @@ class VulkanPipelineCache {
 
   // Can be called from creation threads - all needed data must be fully set up
   // at the point of the call: shaders must be translated, pipeline layout and
-  // render pass objects must be available.
+  // render pass objects must be available. The pipeline is compiled into
+  // target_cache: device_pipeline_cache_ for the synchronous / GPU-thread drain
+  // path, or a per-thread VkPipelineCache for asynchronous creation threads (the
+  // result is merged into device_pipeline_cache_ under
+  // device_pipeline_cache_mutex_).
   bool EnsurePipelineCreated(
-      const PipelineCreationArguments& creation_arguments);
+      const PipelineCreationArguments& creation_arguments,
+      VkPipelineCache target_cache);
+
+  // Pipeline creation threads (ported from D3D12 PipelineCache). Each worker
+  // owns a private VkPipelineCache and merges into device_pipeline_cache_.
+  void CreationThread(size_t thread_index);
+  // Drains the creation queue on the calling (GPU) thread, compiling directly
+  // into device_pipeline_cache_.
+  void CreateQueuedPipelinesOnProcessorThread();
 
   // Builds cache_root/"pipeline_cache_vulkan"/"{title_id:08X}.vk_pso_cache".
   static std::filesystem::path GetDevicePipelineCachePath(
@@ -345,6 +376,13 @@ class VulkanPipelineCache {
   // shader interlock when no Xenos pixel shader provided.
   VkShaderModule depth_only_fragment_shader_ = VK_NULL_HANDLE;
 
+  // LIFETIME: std::unordered_map never relocates its nodes on insert/rehash
+  // ([unord.req]), so &node.second.pipeline is a stable pointer for the node's
+  // lifetime. The deferred command buffer records that stable pointer and
+  // dereferences it at replay; this is only safe because the cache never erases
+  // entries while running (it is cleared only in Shutdown(), AFTER all creation
+  // threads have been joined). Do NOT add pipelines_.erase() or switch to a
+  // relocating container without revisiting the deferred-bind indirection.
   std::unordered_map<PipelineDescription, Pipeline, PipelineDescription::Hasher>
       pipelines_;
 
@@ -356,17 +394,68 @@ class VulkanPipelineCache {
   // and written back in Shutdown. VK_NULL_HANDLE if creation failed (treated as
   // "no cache" by Vulkan).
   VkPipelineCache device_pipeline_cache_ = VK_NULL_HANDLE;
+  // Guards ALL host access to device_pipeline_cache_ that Vulkan requires to be
+  // externally synchronized: vkGetPipelineCacheData (serialize, GPU thread),
+  // vkMergePipelineCaches (seed at startup on the GPU thread; per-thread merges
+  // from creation threads), and the GPU-thread drain create. Also guards
+  // pipelines_created_count_ writes/reads (now multi-writer: creation threads
+  // bump it under this lock; the GPU thread reads it under this lock at
+  // serialize time). With vulkan_pipeline_creation_threads == 0 this mutex is
+  // only ever taken on the GPU thread and is uncontended.
+  xe_mutex device_pipeline_cache_mutex_;
   // Where to write the cache blob on shutdown; empty until
   // InitializeShaderStorage.
   std::filesystem::path device_pipeline_cache_path_;
 
-  // Bumped on the GPU thread after each successful vkCreateGraphicsPipelines;
-  // compared to pipelines_serialized_count_ to detect new work. GPU-thread-only,
-  // so no atomics are needed.
+  // Bumped after each successful vkCreateGraphicsPipelines, under
+  // device_pipeline_cache_mutex_ (multi-writer: creation threads). Compared to
+  // pipelines_serialized_count_ to detect new work; read at serialize time on
+  // the GPU thread under the same mutex.
   uint64_t pipelines_created_count_ = 0;
   uint64_t pipelines_serialized_count_ = 0;
   // Host-uptime ms of the last successful serialize, for debounce throttling.
   uint64_t last_serialize_ms_ = 0;
+
+  // Pipeline creation threads (ported 1:1 from d3d12/pipeline_cache.h:403-426).
+  // STRICT LOCK ORDERING: a creation thread NEVER holds creation_request_lock_
+  // and device_pipeline_cache_mutex_ at the same time. It releases
+  // creation_request_lock_ after dequeue (++busy under that lock), runs
+  // EnsurePipelineCreated (which takes device_pipeline_cache_mutex_ only for the
+  // merge), then re-takes creation_request_lock_ for --busy.
+  // AwaitCreationCompletion holds only creation_request_lock_.
+  xe_mutex creation_request_lock_;
+  std::condition_variable_any creation_request_cond_;
+  // Protected with creation_request_lock_, notify_one creation_request_cond_
+  // when pushed. Stores stable node pointers; the per-node creation arguments
+  // are owned separately in creation_queue_arguments_ (Vulkan's args hold raw
+  // pointers, unlike D3D12 whose args are by-value in the Pipeline).
+  std::deque<std::pair<const PipelineDescription, Pipeline>*> creation_queue_;
+  // Owned creation arguments, 1:1 with creation_queue_ (same index order). The
+  // referenced shaders / geometry shader / render pass are stable for the cache
+  // lifetime; only this containing struct needs owned storage, because the
+  // ConfigurePipeline stack local that produced it is gone by the time a worker
+  // runs.
+  std::deque<PipelineCreationArguments> creation_queue_arguments_;
+  // Number of threads currently creating a pipeline - incremented when a
+  // pipeline is dequeued (the completion event can't be triggered before this
+  // is zero). Protected with creation_request_lock_.
+  size_t creation_threads_busy_ = 0;
+  // Manual-reset event set when the last queued pipeline is created and there
+  // are no more pipelines to create.
+  std::unique_ptr<xe::threading::Event> creation_completion_event_;
+  // Whether setting the event on completion is queued. Protected with
+  // creation_request_lock_, notify_one creation_request_cond_ when set.
+  bool creation_completion_set_event_ = false;
+  // Creation threads with this index or above need to shut down as soon as
+  // possible. Protected with creation_request_lock_, notify_all
+  // creation_request_cond_ when set.
+  size_t creation_threads_shutdown_from_ = SIZE_MAX;
+  std::vector<std::unique_ptr<xe::threading::Thread>> creation_threads_;
+  // Per-thread VkPipelineCache (1:1 with creation_threads_), lazily created on a
+  // worker's first compile, VK_NULL_HANDLE until then. Touched only by the
+  // owning worker and by Shutdown() after the worker is joined - no other
+  // synchronization needed.
+  std::vector<VkPipelineCache> creation_thread_caches_;
 };
 
 }  // namespace vulkan

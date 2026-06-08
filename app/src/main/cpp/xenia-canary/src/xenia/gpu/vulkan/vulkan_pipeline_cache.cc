@@ -35,6 +35,16 @@
 #include "xenia/gpu/xenos.h"
 #include "xenia/ui/vulkan/vulkan_util.h"
 
+DEFINE_int32(
+    vulkan_pipeline_creation_threads, 0,
+    "Number of threads used for asynchronous graphics pipeline creation in the "
+    "Vulkan backend. 0 = disabled / synchronous (the proven path, default for "
+    "a safe landing - byte-identical to the original synchronous renderer); -1 "
+    "= calculate automatically (75% of logical CPU cores); a positive number "
+    "specifies the thread count explicitly (clamped to the number of logical "
+    "CPU cores).",
+    "Vulkan");
+
 namespace xe {
 namespace gpu {
 namespace vulkan {
@@ -107,6 +117,40 @@ bool VulkanPipelineCache::Initialize() {
     }
   }
 
+  // Initialize the creation-thread synchronization data unconditionally (the
+  // event is cheap and harmless even when no threads run). Ported from
+  // d3d12/pipeline_cache.cc Initialize().
+  creation_threads_busy_ = 0;
+  creation_completion_event_ =
+      xe::threading::Event::CreateManualResetEvent(true);
+  assert_not_null(creation_completion_event_);
+  creation_completion_set_event_ = false;
+  creation_threads_shutdown_from_ = SIZE_MAX;
+  if (cvars::vulkan_pipeline_creation_threads != 0) {
+    uint32_t logical_processor_count = xe::threading::logical_processor_count();
+    if (!logical_processor_count) {
+      // Pick some reasonable amount if couldn't determine the number of cores.
+      logical_processor_count = 6;
+    }
+    size_t creation_thread_count;
+    if (cvars::vulkan_pipeline_creation_threads < 0) {
+      creation_thread_count =
+          std::max(logical_processor_count * 3 / 4, uint32_t(1));
+    } else {
+      creation_thread_count =
+          std::min(uint32_t(cvars::vulkan_pipeline_creation_threads),
+                   logical_processor_count);
+    }
+    creation_thread_caches_.resize(creation_thread_count, VK_NULL_HANDLE);
+    for (size_t i = 0; i < creation_thread_count; ++i) {
+      std::unique_ptr<xe::threading::Thread> creation_thread =
+          xe::threading::Thread::Create({}, [this, i]() { CreationThread(i); });
+      assert_not_null(creation_thread);
+      creation_thread->set_name("Vulkan Pipelines");
+      creation_threads_.push_back(std::move(creation_thread));
+    }
+  }
+
   return true;
 }
 
@@ -115,6 +159,36 @@ void VulkanPipelineCache::Shutdown() {
       command_processor_.GetVulkanDevice();
   const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
   const VkDevice device = vulkan_device->device();
+
+  // Shut down all creation threads FIRST, before touching any shared object
+  // (the device pipeline cache, the pipelines, the per-thread caches), because
+  // workers merge into device_pipeline_cache_ and write pipelines_ nodes. This
+  // matches d3d12/pipeline_cache.cc:175-189 ordering. AwaitCreationCompletion
+  // is only ever called from the GPU thread's EndSubmission, and Shutdown runs
+  // on the same (GPU) thread during single-threaded teardown, so no submission
+  // can be in flight here.
+  if (!creation_threads_.empty()) {
+    {
+      std::lock_guard<xe_mutex> lock(creation_request_lock_);
+      creation_threads_shutdown_from_ = 0;
+    }
+    creation_request_cond_.notify_all();
+    for (size_t i = 0; i < creation_threads_.size(); ++i) {
+      xe::threading::Wait(creation_threads_[i].get(), false);
+    }
+    creation_threads_.clear();
+  }
+  // Destroy the per-thread caches now that their owning workers are joined.
+  for (VkPipelineCache& thread_cache : creation_thread_caches_) {
+    if (thread_cache != VK_NULL_HANDLE) {
+      dfn.vkDestroyPipelineCache(device, thread_cache, nullptr);
+      thread_cache = VK_NULL_HANDLE;
+    }
+  }
+  creation_thread_caches_.clear();
+  // The completion event may still be referenced by a worker until the worker
+  // returns; reset it only now that all workers are joined.
+  creation_completion_event_.reset();
 
   // Serialize the persistent host pipeline cache to disk, then destroy it.
   if (device_pipeline_cache_ != VK_NULL_HANDLE) {
@@ -159,45 +233,63 @@ bool VulkanPipelineCache::SerializeDevicePipelineCache(bool force) {
       device_pipeline_cache_path_.empty()) {
     return false;
   }
-  if (!force && pipelines_created_count_ == pipelines_serialized_count_) {
-    return false;
-  }
 
   const ui::vulkan::VulkanDevice* const vulkan_device =
       command_processor_.GetVulkanDevice();
   const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
   const VkDevice device = vulkan_device->device();
 
-  size_t data_size = 0;
-  if (dfn.vkGetPipelineCacheData(device, device_pipeline_cache_, &data_size,
-                                 nullptr) == VK_SUCCESS &&
-      data_size > 0) {
-    std::vector<uint8_t> data(data_size);
+  // Read the cache blob and snapshot the created-count under
+  // device_pipeline_cache_mutex_, so vkGetPipelineCacheData never races a
+  // creation thread's vkMergePipelineCaches and the snapshot reflects exactly
+  // what is in the blob we are about to write. The disk I/O is done outside the
+  // lock (rare - throttled - so a worker merge isn't blocked on file writes).
+  std::vector<uint8_t> data;
+  uint64_t created_count_snapshot;
+  {
+    std::lock_guard<xe_mutex> cache_lock(device_pipeline_cache_mutex_);
+    if (!force && pipelines_created_count_ == pipelines_serialized_count_) {
+      return false;
+    }
+    created_count_snapshot = pipelines_created_count_;
+    size_t data_size = 0;
     if (dfn.vkGetPipelineCacheData(device, device_pipeline_cache_, &data_size,
-                                   data.data()) == VK_SUCCESS) {
-      data.resize(data_size);
-      std::error_code ec;
-      std::filesystem::create_directories(
-          device_pipeline_cache_path_.parent_path(), ec);
-      std::filesystem::path tmp_path = device_pipeline_cache_path_;
-      tmp_path += ".tmp";
-      FILE* out = xe::filesystem::OpenFile(tmp_path, "wb");
-      if (out) {
-        bool ok = fwrite(data.data(), 1, data.size(), out) == data.size();
-        fclose(out);
-        if (ok) {
-          std::filesystem::rename(tmp_path, device_pipeline_cache_path_, ec);
-          if (ec) {
-            std::filesystem::remove(tmp_path, ec);
-          } else {
-            // Successful atomic write: reset dirty tracking and the timer.
-            pipelines_serialized_count_ = pipelines_created_count_;
-            last_serialize_ms_ = xe::Clock::QueryHostUptimeMillis();
-            return true;
-          }
-        } else {
+                                   nullptr) != VK_SUCCESS ||
+        data_size == 0) {
+      return false;
+    }
+    data.resize(data_size);
+    if (dfn.vkGetPipelineCacheData(device, device_pipeline_cache_, &data_size,
+                                   data.data()) != VK_SUCCESS) {
+      return false;
+    }
+    data.resize(data_size);
+  }
+  {
+    std::error_code ec;
+    std::filesystem::create_directories(
+        device_pipeline_cache_path_.parent_path(), ec);
+    std::filesystem::path tmp_path = device_pipeline_cache_path_;
+    tmp_path += ".tmp";
+    FILE* out = xe::filesystem::OpenFile(tmp_path, "wb");
+    if (out) {
+      bool ok = fwrite(data.data(), 1, data.size(), out) == data.size();
+      fclose(out);
+      if (ok) {
+        std::filesystem::rename(tmp_path, device_pipeline_cache_path_, ec);
+        if (ec) {
           std::filesystem::remove(tmp_path, ec);
+        } else {
+          // Successful atomic write: reset dirty tracking to the snapshot taken
+          // while reading the blob (NOT the live count, which a worker may have
+          // bumped past what we actually serialized) and reset the timer.
+          std::lock_guard<xe_mutex> cache_lock(device_pipeline_cache_mutex_);
+          pipelines_serialized_count_ = created_count_snapshot;
+          last_serialize_ms_ = xe::Clock::QueryHostUptimeMillis();
+          return true;
         }
+      } else {
+        std::filesystem::remove(tmp_path, ec);
       }
     }
   }
@@ -210,9 +302,14 @@ void VulkanPipelineCache::SerializeDevicePipelineCacheIfDue() {
       device_pipeline_cache_path_.empty()) {
     return;
   }
-  if (pipelines_created_count_ == pipelines_serialized_count_) {
-    // Nothing new since the last successful save.
-    return;
+  {
+    // pipelines_created_count_ is multi-writer (creation threads); read it under
+    // the cache mutex so the dirty check can't tear.
+    std::lock_guard<xe_mutex> cache_lock(device_pipeline_cache_mutex_);
+    if (pipelines_created_count_ == pipelines_serialized_count_) {
+      // Nothing new since the last successful save.
+      return;
+    }
   }
   uint64_t now = xe::Clock::QueryHostUptimeMillis();
   if (last_serialize_ms_ != 0 && now - last_serialize_ms_ < kSaveIntervalMs) {
@@ -288,7 +385,12 @@ void VulkanPipelineCache::InitializeShaderStorage(
   VkPipelineCache seed_cache = VK_NULL_HANDLE;
   if (dfn.vkCreatePipelineCache(device, &seed_info, nullptr, &seed_cache) ==
       VK_SUCCESS) {
-    dfn.vkMergePipelineCaches(device, device_pipeline_cache_, 1, &seed_cache);
+    {
+      // Externally synchronize against any creation-thread merge. Runs on the
+      // GPU thread at startup (before threads do work), so uncontended.
+      std::lock_guard<xe_mutex> cache_lock(device_pipeline_cache_mutex_);
+      dfn.vkMergePipelineCaches(device, device_pipeline_cache_, 1, &seed_cache);
+    }
     dfn.vkDestroyPipelineCache(device, seed_cache, nullptr);
     XELOGI(
         "VulkanPipelineCache: Seeded host pipeline cache from disk ({} bytes)",
@@ -441,7 +543,7 @@ bool VulkanPipelineCache::ConfigurePipeline(
     reg::RB_DEPTHCONTROL normalized_depth_control,
     uint32_t normalized_color_mask,
     VulkanRenderTargetCache::RenderPassKey render_pass_key,
-    VkPipeline& pipeline_out,
+    const VkPipeline*& pipeline_out,
     const PipelineLayoutProvider*& pipeline_layout_out) {
 #if XE_GPU_FINE_GRAINED_DRAW_SCOPES
   SCOPE_profile_cpu_f("gpu");
@@ -459,15 +561,18 @@ bool VulkanPipelineCache::ConfigurePipeline(
           description)) {
     return false;
   }
+  // Hand back the STABLE slot pointer (never the handle value): with async
+  // creation the slot may still be VK_NULL_HANDLE here and is only guaranteed
+  // filled after AwaitCreationCompletion() at the submission boundary.
   if (last_pipeline_ && last_pipeline_->first == description) {
-    pipeline_out = last_pipeline_->second.pipeline;
+    pipeline_out = &last_pipeline_->second.pipeline;
     pipeline_layout_out = last_pipeline_->second.pipeline_layout;
     return true;
   }
   auto it = pipelines_.find(description);
   if (it != pipelines_.end()) {
     last_pipeline_ = &*it;
-    pipeline_out = it->second.pipeline;
+    pipeline_out = &it->second.pipeline;
     pipeline_layout_out = it->second.pipeline_layout;
     return true;
   }
@@ -524,10 +629,28 @@ bool VulkanPipelineCache::ConfigurePipeline(
   creation_arguments.pixel_shader = pixel_shader;
   creation_arguments.geometry_shader = geometry_shader;
   creation_arguments.render_pass = render_pass;
-  if (!EnsurePipelineCreated(creation_arguments)) {
-    return false;
+  if (!creation_threads_.empty()) {
+    // Asynchronous: enqueue the node + an OWNED copy of the creation arguments
+    // (the stack-local `creation_arguments` is gone by the time a worker runs;
+    // the shaders / geometry shader / render pass it points to are stable for
+    // the cache lifetime). The slot stays VK_NULL_HANDLE until a worker fills
+    // it, which is guaranteed before Execute() by AwaitCreationCompletion().
+    {
+      std::lock_guard<xe_mutex> lock(creation_request_lock_);
+      creation_queue_.push_back(&pipeline);
+      creation_queue_arguments_.push_back(creation_arguments);
+    }
+    creation_request_cond_.notify_one();
+  } else {
+    // Synchronous (vulkan_pipeline_creation_threads == 0): create inline into
+    // the shared device cache, exactly as the original proven path.
+    if (!EnsurePipelineCreated(creation_arguments, device_pipeline_cache_)) {
+      return false;
+    }
   }
-  pipeline_out = pipeline.second.pipeline;
+  // Hand back the stable slot pointer (already filled in the sync path; still
+  // null in the async path until the submission-boundary wait completes it).
+  pipeline_out = &pipeline.second.pipeline;
   pipeline_layout_out = pipeline_layout;
   return true;
 }
@@ -1978,7 +2101,8 @@ VkShaderModule VulkanPipelineCache::GetGeometryShader(GeometryShaderKey key) {
 }
 
 bool VulkanPipelineCache::EnsurePipelineCreated(
-    const PipelineCreationArguments& creation_arguments) {
+    const PipelineCreationArguments& creation_arguments,
+    VkPipelineCache target_cache) {
   if (creation_arguments.pipeline->second.pipeline != VK_NULL_HANDLE) {
     return true;
   }
@@ -2403,7 +2527,11 @@ bool VulkanPipelineCache::EnsurePipelineCreated(
   // destructor decrements on both the failure and success returns below.
   xe::ScopedShaderCompile compile_guard;
   VkPipeline pipeline;
-  if (dfn.vkCreateGraphicsPipelines(device, device_pipeline_cache_, 1,
+  // The expensive compile runs into target_cache WITHOUT holding
+  // device_pipeline_cache_mutex_: for a creation thread this is its private
+  // per-thread cache; for the synchronous / GPU-thread drain path this is
+  // device_pipeline_cache_ directly (no merge needed).
+  if (dfn.vkCreateGraphicsPipelines(device, target_cache, 1,
                                     &pipeline_create_info, nullptr,
                                     &pipeline) != VK_SUCCESS) {
     // TODO(Triang3l): Move these error messages outside.
@@ -2418,11 +2546,141 @@ bool VulkanPipelineCache::EnsurePipelineCreated(
     } */
     return false;
   }
+  // Publish the handle into the (address-stable) node slot. With async creation
+  // the GPU thread only value-reads this slot AFTER AwaitCreationCompletion
+  // establishes happens-before (worker --busy under creation_request_lock_, GPU
+  // thread Wait on the completion event), so the store/load is safe.
   creation_arguments.pipeline->second.pipeline = pipeline;
-  // Mark the persistent host cache dirty (GPU-thread-only counter; this is the
-  // single point a VkPipeline is first stored).
-  ++pipelines_created_count_;
+  {
+    // Externally synchronize all access to device_pipeline_cache_. If this
+    // compiled into a per-thread cache, fold the result into the shared cache so
+    // it gets persisted. The counter (multi-writer) is also bumped here.
+    std::lock_guard<xe_mutex> cache_lock(device_pipeline_cache_mutex_);
+    if (target_cache != device_pipeline_cache_ &&
+        target_cache != VK_NULL_HANDLE &&
+        device_pipeline_cache_ != VK_NULL_HANDLE) {
+      dfn.vkMergePipelineCaches(device, device_pipeline_cache_, 1,
+                                &target_cache);
+    }
+    ++pipelines_created_count_;
+  }
   return true;
+}
+
+void VulkanPipelineCache::CreationThread(size_t thread_index) {
+  const ui::vulkan::VulkanDevice* const vulkan_device =
+      command_processor_.GetVulkanDevice();
+  const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
+  const VkDevice device = vulkan_device->device();
+
+  while (true) {
+    PipelineCreationArguments creation_arguments;
+
+    // Check whether to shut down or set the completion event, and dequeue a
+    // pipeline if there is any. Ported from d3d12/pipeline_cache.cc:3313-3355.
+    {
+      std::unique_lock<xe_mutex> lock(creation_request_lock_);
+      if (thread_index >= creation_threads_shutdown_from_ ||
+          creation_queue_.empty()) {
+        if (creation_completion_set_event_ && creation_threads_busy_ == 0) {
+          // Last pipeline in the queue created - signal the event if requested.
+          creation_completion_set_event_ = false;
+          creation_completion_event_->Set();
+        }
+        if (thread_index >= creation_threads_shutdown_from_) {
+          return;
+        }
+        creation_request_cond_.wait(lock);
+        continue;
+      }
+      // Take the pipeline's owned arguments (the node pointer is in
+      // creation_arguments.pipeline) and increment the busy thread count until
+      // the pipeline is created - other threads must be able to dequeue
+      // requests, but can't set the completion event until the pipelines are
+      // fully created (not just started).
+      creation_queue_.pop_front();
+      creation_arguments = creation_queue_arguments_.front();
+      creation_queue_arguments_.pop_front();
+      ++creation_threads_busy_;
+    }
+
+    // Lazily create this thread's private pipeline cache on first use. On
+    // failure, fall back to VK_NULL_HANDLE (uncached compile, no merge) rather
+    // than touching the shared cache off the merge path.
+    VkPipelineCache& thread_cache = creation_thread_caches_[thread_index];
+    if (thread_cache == VK_NULL_HANDLE) {
+      VkPipelineCacheCreateInfo cache_create_info = {};
+      cache_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
+      if (dfn.vkCreatePipelineCache(device, &cache_create_info, nullptr,
+                                    &thread_cache) != VK_SUCCESS) {
+        thread_cache = VK_NULL_HANDLE;
+      }
+    }
+
+    // Create the pipeline into the per-thread cache (or VK_NULL_HANDLE on
+    // create-failure). EnsurePipelineCreated merges into device_pipeline_cache_
+    // under device_pipeline_cache_mutex_ - this thread does NOT hold
+    // creation_request_lock_ here (strict non-nesting).
+    EnsurePipelineCreated(creation_arguments, thread_cache);
+
+    // Pipeline created - the thread is not busy anymore, safe to set the
+    // completion event if needed (at the next iteration, or in another thread).
+    {
+      std::lock_guard<xe_mutex> lock(creation_request_lock_);
+      --creation_threads_busy_;
+    }
+  }
+}
+
+void VulkanPipelineCache::CreateQueuedPipelinesOnProcessorThread() {
+  assert_false(creation_threads_.empty());
+  while (true) {
+    PipelineCreationArguments creation_arguments;
+    {
+      std::lock_guard<xe_mutex> lock(creation_request_lock_);
+      if (creation_queue_.empty()) {
+        break;
+      }
+      creation_queue_.pop_front();
+      creation_arguments = creation_queue_arguments_.front();
+      creation_queue_arguments_.pop_front();
+    }
+    // On the GPU (processor) thread, create directly into the shared device
+    // cache (EnsurePipelineCreated locks device_pipeline_cache_mutex_ only for
+    // the counter bump in this case - no merge, since target == device cache).
+    EnsurePipelineCreated(creation_arguments, device_pipeline_cache_);
+  }
+}
+
+void VulkanPipelineCache::AwaitCreationCompletion() {
+  // Submission-boundary block, ported from d3d12/pipeline_cache.cc:805-824.
+  if (creation_threads_.empty()) {
+    // Synchronous path (vulkan_pipeline_creation_threads == 0): no-op,
+    // byte-identical to the original renderer.
+    return;
+  }
+  // Drain remaining queued pipelines on THIS (GPU) thread first. This both cuts
+  // latency and prevents a deadlock-by-omission: if all workers are parked and
+  // items remain queued, creation_threads_busy_ could read 0 while work is
+  // pending, so the gate below would not wait and Execute() would dereference a
+  // VK_NULL_HANDLE slot.
+  CreateQueuedPipelinesOnProcessorThread();
+  // Await creation of all queued pipelines.
+  bool await_creation_completion_event;
+  {
+    std::lock_guard<xe_mutex> lock(creation_request_lock_);
+    // The creation queue is now empty (drained above), so only check whether any
+    // thread still has a pipeline being created.
+    await_creation_completion_event = creation_threads_busy_ != 0;
+    if (await_creation_completion_event) {
+      creation_completion_event_->Reset();
+      creation_completion_set_event_ = true;
+    }
+  }
+  if (await_creation_completion_event) {
+    creation_request_cond_.notify_one();
+    xe::threading::Wait(creation_completion_event_.get(), false);
+  }
 }
 
 }  // namespace vulkan

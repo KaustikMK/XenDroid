@@ -755,9 +755,12 @@ class VulkanCommandProcessor final : public CommandProcessor {
   // Currently bound graphics pipeline, either from the pipeline cache (with
   // potentially deferred creation - current_external_graphics_pipeline_ is
   // VK_NULL_HANDLE in this case) or a non-Xenos one
-  // (current_guest_graphics_pipeline_ is VK_NULL_HANDLE in this case).
-  // TODO(Triang3l): Change to a deferred compilation handle.
-  VkPipeline current_guest_graphics_pipeline_;
+  // (current_guest_graphics_pipeline_ is nullptr in this case).
+  // current_guest_graphics_pipeline_ is a STABLE pointer to the pipeline
+  // cache's VkPipeline slot (not a handle value), because with asynchronous
+  // creation the handle may still be VK_NULL_HANDLE at record time; the de-dup
+  // therefore compares slot pointers, not handle values.
+  const VkPipeline* current_guest_graphics_pipeline_;
   VkPipeline current_external_graphics_pipeline_;
   VkPipeline current_external_compute_pipeline_;
 
