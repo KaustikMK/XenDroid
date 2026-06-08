@@ -9,6 +9,7 @@
 
 #include "xenia/ui/vulkan/vulkan_instance.h"
 
+#include <cstdlib>
 #include <sstream>
 #include <string>
 #include <unordered_map>
@@ -35,6 +36,13 @@ DEFINE_string(vulkan_lib_path, "", "Custom Driver Library Path", "Vulkan");
 DEFINE_bool(
         adrenotools_force_max_clocks, false,
         "Custom Driver Force Max Clocks",
+        "Vulkan");
+DEFINE_string(
+        turnip_debug, "sysmem",
+        "TU_DEBUG flags passed to the Turnip (Mesa freedreno) Vulkan driver, "
+        "comma-separated. 'sysmem' forces sysmem (untiled) rendering, which "
+        "avoids a class of Adreno GPU hangs (device-loss). Empty leaves "
+        "TU_DEBUG unset.",
         "Vulkan");
 #endif
 
@@ -68,6 +76,14 @@ std::unique_ptr<VulkanInstance> VulkanInstance::Create(
   const char* const loader_library_name = "libvulkan.so.1";
 #endif
 #if XE_PLATFORM_ANDROID||XE_PLATFORM_AX360E
+    // Turnip reads TU_DEBUG from the environment at vkCreateInstance, so set it
+    // before the driver is loaded. Default "sysmem" forces untiled rendering,
+    // which avoids a class of Adreno GPU hangs (device-loss).
+    if (!cvars::turnip_debug.empty()) {
+      setenv("TU_DEBUG", cvars::turnip_debug.c_str(), 1);
+      XELOGI("Set TU_DEBUG={} for the Turnip Vulkan driver",
+             cvars::turnip_debug);
+    }
     std::string custom_lib_path=cvars::vulkan_lib_path;
     bool custom_lib_exists =
         !custom_lib_path.empty() && std::filesystem::exists(custom_lib_path);
