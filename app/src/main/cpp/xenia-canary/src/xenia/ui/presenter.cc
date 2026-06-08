@@ -49,6 +49,12 @@ DEFINE_bool(
     "Maintain aspect ratio when stretching by displaying bars around the image "
     "when there's no more overscan area to crop out.",
     "Display");
+
+DEFINE_bool(
+    show_debug_overlay, false,
+    "Show an on-screen debug overlay (FPS, instant/average frame time, and the "
+    "number of shader/pipeline compiles currently in flight).",
+    "Display");
 // https://github.com/MonoGame/MonoGame/issues/4697#issuecomment-217779403
 // Using the value from DirectXTK (5% cropped out from each side, thus 90%),
 // which is not exactly the Xbox One title-safe area, but close, and within the

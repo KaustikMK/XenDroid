@@ -274,6 +274,7 @@ public class EmulatorSettings extends AppCompatActivity {
                     "Display|present_render_pass_clear",
                     "Display|host_present_from_non_ui_thread",
                     "Display|fullscreen",
+                    "Display|show_debug_overlay",
                     "GPU|vsync",
                     "GPU|store_shaders",
                     "GPU|resolve_resolution_scale_fill_half_pixel_offset",

@@ -10,6 +10,11 @@
 #include "xenia/base/logging.h"
 #include "xenia/vfs/devices/stfs_xbox.h"
 #include "xenia/base/mapped_memory.h"
+#include "xenia/base/cvar.h"
+#include "xenia/base/frame_stats.h"
+#include "xenia/base/shader_compile_counter.h"
+
+#include <cstdio>
 
 #include "cpuinfo.h"
 #include "vkapi.h"
@@ -683,6 +688,29 @@ static void j_setup_uri_info_list_file(JNIEnv* env,jobject self,jstring jpath ){
     env->ReleaseStringUTFChars(jpath,path);
 }
 
+// Toggled by the "Display|show_debug_overlay" cvar (defined in presenter.cc).
+DECLARE_bool(show_debug_overlay);
+
+// Returns the formatted overlay text, or null when the overlay is disabled so
+// the Java side can simply hide the view. Polled (~4 Hz) from the UI thread;
+// reads lock-free atomics published by the GPU command-processor thread.
+static jstring j_debug_overlay_text(JNIEnv* env, jobject thiz) {
+    if (!cvars::show_debug_overlay) {
+        return nullptr;
+    }
+    float instant_ms = 0.f, avg_ms = 0.f, fps = 0.f;
+    xe::GetFrameStats(instant_ms, avg_ms, fps);
+    uint32_t compiling = xe::shader_compiles_in_flight_count();
+
+    char buf[256];
+    int n = std::snprintf(buf, sizeof(buf), "FPS %.0f\n%.1f ms (avg %.1f ms)",
+                          fps, instant_ms, avg_ms);
+    if (compiling > 0 && n > 0 && n < (int)sizeof(buf)) {
+        std::snprintf(buf + n, sizeof(buf) - n, "\ncompiling %u", compiling);
+    }
+    return env->NewStringUTF(buf);
+}
+
 int register_ax360e_Emulator(JNIEnv* env){
 
     g_class_DocumentFile=env->FindClass("androidx/documentfile/provider/DocumentFile");
@@ -702,6 +730,7 @@ int register_ax360e_Emulator(JNIEnv* env){
             { "setup_uri_info_list_file", "(Ljava/lang/String;)V", (void *) j_setup_uri_info_list_file },
             {"simple_device_info", "()Ljava/lang/String;", (void *) j_simple_device_info}
             ,{"generate_config_xml", "(Ljava/lang/String;)Ljava/lang/String;", (void *) generate_config_xml}
+            ,{"debug_overlay_text", "()Ljava/lang/String;", (void *) j_debug_overlay_text}
     };
     return env->RegisterNatives(g_class_Emulator,methods, sizeof(methods)/sizeof(methods[0]));
 }

@@ -22,6 +22,7 @@ import android.view.MotionEvent;
 import android.view.SurfaceHolder;
 import android.view.SurfaceView;
 import android.view.View;
+import android.widget.TextView;
 import android.widget.Toast;
 
 import androidx.annotation.NonNull;
@@ -36,6 +37,28 @@ public class EmulatorActivity extends Activity implements SurfaceHolder.Callback
     static final int DELAY_ON_CREATE=0xaeae0001;
     public static final String EXTRA_GAME_URI="game_uri";
     static SurfaceView sf=null;
+    TextView debug_overlay=null;
+    final Handler overlay_handler=new Handler();
+    // Polls the native overlay text (~4 Hz). The native side returns null when
+    // the show_debug_overlay setting is off, so we simply hide the view; the
+    // poll keeps running cheaply so toggling the setting takes effect without a
+    // restart of the polling loop.
+    final Runnable overlay_poll=new Runnable(){
+        @Override public void run(){
+            if(debug_overlay!=null && Emulator.get!=null){
+                String t=Emulator.get.debug_overlay_text();
+                if(t==null || t.isEmpty()){
+                    if(debug_overlay.getVisibility()!=View.GONE)
+                        debug_overlay.setVisibility(View.GONE);
+                }else{
+                    debug_overlay.setText(t);
+                    if(debug_overlay.getVisibility()!=View.VISIBLE)
+                        debug_overlay.setVisibility(View.VISIBLE);
+                }
+            }
+            overlay_handler.postDelayed(this,250);
+        }
+    };
     private SparseIntArray keysMap = new SparseIntArray();
     private Vibrator vibrator=null;
     private VibrationEffect vibrationEffect=null;
@@ -71,6 +94,10 @@ public class EmulatorActivity extends Activity implements SurfaceHolder.Callback
         setContentView(R.layout.activity_emulator);
         sf = (SurfaceView) findViewById(R.id.surface_view);
         sf.getHolder().addCallback(EmulatorActivity.this);
+
+        debug_overlay = (TextView) findViewById(R.id.debug_overlay);
+        overlay_handler.removeCallbacks(overlay_poll);
+        overlay_handler.post(overlay_poll);
 
         sf.setFocusable(true);
         sf.setFocusableInTouchMode(true);

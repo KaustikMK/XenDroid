@@ -196,6 +196,9 @@
         <aenu.preference.CheckBoxPreference app:title="@string/es_display_fullscreen"
             app:key="Display|fullscreen"
             app:summary="@string/es_hint_display_fullscreen" />
+        <aenu.preference.CheckBoxPreference app:title="@string/es_display_show_debug_overlay"
+            app:key="Display|show_debug_overlay"
+            app:summary="@string/es_hint_display_show_debug_overlay" />
     </PreferenceScreen>
     <PreferenceScreen app:title="@string/es_gpu"
         app:key="GPU" >

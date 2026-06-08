@@ -128,6 +128,7 @@
     <string name="es_display_host_present_from_non_ui_thread">Direct Presentation from Non-UI Thread</string>
     <string name="es_display_postprocess_antialiasing">Post-process Anti-aliasing</string>
     <string name="es_display_postprocess_dither">Post-process Dithering</string>
+    <string name="es_display_show_debug_overlay">Debug Overlay</string>
     <string name="es_display_postprocess_ffx_cas_additional_sharpness">CAS Additional Sharpness</string>
     <string name="es_display_postprocess_ffx_fsr_max_upsampling_passes">FSR Max Upsampling Passes</string>
     <string name="es_display_postprocess_ffx_fsr_sharpness_reduction">FSR Sharpness Reduction</string>
@@ -318,6 +319,7 @@
 
     <string name="es_hint_display_fullscreen">Whether to launch the emulator in fullscreen.</string>
     <string name="es_hint_display_host_present_from_non_ui_thread">Allow the GPU emulation thread to present the guest output to the host surface directly instead of requesting the UI thread to do so through the host window system.</string>
+    <string name="es_hint_display_show_debug_overlay">Show an on-screen overlay with FPS, frame time, and the number of shader/pipeline compiles currently in flight. For performance debugging. Requires restart.</string>
     <string name="es_hint_display_postprocess_antialiasing">Post-processing anti-aliasing effect to apply to the image output of the game.
 Using post-process anti-aliasing is heavily recommended when AMD FidelityFX Contrast Adaptive Sharpening or Super Resolution 1.0 is active.
 Use: [none, fxaa, fxaa_extreme]

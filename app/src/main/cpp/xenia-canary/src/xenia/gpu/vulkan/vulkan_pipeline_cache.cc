@@ -20,6 +20,7 @@
 #include "xenia/base/filesystem.h"
 #include "xenia/base/logging.h"
 #include "xenia/base/math.h"
+#include "xenia/base/shader_compile_counter.h"
 #include "xenia/base/profiling.h"
 #include "xenia/base/xxhash.h"
 #include "xenia/gpu/draw_util.h"
@@ -2299,6 +2300,9 @@ bool VulkanPipelineCache::EnsurePipelineCreated(
 
   const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
   const VkDevice device = vulkan_device->device();
+  // Count this pipeline create as in-flight for the debug overlay. The guard's
+  // destructor decrements on both the failure and success returns below.
+  xe::ScopedShaderCompile compile_guard;
   VkPipeline pipeline;
   if (dfn.vkCreateGraphicsPipelines(device, device_pipeline_cache_, 1,
                                     &pipeline_create_info, nullptr,

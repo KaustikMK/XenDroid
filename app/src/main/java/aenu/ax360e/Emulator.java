@@ -34,6 +34,9 @@ public class Emulator extends aenu.emulator.Emulator{
     public  native void setup_uri_info_list_file(String path);
     public native String simple_device_info();
     public native String generate_config_xml(String config_path);
+    // Debug overlay text (FPS / frame time / compile count), or null when the
+    // "Display|show_debug_overlay" setting is off. Polled from EmulatorActivity.
+    public native String debug_overlay_text();
     public static int nc_open_uri_fd(Context ctx,Uri uri) {
         try {
             ParcelFileDescriptor pfd_ = ctx.getContentResolver().openFileDescriptor(uri, "r");
