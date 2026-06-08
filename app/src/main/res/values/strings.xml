@@ -271,6 +271,7 @@
     <string name="es_vulkan_vulkan_log_debug_messages">Log Vulkan Debug Messages</string>
     <string name="es_vulkan_vulkan_sparse_shared_memory">Sparse Shared Memory</string>
     <string name="es_vulkan_vulkan_validation">Vulkan Validation Layer</string>
+    <string name="es_vulkan_vulkan_pipeline_creation_threads">Async Pipeline Threads</string>
 
     <string name="es_xconfig">XConfig</string>
     <string name="es_xconfig_audio_flag">Audio Flag</string>
@@ -472,6 +473,7 @@ For scaling by factors of more than 2x2, multiple FSR passes are done.</string>
     <string name="es_hint_vulkan_vulkan_log_debug_messages">Write Vulkan VK_EXT_debug_utils messages to the Xenia log, as opposed to the OS debug output.</string>
     <string name="es_hint_vulkan_vulkan_sparse_shared_memory">Enable sparse binding for shared memory emulation. Disabling it increases video memory usage - a 512 MB buffer is created - but allows graphics debuggers that don\'t support sparse binding to work.</string>
     <string name="es_hint_vulkan_vulkan_validation">Enable the Vulkan validation layer (VK_LAYER_KHRONOS_validation). Messages will be written to the Xenia log if \'vulkan_log_debug_messages\' is enabled, or to the OS debug output otherwise.</string>
+    <string name="es_hint_vulkan_vulkan_pipeline_creation_threads">Number of background threads that compile graphics pipelines/shaders, moving first-compile off the draw thread to reduce stutter. Disabled = synchronous (the original behaviour). Requires restart.</string>
 
     <string name="es_hint_xconfig_audio_flag">Audio Mode Analog.
 0x00000001 = Dolby Pro Logic

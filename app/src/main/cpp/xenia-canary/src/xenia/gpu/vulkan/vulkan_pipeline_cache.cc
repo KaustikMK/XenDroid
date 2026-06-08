@@ -36,13 +36,12 @@
 #include "xenia/ui/vulkan/vulkan_util.h"
 
 DEFINE_int32(
-    vulkan_pipeline_creation_threads, 0,
+    vulkan_pipeline_creation_threads, 4,
     "Number of threads used for asynchronous graphics pipeline creation in the "
-    "Vulkan backend. 0 = disabled / synchronous (the proven path, default for "
-    "a safe landing - byte-identical to the original synchronous renderer); -1 "
-    "= calculate automatically (75% of logical CPU cores); a positive number "
-    "specifies the thread count explicitly (clamped to the number of logical "
-    "CPU cores).",
+    "Vulkan backend. 0 = disabled / synchronous (byte-identical to the original "
+    "synchronous renderer); -1 = calculate automatically (75% of logical CPU "
+    "cores); a positive number specifies the thread count explicitly (clamped "
+    "to the number of logical CPU cores).",
     "Vulkan");
 
 namespace xe {

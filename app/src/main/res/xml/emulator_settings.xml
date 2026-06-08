@@ -23,6 +23,12 @@
             app:key="Vulkan|vulkan_allow_present_mode_fifo_relaxed"
             app:summary="@string/es_hint_vulkan_vulkan_allow_present_mode_fifo_relaxed" />
 
+        <aenu.preference.ListPreference app:title="@string/es_vulkan_vulkan_pipeline_creation_threads"
+            app:entryValues="@array/es_arr_v_vulkan_pipeline_creation_threads"
+            app:entries="@array/es_arr_vulkan_pipeline_creation_threads"
+            app:key="Vulkan|vulkan_pipeline_creation_threads"
+            app:summary="@string/es_hint_vulkan_vulkan_pipeline_creation_threads" />
+
         <PreferenceScreen app:title="@string/es_vulkan_vulkan_lib_path"
             app:key="Vulkan|vulkan_lib_path"/>
 
