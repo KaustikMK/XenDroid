@@ -162,7 +162,13 @@ class PosixA64CodeCache : public A64CodeCache {
   uint32_t unwind_table_count_ = 0;
 
 #if XE_PLATFORM_AX360E
-  uint8_t* eh_frame_table_;
+  // Bump allocator for the JIT's DWARF .eh_frame (a CIE+FDE per function).
+  // eh_frame_table_ is the current write cursor; _base_/_end_ bound the
+  // allocation so the cursor can be size-checked and the buffer freed correctly
+  // (the cursor is advanced past the base, so it must not itself be delete[]d).
+  uint8_t* eh_frame_table_ = nullptr;
+  uint8_t* eh_frame_table_base_ = nullptr;
+  uint8_t* eh_frame_table_end_ = nullptr;
 #endif
 };
 
@@ -178,7 +184,8 @@ PosixA64CodeCache::~PosixA64CodeCache() {
   }
 
 #if XE_PLATFORM_AX360E
-  delete[] eh_frame_table_;
+  // Free the original allocation, not the advanced write cursor.
+  delete[] eh_frame_table_base_;
 #endif
 }
 
@@ -188,7 +195,14 @@ bool PosixA64CodeCache::Initialize() {
   }
 
 #if XE_PLATFORM_AX360E
-  eh_frame_table_=new uint8_t[64*1024*1024];//64MB
+  // 128 MiB. Worst case kMaximumFunctionCount (1,000,000) x ~70 B/entry
+  // (CIE+FDE) ~= 70 MB; 128 MiB leaves headroom, and the per-write bounds check
+  // in InitializeUnwindEntry turns exhaustion into a clean abort rather than a
+  // silent heap overflow.
+  constexpr size_t kEhFrameTableSize = size_t(128) * 1024 * 1024;
+  eh_frame_table_base_ = new uint8_t[kEhFrameTableSize];
+  eh_frame_table_ = eh_frame_table_base_;
+  eh_frame_table_end_ = eh_frame_table_base_ + kEhFrameTableSize;
   if(reinterpret_cast<uint64_t>(eh_frame_table_)%4!=0){
       xe::FatalError("Unwind table is not 4-byte aligned!");
   }
@@ -244,6 +258,14 @@ void PosixA64CodeCache::InitializeUnwindEntry(
   uint8_t* p = eh_frame_table_;
   uint8_t* cie_start = p;
 #if XE_PLATFORM_AX360E
+
+    // Refuse to bump past the end of the table instead of corrupting the heap.
+    // Real entries are <= ~140 B (a thunk's CIE+FDE); 1 KiB is a safe ceiling.
+    if (eh_frame_table_ + 1024 > eh_frame_table_end_) {
+      xe::FatalError(
+          "A64 unwind table exhausted: this session compiled more JIT code "
+          "than the eh_frame table can hold. Increase kEhFrameTableSize.");
+    }
 
     struct cie_t{
         uint32_t len;
@@ -444,8 +466,15 @@ void PosixA64CodeCache::InitializeUnwindEntry(
     p+=sizeof(fde_t)-3;
     memcpy(p,fde_program.data(),fde_program.size());
     p+=fde_program.size();
-    __register_frame(eh_frame_table_);
-    registered_frames_.push_back(eh_frame_table_);
+    // Android's LLVM libunwind __register_frame() expects a pointer to the FDE
+    // (libgcc instead takes the .eh_frame/CIE start). The CIE is at
+    // eh_frame_table_ and the FDE immediately follows it. Passing the CIE made
+    // libunwind reject the entry (a CIE's CIE-id field is 0, so it is not a
+    // valid FDE) -> no unwind info for JIT frames -> XThread::Reenter's
+    // FiberReentryException could not unwind through them -> std::terminate.
+    uint8_t* fde_address = eh_frame_table_ + sizeof(cie_t);
+    __register_frame(fde_address);
+    registered_frames_.push_back(fde_address);
     eh_frame_table_=p;
 
 #else
