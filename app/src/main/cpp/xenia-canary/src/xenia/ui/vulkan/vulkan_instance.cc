@@ -69,12 +69,16 @@ std::unique_ptr<VulkanInstance> VulkanInstance::Create(
 #endif
 #if XE_PLATFORM_ANDROID||XE_PLATFORM_AX360E
     std::string custom_lib_path=cvars::vulkan_lib_path;
-    if(!custom_lib_path.empty()&&std::filesystem::exists(custom_lib_path)){
+    bool custom_lib_exists =
+        !custom_lib_path.empty() && std::filesystem::exists(custom_lib_path);
+    if(custom_lib_exists){
 
         std::string hook_dir=g_native_lib_dir+'/';
 
         std::string custom_lib_dir=custom_lib_path.substr(0,custom_lib_path.find_last_of('/')+1);
         std::string custom_lib_name=custom_lib_path.substr(custom_lib_path.find_last_of('/')+1);
+
+        XELOGI("Loading custom Vulkan driver: {}", custom_lib_path);
 
         vulkan_instance->loader_= adrenotools_open_libvulkan(RTLD_NOW,ADRENOTOOLS_DRIVER_CUSTOM,nullptr
                 ,hook_dir.c_str()
@@ -82,9 +86,20 @@ std::unique_ptr<VulkanInstance> VulkanInstance::Create(
                 ,custom_lib_name.c_str()
                 ,nullptr,nullptr);
 
+        if (!vulkan_instance->loader_) {
+          XELOGE("adrenotools failed to load custom Vulkan driver '{}': {}",
+                 custom_lib_path, dlerror());
+        }
+
         adrenotools_set_turbo(cvars::adrenotools_force_max_clocks);
     }
     else {
+        if (!custom_lib_path.empty()) {
+          XELOGW(
+              "Custom Vulkan driver path '{}' was set but the file does not "
+              "exist; using the system Vulkan driver instead.",
+              custom_lib_path);
+        }
 #endif
 
   // http://developer.download.nvidia.com/mobile/shield/assets/Vulkan/UsingtheVulkanAPI.pdf
