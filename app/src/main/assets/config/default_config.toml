@@ -6,6 +6,7 @@ ffmpeg_verbose = false                            	# Verbose FFmpeg output (debu
 mute = false                                      	# Mutes all audio output.
 use_dedicated_xma_thread = true                   	# Enables XMA decoding on separate thread. Disabled should produce better results, but decrease performance a bit.
 use_new_decoder = false                           	# Enables usage of new experimental XMA audio decoder.
+xma_decoder = "new"                               	# Decoder version used to process XMA audio. Use: [fake, master, old, new]. 'old' has an edge-case stall on some streams; 'new' is the maintained default.
 xmp_default_volume = 70                           	# Default music volume if game doesn't set it [0-100].
 
 
