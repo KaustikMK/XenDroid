@@ -519,6 +519,8 @@ bool VulkanRenderTargetCache::Initialize(uint32_t shared_memory_binding_count) {
     // Host render targets.
 
     depth_float24_round_ = cvars::depth_float24_round;
+    depth_float24_convert_in_pixel_shader_ =
+        cvars::depth_float24_convert_in_pixel_shader;
 
     // Host depth storing pipeline layout.
     VkDescriptorSetLayout host_depth_store_descriptor_set_layouts[] = {
@@ -2060,12 +2062,15 @@ RenderTargetCache::RenderTarget* VulkanRenderTargetCache::CreateRenderTarget(
 
 bool VulkanRenderTargetCache::IsHostDepthEncodingDifferent(
     xenos::DepthRenderTargetFormat format) const {
-  // TODO(Triang3l): Conversion directly in shaders.
   switch (format) {
     case xenos::DepthRenderTargetFormat::kD24S8:
       return !depth_unorm24_vulkan_format_supported();
     case xenos::DepthRenderTargetFormat::kD24FS8:
-      return true;
+      // When converting depth to float24 directly in the pixel shader, the host
+      // depth buffer already holds the exact guest 20e4 value, so there's no
+      // need to keep a separate host-depth copy and run the lossy float24
+      // round-trip reconstruction during EDRAM ownership transfers.
+      return !depth_float24_convert_in_pixel_shader_;
   }
   return false;
 }
@@ -3448,9 +3453,13 @@ VkShaderModule VulkanRenderTargetCache::GetTransferShader(
                         builder.makeFloatConstant(float(0xFFFFFF)))));
           } break;
           case xenos::DepthRenderTargetFormat::kD24FS8: {
+            // When converting the depth in pixel shaders, it's always exact,
+            // truncating not to insert additional rounding.
             depth24 = SpirvShaderTranslator::PreClampedDepthTo20e4(
-                builder, source_depth_float[i], depth_float24_round(), true,
-                ext_inst_glsl_std_450);
+                builder, source_depth_float[i],
+                !depth_float24_convert_in_pixel_shader() &&
+                    depth_float24_round(),
+                true, ext_inst_glsl_std_450);
           } break;
         }
         // Merge depth and stencil.
@@ -3730,9 +3739,13 @@ VkShaderModule VulkanRenderTargetCache::GetTransferShader(
                         builder.makeFloatConstant(float(0xFFFFFF)))));
           } break;
           case xenos::DepthRenderTargetFormat::kD24FS8: {
+            // When converting the depth in pixel shaders, it's always exact,
+            // truncating not to insert additional rounding.
             packed = SpirvShaderTranslator::PreClampedDepthTo20e4(
-                builder, source_depth_float[0], depth_float24_round(), true,
-                ext_inst_glsl_std_450);
+                builder, source_depth_float[0],
+                !depth_float24_convert_in_pixel_shader() &&
+                    depth_float24_round(),
+                true, ext_inst_glsl_std_450);
           } break;
         }
         if (mode.output == TransferOutput::kDepth) {
@@ -4197,9 +4210,13 @@ VkShaderModule VulkanRenderTargetCache::GetTransferShader(
                             builder.makeFloatConstant(float(0xFFFFFF)))));
               } break;
               case xenos::DepthRenderTargetFormat::kD24FS8: {
+                // When converting the depth in pixel shaders, it's always exact,
+                // truncating not to insert additional rounding.
                 host_depth24 = SpirvShaderTranslator::PreClampedDepthTo20e4(
-                    builder, host_depth32, depth_float24_round(), true,
-                    ext_inst_glsl_std_450);
+                    builder, host_depth32,
+                    !depth_float24_convert_in_pixel_shader() &&
+                        depth_float24_round(),
+                    true, ext_inst_glsl_std_450);
               } break;
             }
             assert_true(host_depth24 != spv::NoResult);
@@ -5874,9 +5891,12 @@ VkPipeline VulkanRenderTargetCache::GetDumpPipeline(DumpPipelineKey key) {
                     builder.makeFloatConstant(float(0xFFFFFF)))));
       } break;
       case xenos::DepthRenderTargetFormat::kD24FS8: {
+        // When converting the depth in pixel shaders, it's always exact,
+        // truncating not to insert additional rounding.
         packed[0] = SpirvShaderTranslator::PreClampedDepthTo20e4(
-            builder, source_depth32, depth_float24_round(), true,
-            ext_inst_glsl_std_450);
+            builder, source_depth32,
+            !depth_float24_convert_in_pixel_shader() && depth_float24_round(),
+            true, ext_inst_glsl_std_450);
       } break;
     }
     packed[0] = builder.createQuadOp(

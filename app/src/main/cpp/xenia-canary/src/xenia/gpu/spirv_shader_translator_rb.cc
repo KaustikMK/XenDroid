@@ -1291,6 +1291,45 @@ void SpirvShaderTranslator::CompleteFragmentShaderInMain() {
     }
   }
 
+  // Host render target float24 depth conversion: quantize the interpolated
+  // depth to 20e4 and write it to gl_FragDepth so the host depth buffer holds
+  // exactly the guest float24 value (matching the D3D12 DepthStencilMode::
+  // kFloat24{Truncating,Rounding} non-ROV path). The fragment shader interlock
+  // path performs this conversion in software and is unaffected.
+  if (!edram_fragment_shader_interlock_ && IsDepthFloat24Conversion()) {
+    assert_true(input_fragment_coordinates_ != spv::NoResult);
+    assert_true(output_fragment_depth_ != spv::NoResult);
+    // Load gl_FragCoord.z.
+    id_vector_temp_.clear();
+    id_vector_temp_.push_back(builder_->makeIntConstant(2));
+    spv::Id frag_coord_z = builder_->createLoad(
+        builder_->createAccessChain(spv::StorageClassInput,
+                                    input_fragment_coordinates_,
+                                    id_vector_temp_),
+        spv::NoPrecision);
+    // Remap host 0...0.5 to guest 0...1 (full_float24_in_0_to_1 stores the guest
+    // 0...1 range as 0...0.5 on the host), and saturate, as in Direct3D the
+    // depth is clamped to the viewport bounds only after the pixel shader.
+    spv::Id guest_depth = builder_->createTriBuiltinCall(
+        type_float_, ext_inst_glsl_std_450_, GLSLstd450FClamp,
+        builder_->createNoContractionBinOp(spv::OpFMul, type_float_,
+                                           frag_coord_z,
+                                           builder_->makeFloatConstant(2.0f)),
+        const_float_0_, const_float_1_);
+    bool round_to_nearest_even =
+        GetSpirvShaderModification().pixel.depth_stencil_mode ==
+        Modification::DepthStencilMode::kFloat24Rounding;
+    // Convert to 20e4 (truncating towards zero or rounding to the nearest even).
+    spv::Id depth_float24 = SpirvShaderTranslator::PreClampedDepthTo20e4(
+        *builder_, guest_depth, round_to_nearest_even, false,
+        ext_inst_glsl_std_450_);
+    // Convert back to float32, remapping guest 0...1 to host 0...0.5 so the
+    // written value matches the viewport depth range snapping.
+    spv::Id host_depth = SpirvShaderTranslator::Depth20e4To32(
+        *builder_, depth_float24, 0, true, false, ext_inst_glsl_std_450_);
+    builder_->createStore(host_depth, output_fragment_depth_);
+  }
+
   if (edram_fragment_shader_interlock_) {
     if (block_fsi_if_after_depth_stencil_merge) {
       builder_->createBranch(block_fsi_if_after_depth_stencil_merge);

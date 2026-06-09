@@ -114,6 +114,7 @@ void SpirvShaderTranslator::Reset() {
   input_fragment_coordinates_ = spv::NoResult;
   input_front_facing_ = spv::NoResult;
   input_sample_mask_ = spv::NoResult;
+  output_fragment_depth_ = spv::NoResult;
   std::fill(input_output_interpolators_.begin(),
             input_output_interpolators_.end(), spv::NoResult);
   output_point_coordinates_ = spv::NoResult;
@@ -706,6 +707,20 @@ std::vector<uint8_t> SpirvShaderTranslator::CompleteTranslation() {
       builder_->addExecutionMode(function_main_,
                                  spv::ExecutionModeEarlyFragmentTests);
     }
+    if (output_fragment_depth_ != spv::NoResult) {
+      // Writing gl_FragDepth forces depth to be computed in the fragment shader.
+      builder_->addExecutionMode(function_main_,
+                                 spv::ExecutionModeDepthReplacing);
+      // For the truncating mode, the written value is always less than or equal
+      // to the interpolated depth (truncation towards zero of a saturated
+      // value), so conservative DepthLess keeps coarse early Z culling legal.
+      // The rounding mode may increase the value, so plain DepthReplacing must
+      // be used for it.
+      if (GetSpirvShaderModification().pixel.depth_stencil_mode ==
+          Modification::DepthStencilMode::kFloat24Truncating) {
+        builder_->addExecutionMode(function_main_, spv::ExecutionModeDepthLess);
+      }
+    }
     if (edram_fragment_shader_interlock_) {
       // Accessing per-sample values, so interlocking just when there's common
       // coverage is enough if the device exposes that.
@@ -1265,10 +1280,23 @@ void SpirvShaderTranslator::StartVertexOrTessEvalShaderBeforeMain() {
   builder_->addMemberDecoration(type_struct_per_vertex,
                                 kOutputPerVertexMemberPosition,
                                 spv::DecorationBuiltIn, spv::BuiltInPosition);
+  // Decorate the Position member itself as Invariant so that the identical
+  // vertex shader module produces a bit-exact gl_Position across pipeline
+  // variants (notably the depth pre-pass, which reuses this same VS but swaps
+  // only the fragment stage). On tile-based deferred renderers (Adreno/Turnip)
+  // a variable-level Invariant on a Block variable does not reliably propagate
+  // to the built-in member, so the member must be decorated directly - this
+  // matches the Khronos glslang reference implementation (which emits
+  // OpMemberDecorate ... Invariant for `invariant gl_Position`). Without this,
+  // the pre-pass and color pass can schedule the W-divide / NDC transform
+  // differently, the depth-EQUAL/LEQUAL test fails, and opaque geometry that
+  // relied on a depth pre-pass renders see-through.
+  builder_->addMemberDecoration(type_struct_per_vertex,
+                                kOutputPerVertexMemberPosition,
+                                spv::DecorationInvariant);
   builder_->addDecoration(type_struct_per_vertex, spv::DecorationBlock);
   output_per_vertex_ = builder_->createVariable(
       spv::NoPrecision, spv::StorageClassOutput, type_struct_per_vertex, "");
-  builder_->addDecoration(output_per_vertex_, spv::DecorationInvariant);
   main_interface_.push_back(output_per_vertex_);
 }
 
@@ -1857,7 +1885,8 @@ void SpirvShaderTranslator::StartFragmentShaderBeforeMain() {
   // TODO(Triang3l): More conditions - alpha to coverage (if RT 0 is written,
   // and there's no early depth / stencil), depth writing in the fragment shader
   // (per-sample if supported).
-  if (edram_fragment_shader_interlock_ || param_gen_needed) {
+  if (edram_fragment_shader_interlock_ || param_gen_needed ||
+      IsDepthFloat24Conversion()) {
     input_fragment_coordinates_ = builder_->createVariable(
         spv::NoPrecision, spv::StorageClassInput, type_float4_, "gl_FragCoord");
     builder_->addDecoration(input_fragment_coordinates_, spv::DecorationBuiltIn,
@@ -1922,6 +1951,15 @@ void SpirvShaderTranslator::StartFragmentShaderBeforeMain() {
         main_interface_.push_back(output_fragment_data_rt);
       }
     }
+  }
+
+  // Fragment depth output for host render target float24 depth conversion.
+  if (IsDepthFloat24Conversion()) {
+    output_fragment_depth_ = builder_->createVariable(
+        spv::NoPrecision, spv::StorageClassOutput, type_float_, "gl_FragDepth");
+    builder_->addDecoration(output_fragment_depth_, spv::DecorationBuiltIn,
+                            spv::BuiltInFragDepth);
+    main_interface_.push_back(output_fragment_depth_);
   }
 }
 

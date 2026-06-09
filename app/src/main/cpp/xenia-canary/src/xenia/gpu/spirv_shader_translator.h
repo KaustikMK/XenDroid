@@ -34,15 +34,25 @@ class SpirvShaderTranslator : public ShaderTranslator {
     // TODO(Triang3l): Change to 0xYYYYMMDD once it's out of the rapid
     // prototyping stage (easier to do small granular updates with an
     // incremental counter).
-    static constexpr uint32_t kVersion = 6;
+    static constexpr uint32_t kVersion = 7;
 
     enum class DepthStencilMode : uint32_t {
       kNoModifiers,
       // Early fragment tests - enable if alpha test and alpha to coverage are
       // disabled; ignored if anything in the shader blocks early Z writing.
       kEarlyHint,
-      // TODO(Triang3l): Unorm24 (rounding) and float24 (truncating and
-      // rounding) output modes.
+      // Converting the depth to the closest 32-bit float representable exactly
+      // as a 20e4 float (host render targets only), to support invariance in
+      // cases when the guest reuploads a previously resolved depth buffer to the
+      // EDRAM, rounding towards zero. Writes gl_FragDepth (DepthReplacing); also
+      // uses conservative DepthLess so coarse early Z culling can remain legal
+      // because truncation only decreases the value. Fixed-function viewport
+      // depth bounds must be snapped to float24 for clamping purposes.
+      kFloat24Truncating,
+      // Similar to kFloat24Truncating, but rounding to the nearest even, which
+      // may increase the value, so plain DepthReplacing (no conservative
+      // DepthLess) is used. Same viewport usage rules apply.
+      kFloat24Rounding,
     };
 
     struct {
@@ -500,6 +510,22 @@ class SpirvShaderTranslator : public ShaderTranslator {
            current_shader().implicit_early_z_write_allowed();
   }
 
+  // Whether the current host render target pixel shader must quantize the
+  // interpolated depth to 20e4 float24 and write it to gl_FragDepth. Only on the
+  // host render target path (never with fragment shader interlock, which does
+  // depth conversion in software).
+  bool IsDepthFloat24Conversion() const {
+    if (!is_pixel_shader() || edram_fragment_shader_interlock_) {
+      return false;
+    }
+    Modification::DepthStencilMode depth_stencil_mode =
+        GetSpirvShaderModification().pixel.depth_stencil_mode;
+    return depth_stencil_mode ==
+               Modification::DepthStencilMode::kFloat24Truncating ||
+           depth_stencil_mode ==
+               Modification::DepthStencilMode::kFloat24Rounding;
+  }
+
   uint32_t GetModificationInterpolatorMask() const {
     Modification modification = GetSpirvShaderModification();
     return is_vertex_shader() ? modification.vertex.interpolator_mask
@@ -895,6 +921,10 @@ class SpirvShaderTranslator : public ShaderTranslator {
   // Otherwise, framebuffer color attachment outputs.
   std::array<spv::Id, xenos::kMaxColorRenderTargets>
       output_or_var_fragment_data_;
+
+  // PS, host render targets only, when converting depth to float24 in the pixel
+  // shader (gl_FragDepth) - float.
+  spv::Id output_fragment_depth_;
 
   std::vector<spv::Id> main_interface_;
   spv::Function* function_main_;

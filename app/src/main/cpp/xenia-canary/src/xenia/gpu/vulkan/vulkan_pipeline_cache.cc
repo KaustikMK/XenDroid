@@ -486,10 +486,35 @@ VulkanPipelineCache::GetCurrentPixelShaderModification(
       RenderTargetCache::Path::kHostRenderTargets) {
     using DepthStencilMode =
         SpirvShaderTranslator::Modification::DepthStencilMode;
-    if (shader.implicit_early_z_write_allowed() &&
-        (!shader.writes_color_target(0) ||
-         !draw_util::DoesCoverageDependOnAlpha(
-             regs.Get<reg::RB_COLORCONTROL>()))) {
+    // Convert the depth to the closest representable 20e4 float24 directly in
+    // the pixel shader when requested so the host depth buffer holds the exact
+    // guest float24 value (avoiding the lossy EDRAM round-trip and the depth-
+    // occlusion mismatch it causes). Mirrors the Direct3D 12 backend.
+    reg::RB_DEPTHCONTROL normalized_depth_control =
+        draw_util::GetNormalizedDepthControl(regs);
+    // Under MSAA, the conversion must run at sample frequency (per-sample
+    // gl_FragCoord.z). If the device doesn't support sample-rate shading, fall
+    // back to today's behavior when MSAA is used, like the cvar documentation
+    // describes.
+    bool sample_rate_shading_ok =
+        regs.Get<reg::RB_SURFACE_INFO>().msaa_samples ==
+            xenos::MsaaSamples::k1X ||
+        command_processor_.GetVulkanDevice()
+            ->properties()
+            .sampleRateShading;
+    if (render_target_cache_.depth_float24_convert_in_pixel_shader() &&
+        normalized_depth_control.z_enable &&
+        regs.Get<reg::RB_DEPTH_INFO>().depth_format ==
+            xenos::DepthRenderTargetFormat::kD24FS8 &&
+        sample_rate_shading_ok) {
+      modification.pixel.depth_stencil_mode =
+          render_target_cache_.depth_float24_round()
+              ? DepthStencilMode::kFloat24Rounding
+              : DepthStencilMode::kFloat24Truncating;
+    } else if (shader.implicit_early_z_write_allowed() &&
+               (!shader.writes_color_target(0) ||
+                !draw_util::DoesCoverageDependOnAlpha(
+                    regs.Get<reg::RB_COLORCONTROL>()))) {
       modification.pixel.depth_stencil_mode = DepthStencilMode::kEarlyHint;
     } else {
       modification.pixel.depth_stencil_mode = DepthStencilMode::kNoModifiers;
@@ -1551,6 +1576,16 @@ VkShaderModule VulkanPipelineCache::GetGeometryShader(GeometryShaderKey key) {
   builder.addMemberDecoration(type_struct_out_gl_per_vertex,
                               member_out_gl_per_vertex_position,
                               spv::DecorationBuiltIn, spv::BuiltInPosition);
+  // Decorate the Position member as Invariant (member-level, matching the
+  // Khronos glslang reference implementation) so this geometry shader emits a
+  // bit-exact position across pipeline variants - in particular the depth
+  // pre-pass, which reuses the same GS/VS and swaps only the fragment stage.
+  // A variable-level Invariant on a Block does not reliably reach the built-in
+  // member on tile-based renderers (Adreno/Turnip), so it must be on the
+  // member. See spirv_shader_translator.cc for the matching VS decoration.
+  builder.addMemberDecoration(type_struct_out_gl_per_vertex,
+                              member_out_gl_per_vertex_position,
+                              spv::DecorationInvariant);
   if (clip_distance_count) {
     builder.addMemberName(type_struct_out_gl_per_vertex,
                           member_out_gl_per_vertex_clip_distance,
@@ -1563,7 +1598,8 @@ VkShaderModule VulkanPipelineCache::GetGeometryShader(GeometryShaderKey key) {
   spv::Id out_gl_per_vertex =
       builder.createVariable(spv::NoPrecision, spv::StorageClassOutput,
                              type_struct_out_gl_per_vertex, "");
-  builder.addDecoration(out_gl_per_vertex, spv::DecorationInvariant);
+  // Invariant is now applied to the Position member above (member-level),
+  // matching glslang, so no variable-level decoration is needed here.
   main_interface.push_back(out_gl_per_vertex);
 
   // Begin the main function.
@@ -2482,6 +2518,12 @@ bool VulkanPipelineCache::EnsurePipelineCreated(
     multisample_state.rasterizationSamples = VkSampleCountFlagBits(
         uint32_t(1) << uint32_t(description.render_pass_key.msaa_samples));
   }
+  // NOTE: the Direct3D 12 backend forces per-sample shading for float24 depth
+  // conversion under MSAA so each MSAA sample gets an exact quantized depth. On
+  // Turnip that produced a checkerboard over every surface, and for our purpose
+  // (matching the depth-EQUAL test against the stored guest depth)
+  // pixel-granularity quantized depth is sufficient, so we intentionally do NOT
+  // force sample-rate shading here.
 
   VkPipelineDepthStencilStateCreateInfo depth_stencil_state = {};
   depth_stencil_state.sType =
