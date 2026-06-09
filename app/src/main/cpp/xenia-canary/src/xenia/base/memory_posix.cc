@@ -19,10 +19,17 @@
 #include <mutex>
 #include <sstream>
 
+#include "xenia/base/logging.h"
 #include "xenia/base/math.h"
 #include "xenia/base/platform.h"
 #include "xenia/base/string.h"
 
+#if XE_PLATFORM_AX360E
+#include <android/sharedmem.h>
+#endif
+// Both ANDROID and AX360E are defined on the fork; the allocation path below is
+// exclusive (#if AX360E #elif ANDROID), but upstream's standalone dlopen setup
+// block is bare #if ANDROID, so its includes must be available even on AX360E.
 #if XE_PLATFORM_ANDROID
 #include <dlfcn.h>
 #include <linux/ashmem.h>
@@ -115,7 +122,7 @@ std::vector<std::string> g_shm_file_names;
 std::mutex g_shm_file_names_mutex;
 static bool g_cleanup_handlers_installed = false;
 
-#if !XE_PLATFORM_ANDROID
+#if !XE_PLATFORM_ANDROID&& !XE_PLATFORM_AX360E
 static void CleanupAtExit() {
   for (const auto& name : g_shm_file_names) {
     shm_unlink(name.c_str());
@@ -146,11 +153,11 @@ void* AllocFixed(void* base_address, size_t length,
       }
       return nullptr;
     }
-#ifdef MAP_FIXED_NOREPLACE
-    flags |= MAP_FIXED_NOREPLACE;
-#endif
+
+    flags |= MAP_FIXED;
   }
 
+  XELOGI("AllocFixed {:x} -> {:x}", reinterpret_cast<uint64_t >(base_address),reinterpret_cast<uint64_t >(base_address)+length);
   void* result = mmap(base_address, length, prot, flags, -1, 0);
 
   if (result != MAP_FAILED) {
@@ -252,7 +259,11 @@ bool QueryProtect(void* base_address, size_t& length, PageAccess& access_out) {
 FileMappingHandle CreateFileMappingHandle(const std::filesystem::path& path,
                                           size_t length, PageAccess access,
                                           bool commit) {
-#if XE_PLATFORM_ANDROID
+#if XE_PLATFORM_AX360E
+    //XELOGI("CreateFileMappingHandle: {} 0x{:X}", path.string(), length);
+    int sharedmem_fd = ASharedMemory_create(path.c_str(), length);
+    return sharedmem_fd >= 0 ? sharedmem_fd : kFileMappingHandleInvalid;
+#elif XE_PLATFORM_ANDROID
   // TODO(Triang3l): Check if memfd can be used instead on API 30+.
   if (android_ASharedMemory_create_) {
     int sharedmem_fd = android_ASharedMemory_create_(path.c_str(), length);
@@ -316,7 +327,7 @@ FileMappingHandle CreateFileMappingHandle(const std::filesystem::path& path,
 void CloseFileMappingHandle(FileMappingHandle handle,
                             const std::filesystem::path& path) {
   close(handle);
-#if !XE_PLATFORM_ANDROID
+#if !XE_PLATFORM_ANDROID&& !XE_PLATFORM_AX360E
   auto full_path = "/" / path;
   shm_unlink(full_path.c_str());
   // Remove from tracking
@@ -337,12 +348,11 @@ void* MapFileView(FileMappingHandle handle, void* base_address, size_t length,
 
   int flags = MAP_SHARED;
   if (base_address != nullptr) {
-#ifdef MAP_FIXED_NOREPLACE
-    flags |= MAP_FIXED_NOREPLACE;
-#endif
+      flags |= MAP_FIXED;
   }
+    XELOGI("MapFileView {:x} -> {:x}", reinterpret_cast<uint64_t >(base_address),reinterpret_cast<uint64_t >(base_address)+length);
 
-  void* result = mmap(base_address, length, prot, flags, handle, file_offset);
+    void* result = mmap(base_address, length, prot, flags, handle, file_offset);
 
   if (result != MAP_FAILED) {
     std::lock_guard guard(g_mapped_file_ranges_mutex);

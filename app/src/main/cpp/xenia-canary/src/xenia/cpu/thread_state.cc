@@ -23,45 +23,21 @@ namespace cpu {
 
 thread_local ThreadState* thread_state_ = nullptr;
 
-static void* AllocateContext() {
-  size_t granularity = xe::memory::allocation_granularity();
-  for (unsigned pos32 = 0x40; pos32 < 8192; ++pos32) {
-    /*
-        we want our register which points to the context to have 0xE0000000 in
-       the low 32 bits, for checking for whether we need the 4k offset, but also
-       if we allocate starting from the page before we allow backends to index
-       negatively to get to their own backend specific data, which makes full
-        use of int8 displacement
+    struct PackedContext {
+        XE_MAYBE_UNUSED uint64_t backend_data[32];//分配256字节給CPU后端使用
+        ppc::PPCContext ctx;
+    };
 
-
-        the downside is we waste most of one granula and probably a fair bit of
-       the one starting at 0xE0 by using a direct virtual memory allocation
-       instead of malloc
-    */
-    uintptr_t context_pre =
-        ((static_cast<uint64_t>(pos32) << 32) | 0xE0000000) - granularity;
-
-    void* p = memory::AllocFixed(
-        (void*)context_pre, granularity + sizeof(ppc::PPCContext),
-        memory::AllocationType::kReserveCommit, memory::PageAccess::kReadWrite);
-    if (p) {
-      return reinterpret_cast<char*>(p) +
-             granularity;  // now we have a ctx ptr with the e0 constant in low,
-                           // and one page allocated before it
+    static_assert(sizeof(PackedContext) == sizeof(ppc::PPCContext)+256);
+    static void* AllocateContext() {
+        PackedContext* ptr=memory::AlignedAlloc<PackedContext>(64);
+        return &ptr->ctx;
     }
-  }
 
-  assert_always("giving up on allocating context, likely leaking contexts");
-  return nullptr;
-}
-
-static void FreeContext(void* ctx) {
-  size_t granularity = xe::memory::allocation_granularity();
-  char* true_start_of_ctx =
-      &reinterpret_cast<char*>(ctx)[-static_cast<ptrdiff_t>(granularity)];
-  memory::DeallocFixed(true_start_of_ctx, granularity + sizeof(ppc::PPCContext),
-                       memory::DeallocationType::kRelease);
-}
+    static void FreeContext(void* ctx) {
+        void* ptr=reinterpret_cast<uint8_t*>( ctx)-256;
+        memory::AlignedFree(ptr);
+    }
 
 ThreadState::ThreadState(Processor* processor, uint32_t thread_id,
                          uint32_t stack_base, uint32_t pcr_address)

@@ -221,6 +221,31 @@ static void ExceptionHandlerCallback(int signal_number, siginfo_t* signal_info,
       return;
     }
   }
+
+  // No registered handler resolved this fault. Chain to the handler that was
+  // installed before us (on Android this is the platform / debuggerd handler)
+  // so the process crashes with a tombstone. Without this, returning here lets
+  // the kernel re-execute the faulting instruction, which faults again
+  // immediately -> an infinite fault->handler->return loop that pegs the thread
+  // at 100% CPU and looks like a hang / black screen instead of a crash.
+  const struct sigaction& previous_handler =
+      signal_number == SIGILL ? original_sigill_handler_
+                              : original_sigsegv_handler_;
+  if ((previous_handler.sa_flags & SA_SIGINFO) &&
+      previous_handler.sa_sigaction) {
+    previous_handler.sa_sigaction(signal_number, signal_info, signal_context);
+    return;
+  }
+  if (!(previous_handler.sa_flags & SA_SIGINFO) &&
+      previous_handler.sa_handler && previous_handler.sa_handler != SIG_DFL &&
+      previous_handler.sa_handler != SIG_IGN) {
+    previous_handler.sa_handler(signal_number);
+    return;
+  }
+  // No usable previous handler: restore the default action so the re-executed
+  // faulting instruction terminates the process at the real fault site,
+  // producing an accurate tombstone.
+  signal(signal_number, SIG_DFL);
 }
 
 void ExceptionHandler::Install(Handler fn, void* data) {

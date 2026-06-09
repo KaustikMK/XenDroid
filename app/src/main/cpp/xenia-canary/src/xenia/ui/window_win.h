@@ -19,9 +19,8 @@
 // Must be included before Windows headers for things like NOMINMAX.
 #include "xenia/base/platform_win.h"
 
-#include "xenia/ui/dxgi_include_win.h"
-
 #include <ShellScalingApi.h>
+#include <dxgi.h>
 
 namespace xe {
 namespace ui {
@@ -152,8 +151,6 @@ class Win32Window : public Window {
   // Whether the cursor has been hidden after the expiration of the timer, and
   // hasn't been revealed yet.
   bool cursor_currently_auto_hidden_ = false;
-
-  HDEVNOTIFY usb_device_notify_ = nullptr;
 };
 
 class Win32MenuItem : public MenuItem {

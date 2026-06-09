@@ -657,7 +657,157 @@ X_STATUS Emulator::LaunchDefaultModule(const std::filesystem::path& path) {
   }
   return result;
 }
+#if XE_PLATFORM_AX360E
 
+    const std::unique_ptr<vfs::Device> Emulator::CreateVfsDevice(
+            std::unique_ptr<DocumentFile> path,std::unique_ptr<DocumentFile> data_dir,FileSignatureType type, const std::string_view mount_path) {
+        // Must check if the type has changed e.g. XamSwapDisc
+        switch (type) {
+            case FileSignatureType::XEX1:
+            case FileSignatureType::XEX2:
+            case FileSignatureType::ELF: {
+                auto parent_path = path->getParentFile();
+                return std::make_unique<vfs::SAF_XexDevice>(mount_path, std::move(parent_path));
+            } break;
+            case FileSignatureType::LIVE:
+            case FileSignatureType::CON:
+            case FileSignatureType::PIRS: {
+                return std::make_unique<vfs::SAF_StfsDevice>(mount_path, std::move(path),std::move(data_dir));
+            } break;
+            case FileSignatureType::XISO: {
+                return std::make_unique<vfs::SAF_DiscImageDevice>(mount_path, std::move(path));
+            } break;
+            case FileSignatureType::ZAR: {
+                return std::make_unique<vfs::SAF_DiscZarchiveDevice>(mount_path, std::move(path));
+            } break;
+            case FileSignatureType::EXE:
+            case FileSignatureType::Unknown:
+            default:
+                return nullptr;
+                break;
+        }
+    }
+    X_STATUS Emulator::MountPath(std::unique_ptr<DocumentFile> path,std::unique_ptr<DocumentFile> data_dir,FileSignatureType type,
+                                 const std::string_view mount_path){
+        auto device = CreateVfsDevice(std::move(path),std::move(data_dir),type, mount_path);
+        if (!device || !device->Initialize()) {
+            XELOGE(
+                    "Unable to mount the selected file, it is an unsupported format or "
+                    "corrupted.");
+            return X_STATUS_NO_SUCH_FILE;
+        }
+        if (!file_system_->RegisterDevice(std::move(device))) {
+            XELOGE("Unable to register the input file to {}.", mount_path);
+            return X_STATUS_NO_SUCH_FILE;
+        }
+
+        file_system_->UnregisterSymbolicLink(kDefaultPartitionSymbolicLink);
+        file_system_->UnregisterSymbolicLink(kDefaultGameSymbolicLink);
+        file_system_->UnregisterSymbolicLink("plugins:");
+
+        // Create symlinks to the device.
+        file_system_->RegisterSymbolicLink(kDefaultGameSymbolicLink, mount_path);
+        file_system_->RegisterSymbolicLink(kDefaultPartitionSymbolicLink, mount_path);
+
+        return X_STATUS_SUCCESS;
+    }
+    X_STATUS Emulator::LaunchXexFile(std::unique_ptr<DocumentFile> xex_path){
+        auto file_name = xex_path->getName();
+
+        X_STATUS result=MountPath(std::move(xex_path),nullptr
+                ,FileSignatureType::XEX1,"\\Device\\Harddisk0\\Partition1");
+        if (XFAILED(result)) {
+            return result;
+        }
+        
+        // We create a virtual filesystem pointing to its directory and symlink
+        // that to the game filesystem.
+        // e.g., /my/files/foo.xex will get a local fs at:
+        // \\Device\\Harddisk0\\Partition1
+        // and then get that symlinked to game:\, so
+        // -> game:\foo.xex
+        // Get just the filename (foo.xex).
+
+        // Launch the game.
+        auto fs_path = fmt::format("{}\\", kDefaultGameSymbolicLink) +
+                       xe::path_to_utf8(file_name);
+        result = CompleteLaunch("", fs_path);
+
+        if (XFAILED(result)) {
+            return result;
+        }
+
+        kernel_state_->deployment_type_ = XDeploymentType::kInstalledToHDD;
+
+        if (!kernel::IsSystemTitle(kernel_state_->title_id())) {
+            return result;
+        }
+
+        const std::string mount_path =
+                utf8::find_base_guest_path(kernel_state_->GetExecutableModule()->path());
+
+        // System related symlinks. This should point to dashboard location in the
+        // future.
+        file_system_->RegisterSymbolicLink("\\SystemRoot", mount_path);
+
+        auto module = kernel_state_->LoadUserModule("xam.xex");
+
+        if (!module) {
+            module = kernel_state_->LoadUserModule("$flash_xam.xex");
+        }
+
+        if (module) {
+            result = kernel_state_->FinishLoadingUserModule(module, false);
+        }
+
+        return result;
+}
+    X_STATUS Emulator::LaunchDiscImage(std::unique_ptr<DocumentFile> path){
+        X_STATUS result=MountPath(std::move(path),nullptr
+                ,FileSignatureType::XISO,"\\Device\\Cdrom0");
+        if (XFAILED(result)) {
+            return result;
+        }
+        std::string module_path = FindLaunchModule();
+         result = CompleteLaunch("", module_path);
+
+        if (result == X_STATUS_NOT_FOUND && !cvars::launch_module.empty()) {
+            return LaunchDefaultModule("");
+        }
+        kernel_state_->deployment_type_ = XDeploymentType::kOpticalDisc;
+        return result;
+}
+    X_STATUS Emulator::LaunchDiscArchive(std::unique_ptr<DocumentFile> path) {
+        X_STATUS result=MountPath(std::move(path),nullptr
+                ,FileSignatureType::ZAR,"\\Device\\Cdrom0");
+        if (XFAILED(result)) {
+            return result;
+        }
+        std::string module_path = FindLaunchModule();
+         result = CompleteLaunch("", module_path);
+
+        if (result == X_STATUS_NOT_FOUND && !cvars::launch_module.empty()) {
+            return LaunchDefaultModule("");
+        }
+        kernel_state_->deployment_type_ = XDeploymentType::kOpticalDisc;
+        return result;
+    }
+    X_STATUS Emulator::LaunchStfsContainer(std::unique_ptr<DocumentFile> path,std::unique_ptr<DocumentFile> data_dir) {
+        X_STATUS result=MountPath(std::move(path),std::move(data_dir)
+                ,FileSignatureType::LIVE,"\\Device\\Cdrom0");
+        if (XFAILED(result)) {
+            return result;
+        }
+        std::string module_path = FindLaunchModule();
+         result = CompleteLaunch("", module_path);
+
+        if (result == X_STATUS_NOT_FOUND && !cvars::launch_module.empty()) {
+            return LaunchDefaultModule("");
+        }
+        kernel_state_->deployment_type_ = XDeploymentType::kDownload;
+        return result;
+}
+#endif
 X_STATUS Emulator::DataMigration(const uint64_t xuid) {
   uint32_t failure_count = 0;
   const std::string xuid_string = fmt::format("{:016X}", xuid);
@@ -1698,8 +1848,9 @@ X_STATUS Emulator::CompleteLaunch(const std::filesystem::path& path,
   if (graphics_system_) {
     on_shader_storage_initialization(true);
     graphics_system_->InitializeShaderStorage(
-        cache_root_, title_id_.value(), false,
-        [this]() { on_shader_storage_initialization(false); });
+        cache_root_, title_id_.value(), false/*,
+        [this]() { on_shader_storage_initialization(false); }*/);
+      on_shader_storage_initialization(false);
   }
 
   auto main_thread = kernel_state_->LaunchModule(module);
@@ -1719,11 +1870,6 @@ X_STATUS Emulator::CompleteLaunch(const std::filesystem::path& path,
                                        module->hash().value());
     }
   }
-
-  // Resume the main thread now.
-  // If the debugger has requested a suspend this will just decrement the
-  // suspend count without resuming it until the debugger wants.
-  main_thread_->Resume();
 
   return X_STATUS_SUCCESS;
 }

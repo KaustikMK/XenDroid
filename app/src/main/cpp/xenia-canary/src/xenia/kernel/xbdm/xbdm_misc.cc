@@ -66,7 +66,7 @@ dword_result_t DmGetConsoleType_entry(lpdword_t console_type) {
     return X_E_INVALIDARG;
   }
 
-  *console_type = cvars::console_type;
+  *console_type = CONSOLE_TYPE::DEVELOPMENT_KIT;
 
   return XBDM_SUCCESSFUL;
 }

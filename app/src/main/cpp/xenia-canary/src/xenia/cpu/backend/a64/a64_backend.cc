@@ -557,6 +557,7 @@ A64Backend::A64Backend() {
   code_cache_ = A64CodeCache::Create();
 
   // Allocate executable memory for guest trampolines.
+#if 0
   uint32_t base_address = 0x10000;
   void* buf = nullptr;
   while (base_address < 0x80000000) {
@@ -571,6 +572,13 @@ A64Backend::A64Backend() {
       break;
     }
   }
+#else
+    void* buf = reinterpret_cast<uint8_t*>(memory::AllocFixed(
+            (void*)(uintptr_t)code_cache_->execute_address_high(),
+            kGuestTrampolineSize * MAX_GUEST_TRAMPOLINES,
+            xe::memory::AllocationType::kReserveCommit,
+            xe::memory::PageAccess::kExecuteReadWrite));
+#endif
   xenia_assert(buf);
   guest_trampoline_memory_ = reinterpret_cast<uint8_t*>(buf);
   guest_trampoline_address_bitmap_.Resize(MAX_GUEST_TRAMPOLINES);

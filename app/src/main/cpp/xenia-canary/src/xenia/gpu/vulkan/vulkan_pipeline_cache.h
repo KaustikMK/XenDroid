@@ -510,6 +510,15 @@ class VulkanPipelineCache {
 
   // VkPipelineCache persistence path.
   std::filesystem::path vk_pipeline_cache_path_;
+  // Saves vk_pipeline_cache_ to vk_pipeline_cache_path_ (no-op if either is
+  // unset). Safe to call from the GPU thread concurrently with pipeline
+  // creation (the pipeline cache is internally synchronized by the driver).
+  void SaveVkPipelineCache();
+  // Periodically persist vk_pipeline_cache_ on the GPU thread so the cache
+  // survives Android process kills (upstream only saves at clean shutdown,
+  // which Android frequently skips when terminating the process).
+  std::atomic<bool> vk_pipeline_cache_dirty_{false};
+  uint64_t vk_pipeline_cache_last_save_ms_ = 0;
 };
 
 }  // namespace vulkan

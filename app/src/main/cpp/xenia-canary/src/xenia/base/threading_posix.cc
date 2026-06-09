@@ -94,7 +94,7 @@ timespec DurationToTimeSpec(std::chrono::duration<_Rep, _Period> duration) {
 enum class SignalType {
   kThreadSuspend,
   kThreadUserCallback,
-#if XE_PLATFORM_ANDROID
+#if XE_PLATFORM_ANDROID||XE_PLATFORM_AX360E
   // pthread_cancel is not available on Android, using a signal handler for
   // simplified PTHREAD_CANCEL_ASYNCHRONOUS-like behavior - not disabling
   // cancellation currently, so should be enough.
@@ -102,7 +102,9 @@ enum class SignalType {
 #endif
   k_Count
 };
-
+#if XE_PLATFORM_AX360E
+static std::atomic<void*> g_thr_user_callback{ nullptr};
+#endif
 int GetSystemSignal(SignalType num) {
   auto result = SIGRTMIN + static_cast<int>(num);
   assert_true(result < SIGRTMAX);
@@ -196,6 +198,7 @@ bool SetTlsValue(TlsHandle handle, uintptr_t value) {
 class PosixConditionBase {
  public:
   PosixConditionBase() {
+#if !XE_PLATFORM_AX360E
     // Initialize as robust mutex to handle thread termination gracefully
     pthread_mutexattr_t attr;
     pthread_mutexattr_init(&attr);
@@ -206,6 +209,7 @@ class PosixConditionBase {
     pthread_mutex_destroy(native_mutex);      // Destroy default mutex
     pthread_mutex_init(native_mutex, &attr);  // Reinit as robust
     pthread_mutexattr_destroy(&attr);
+#endif
   }
 
   virtual ~PosixConditionBase() = default;
@@ -215,6 +219,7 @@ class PosixConditionBase {
     bool executed;
     auto predicate = [this] { return this->signaled(); };
 
+#if !XE_PLATFORM_AX360E
     // Handle robust mutex locking
     auto native_mutex = static_cast<pthread_mutex_t*>(mutex_.native_handle());
     int lock_result = pthread_mutex_lock(native_mutex);
@@ -226,6 +231,9 @@ class PosixConditionBase {
     }
 
     std::unique_lock<std::mutex> lock(mutex_, std::adopt_lock);
+#else
+    std::unique_lock<std::mutex> lock(mutex_);
+#endif
 
     if (predicate()) {
       executed = true;
@@ -280,6 +288,7 @@ class PosixConditionBase {
             static_cast<pthread_mutex_t*>(handles[i]->mutex_.native_handle());
         int result = pthread_mutex_trylock(native_mutex);
 
+#if !XE_PLATFORM_AX360E
         if (result == 0 || result == EOWNERDEAD) {
           // Successfully acquired lock or recovered from dead owner
           if (result == EOWNERDEAD) {
@@ -292,6 +301,14 @@ class PosixConditionBase {
           all_locked = false;
           break;
         }
+#else
+        if (result == 0) {
+          locks.emplace_back(handles[i]->mutex_, std::adopt_lock);
+        } else {
+          all_locked = false;
+          break;
+        }
+#endif
       }
 
       // If we couldn't acquire all locks, release what we have and retry
@@ -691,7 +708,7 @@ class PosixCondition<Thread> final : public PosixConditionBase {
   }
 
 #if XE_PLATFORM_ANDROID
-  void SetAndroidPreApi26Name(const std::string_view name) {
+  void SetAndroidPreApi26Name(const std::string_view name) const {
     if (android_pthread_getname_np_) {
       return;
     }
@@ -706,7 +723,7 @@ class PosixCondition<Thread> final : public PosixConditionBase {
   uint64_t affinity_mask() const {
     WaitStarted();
     cpu_set_t cpu_set;
-#if XE_PLATFORM_ANDROID
+#if XE_PLATFORM_ANDROID||XE_PLATFORM_AX360E
     if (sched_getaffinity(pthread_gettid_np(thread_), sizeof(cpu_set_t),
                           &cpu_set) != 0) {
       assert_always();
@@ -734,7 +751,7 @@ class PosixCondition<Thread> final : public PosixConditionBase {
         CPU_SET(i, &cpu_set);
       }
     }
-#if XE_PLATFORM_ANDROID
+#if XE_PLATFORM_ANDROID||XE_PLATFORM_AX360E
     if (sched_setaffinity(pthread_gettid_np(thread_), sizeof(cpu_set_t),
                           &cpu_set) != 0) {
       assert_always();
@@ -803,7 +820,11 @@ class PosixCondition<Thread> final : public PosixConditionBase {
     user_callback_ = std::move(callback);
     sigval value{};
     value.sival_ptr = this;
-#if XE_PLATFORM_ANDROID
+#if XE_PLATFORM_AX360E
+      assert_zero(g_thr_user_callback.load());
+    g_thr_user_callback.store( this);
+      pthread_kill(thread_,GetSystemSignal(SignalType::kThreadUserCallback));
+#elif XE_PLATFORM_ANDROID
     sigqueue(pthread_gettid_np(thread_),
              GetSystemSignal(SignalType::kThreadUserCallback), value);
 #else
@@ -913,7 +934,7 @@ class PosixCondition<Thread> final : public PosixConditionBase {
     if (is_current_thread) {
       pthread_exit(reinterpret_cast<void*>(exit_code));
     }
-#ifdef XE_PLATFORM_ANDROID
+#if XE_PLATFORM_ANDROID||XE_PLATFORM_AX360E
     if (pthread_kill(thread_, GetSystemSignal(SignalType::kThreadTerminate)) !=
         0) {
       assert_always();
@@ -951,9 +972,23 @@ class PosixCondition<Thread> final : public PosixConditionBase {
   static void* ThreadStartRoutine(void* parameter);
   bool signaled() const override { return signaled_; }
   void post_execution() override {
-    if (thread_) {
-      pthread_join(thread_, nullptr);
+    // Wait() runs post_execution() once per waiter, and multiple guest threads
+    // can wait on the same thread handle, so this may be called more than once
+    // (and concurrently on different host threads). Clean up exactly once:
+    // snapshot and clear thread_ under the lock, then do the blocking work
+    // outside it. A later caller sees thread_ == 0 and no-ops -- avoiding
+    // pthread_join on an already-reaped (invalid) pthread_t and a double
+    // sem_destroy.
+    pthread_t to_join;
+    {
+      std::lock_guard<std::mutex> lock(state_mutex_);
+      to_join = thread_;
+      if (!to_join) {
+        return;
+      }
+      thread_ = 0;
     }
+    pthread_join(to_join, nullptr);
     sem_destroy(&suspend_sem_);
   }
   pthread_t thread_;
@@ -972,7 +1007,7 @@ class PosixCondition<Thread> final : public PosixConditionBase {
   // Name accessible via name() on Android before API 26 which added
   // pthread_getname_np.
   mutable std::mutex android_pre_api_26_name_mutex_;
-  char android_pre_api_26_name_[16];
+  mutable char android_pre_api_26_name_[16];
 #endif
 };
 
@@ -1267,7 +1302,7 @@ class PosixThread final : public PosixConditionHandle<Thread> {
 thread_local PosixThread* current_thread_ = nullptr;
 
 void* PosixCondition<Thread>::ThreadStartRoutine(void* parameter) {
-#if !XE_PLATFORM_ANDROID
+#if !XE_PLATFORM_ANDROID&&!XE_PLATFORM_AX360E
   if (pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS, nullptr) != 0) {
     assert_always();
   }
@@ -1321,7 +1356,7 @@ std::unique_ptr<Thread> Thread::Create(CreationParameters params,
                                        std::function<void()> start_routine) {
   install_signal_handler(SignalType::kThreadSuspend);
   install_signal_handler(SignalType::kThreadUserCallback);
-#if XE_PLATFORM_ANDROID
+#if XE_PLATFORM_ANDROID||XE_PLATFORM_AX360E
   install_signal_handler(SignalType::kThreadTerminate);
 #endif
   auto thread = std::make_unique<PosixThread>();
@@ -1381,14 +1416,20 @@ static void signal_handler(int signal, siginfo_t* info, void* context) {
       current_thread_->WaitSuspended();
     } break;
     case SignalType::kThreadUserCallback: {
-      assert_not_null(info->si_value.sival_ptr);
-      auto p_thread =
-          static_cast<PosixCondition<Thread>*>(info->si_value.sival_ptr);
-      if (alertable_state_) {
-        p_thread->CallUserCallback();
-      }
-    } break;
-#if XE_PLATFORM_ANDROID
+#if XE_PLATFORM_AX360E
+        void* ptr=g_thr_user_callback.load();
+        assert_not_null(ptr);
+        g_thr_user_callback.store(nullptr);
+        auto p_thread =static_cast<PosixCondition<Thread>*>(ptr);
+#else
+        assert_not_null(info->si_value.sival_ptr);
+        auto p_thread = static_cast<PosixCondition<Thread>*>(info->si_value.sival_ptr);
+#endif
+        if (alertable_state_) {
+            p_thread->CallUserCallback();
+        }
+      } break;
+#if XE_PLATFORM_ANDROID||XE_PLATFORM_AX360E
     case SignalType::kThreadTerminate: {
       pthread_exit(reinterpret_cast<void*>(-1));
     } break;

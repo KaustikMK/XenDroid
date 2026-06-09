@@ -13,7 +13,9 @@
 #if XE_PLATFORM_WIN32
 #include "xenia/base/platform_win.h"
 #endif
-
+#if XE_PLATFORM_AX360E
+#include "../aarch64_disasm.h"
+#endif
 namespace xe {
 namespace cpu {
 namespace backend {
@@ -36,7 +38,12 @@ void A64CodeCache::FlushCodeRange(void* address, size_t size) {
 #if XE_PLATFORM_WIN32
   FlushInstructionCache(GetCurrentProcess(), address, size);
 #else
-  __builtin___clear_cache(
+
+
+#if XE_PLATFORM_AX360E
+    //XELOGI("ASM:\n{}", aarch64_disasm(reinterpret_cast<uint64_t>(address),reinterpret_cast<uint32_t*>(address),size/4));
+#endif
+    __builtin___clear_cache(
       reinterpret_cast<char*>(address),
       reinterpret_cast<char*>(static_cast<uint8_t*>(address) + size));
 #endif

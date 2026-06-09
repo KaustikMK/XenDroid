@@ -31,11 +31,11 @@
 #include <ShlObj_core.h>
 #endif
 
-#if XE_PLATFORM_LINUX
+#if XE_PLATFORM_LINUX&&!(XE_PLATFORM_ANDROID||XE_PLATFORM_AX360E)
 #include <fontconfig/fontconfig.h>
 #endif
 
-#ifdef XE_PLATFORM_LINUX
+#if XE_PLATFORM_LINUX&&!(XE_PLATFORM_ANDROID||XE_PLATFORM_AX360E)
 #include <gtk/gtk.h>
 #endif
 
@@ -142,7 +142,7 @@ void ImGuiDrawer::RemoveNotification(ImGuiNotification* dialog) {
   DetachIfLastWindowRemoved();
 }
 
-#ifdef XE_PLATFORM_LINUX
+#if XE_PLATFORM_LINUX&&!(XE_PLATFORM_ANDROID||XE_PLATFORM_AX360E)
 static void SetClipboardText(void* user_data, const char* text) {
   GtkClipboard* clipboard = gtk_clipboard_get(GDK_SELECTION_CLIPBOARD);
   gtk_clipboard_set_text(clipboard, text, -1);
@@ -162,7 +162,6 @@ void ImGuiDrawer::Initialize() {
 
   auto& io = ImGui::GetIO();
   io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
-  io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
 
   const float font_size = std::max((float)cvars::font_size, 8.f);
   const float title_font_size = font_size + 6.f;
@@ -170,7 +169,7 @@ void ImGuiDrawer::Initialize() {
   InitializeFonts(font_size);
   InitializeFonts(title_font_size);
 
-#ifdef XE_PLATFORM_LINUX
+#if XE_PLATFORM_LINUX&&!(XE_PLATFORM_ANDROID||XE_PLATFORM_AX360E)
   io.SetClipboardTextFn = SetClipboardText;
   io.GetClipboardTextFn = GetClipboardText;
 #endif
@@ -338,7 +337,6 @@ void ImGuiDrawer::SetupNotificationTextures() {
   }
 }
 
-// https://everythingfonts.com/unicode/maps
 static constexpr ImWchar font_glyph_ranges[] = {
     0x0020, 0x00FF,  // Basic Latin + Latin Supplement
     0x0100, 0x024F,  // Extended Latin
@@ -346,13 +344,8 @@ static constexpr ImWchar font_glyph_ranges[] = {
     0x0400, 0x04FF,  // Cyrillic
     0x2000, 0x206F,  // General Punctuation
     0x2070, 0x209F,  // Superscripts & Subscripts
-    0x20A0, 0x20CF,  // Currency Symbols
     0x2100, 0x214F,  // Letterlike Symbols
     0x2150, 0x218F,  // Number Forms
-    0x2500, 0x257F,  // Box Drawing
-    0x2580, 0x259F,  // Block Elements
-    0x25A0, 0x25FF,  // Geometric Shapes
-    0x2600, 0x26FF,  // Miscellaneous Symbols
     0,
 };
 
@@ -440,7 +433,7 @@ bool ImGuiDrawer::LoadJapaneseFont(ImGuiIO& io, float font_size) {
   return true;
 #endif
 
-#if XE_PLATFORM_LINUX
+#if XE_PLATFORM_LINUX&&!(XE_PLATFORM_ANDROID||XE_PLATFORM_AX360E)
   // On Linux, find and merge CJK font using fontconfig
   FcConfig* config = FcInitLoadConfigAndFonts();
   if (!config) {
@@ -564,7 +557,7 @@ void ImGuiDrawer::SetImmediateDrawer(ImmediateDrawer* new_immediate_drawer) {
   if (immediate_drawer_) {
     GetIO().Fonts->TexID = reinterpret_cast<ImTextureID>(nullptr);
     font_texture_.reset();
-    locked_achievement_icon_.reset();
+
     notification_icon_textures_.clear();
   }
   immediate_drawer_ = new_immediate_drawer;

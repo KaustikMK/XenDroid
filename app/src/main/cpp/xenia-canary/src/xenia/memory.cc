@@ -50,7 +50,9 @@ DEFINE_int32(scribble_heap_value, 0,
              "Value used to fill all allocated heap memory. 0 - Random value. "
              "Valid range: [1-255]",
              "Memory");
-
+DEFINE_uint32(mmap_address_high,8,
+              "1-124",
+              "Memory");
 namespace xe {
 uint32_t get_page_count(uint32_t value, uint32_t page_size) {
   return xe::round_up(value, page_size) / page_size;
@@ -204,13 +206,24 @@ bool Memory::Initialize() {
   // Attempt to create our views. This may fail at the first address
   // we pick, so try a few times.
   mapping_base_ = 0;
-  for (size_t n = 32; n < 64; n++) {
-    auto mapping_base = reinterpret_cast<uint8_t*>(1ull << n);
-    if (!MapViews(mapping_base)) {
-      mapping_base_ = mapping_base;
-      break;
+#if !XE_PLATFORM_AX360E
+    for (size_t n = 32; n < 64; n++) {
+      auto mapping_base = reinterpret_cast<uint8_t*>(1ull << n);
+      if (!MapViews(mapping_base)) {
+        mapping_base_ = mapping_base;
+        break;
+      }
     }
-  }
+#else
+    assert(cvars::mmap_address_high>=1&&cvars::mmap_address_high<=124);
+    auto mapping_base = reinterpret_cast<uint8_t*>(uint64_t(cvars::mmap_address_high+0) << 32);
+    if (!MapViews(mapping_base)) {
+        mapping_base_ = mapping_base;
+    } else {
+        assert_always();
+        return false;
+    }
+#endif
   if (!mapping_base_) {
     XELOGE("Unable to find a continuous block in the 64bit address space.");
     assert_always();

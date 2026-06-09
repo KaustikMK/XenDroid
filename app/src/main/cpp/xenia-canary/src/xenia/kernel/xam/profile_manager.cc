@@ -11,6 +11,7 @@
 
 #include "xenia/kernel/xam/profile_manager.h"
 
+#include "xenia/base/platform.h"
 #include "xenia/base/logging.h"
 #include "xenia/emulator.h"
 #include "xenia/hid/input_system.h"
@@ -18,8 +19,13 @@
 #include "xenia/kernel/util/crypto_utils.h"
 #include "xenia/vfs/devices/host_path_device.h"
 
+#if XE_PLATFORM_AX360E
+DEFINE_string(logged_profile_slot_0_xuid, "E0300000A360E000",
+              "XUID of the profile to load on boot in slot 0", "Profiles");
+#else
 DEFINE_string(logged_profile_slot_0_xuid, "",
               "XUID of the profile to load on boot in slot 0", "Profiles");
+#endif
 DEFINE_string(logged_profile_slot_1_xuid, "",
               "XUID of the profile to load on boot in slot 1", "Profiles");
 DEFINE_string(logged_profile_slot_2_xuid, "",

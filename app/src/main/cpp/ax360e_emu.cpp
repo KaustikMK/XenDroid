@@ -300,8 +300,10 @@ bool EmulatorApp::OnInitialize() {
     emu =
             std::make_unique<xe::Emulator>("", storage_root, content_root, cache_root);
 
-    // Determine window size based on user setting.
-    auto res = xe::gpu::GraphicsSystem::GetInternalDisplayResolution();
+    // Window size comes from the actual Android surface (set via
+    // ANativeWindow_getWidth/Height in emulator.cpp); the fork-side
+    // GraphicsSystem::GetInternalDisplayResolution() was dropped in favor of
+    // upstream's XConfig-based GetResolution().
 
     // Main emulator display window.
     emu_window = xe::app::EmulatorWindow::Create(emu.get(), app_context(),
@@ -720,7 +722,10 @@ namespace ae{
         if(!e) return;
         xe::gpu::GraphicsSystem* gs = e->graphics_system();
         if(!gs) return;
-        gs->FlushPipelineCache(/*timeout_ms=*/1500);
+        // TODO(rebase): re-enable once the persistent VkPipelineCache opt is
+        // re-grafted onto the upstream baseline (FlushPipelineCache was deferred).
+        // gs->FlushPipelineCache(/*timeout_ms=*/1500);
+        (void)gs;
     }
     bool is_paused(){
         return g_windowed_app_ref->emu->is_paused();

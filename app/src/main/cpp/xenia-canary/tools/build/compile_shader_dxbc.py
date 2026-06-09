@@ -82,7 +82,7 @@ def main():
         compiler_args.extend([
             "-T", f"{stage}_6_0",
             "-HV", "2017",
-            "-D", "SHADING_LANGUAGE_HLSL_XE=1",
+            "-D", "XESL_LANGUAGE_HLSL=1",
             "-I", src_dir,
             "-Fh", output_path,
             "-Vn", identifier,
@@ -92,7 +92,7 @@ def main():
     else:
         # FXC uses traditional syntax.
         compiler_args.extend([
-            "/D", "SHADING_LANGUAGE_HLSL_XE=1",
+            "/D", "XESL_LANGUAGE_HLSL=1",
             "/I", src_dir,
             "/Fh", output_path,
             "/T", f"{stage}_5_1",

@@ -135,7 +135,11 @@ std::unique_ptr<MappedMemory> MappedMemory::OpenForAndroidContentUri(
                                                length);
 }
 #endif  // XE_PLATFORM_ANDROID
-
+#if XE_PLATFORM_AX360E
+    std::unique_ptr<MappedMemory> MappedMemory::OpenForUnixFd(int fd){
+        return PosixMappedMemory::WrapFileDescriptor(fd, Mode::kRead,0,0);
+    }
+#endif
 std::unique_ptr<ChunkedMappedMemoryWriter> ChunkedMappedMemoryWriter::Open(
     const std::filesystem::path& path, size_t chunk_size,
     bool low_address_space) {

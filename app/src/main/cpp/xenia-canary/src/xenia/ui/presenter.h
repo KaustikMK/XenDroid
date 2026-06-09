@@ -39,8 +39,7 @@
 // Windows handle types.
 #include "xenia/base/platform_win.h"
 
-#include "xenia/ui/dxgi_include_win.h"
-
+#include <dxgi.h>
 #include <wrl/client.h>
 #endif  // XE_PLATFORM
 

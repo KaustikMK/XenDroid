@@ -111,10 +111,13 @@ def main():
             return 1
 
         # Step 2: spirv-opt
+        # NOTE: --canonicalize-ids omitted — it only exists in very recent
+        # SPIRV-Tools and is purely cosmetic (renumbers result IDs); -O does the
+        # real optimization. Dropping it lets older spirv-opt builds work.
         result = subprocess.run([
-            spirv_opt, "-O", "-O", "--canonicalize-ids",
+            spirv_opt, "-O", "-O",
             glslang_spv, "-o", opt_spv,
-        ], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        ], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
         if result.returncode != 0:
             print(f"ERROR: spirv-opt failed for {src_name}", file=sys.stderr)
             if result.stderr:
@@ -123,7 +126,7 @@ def main():
 
         # Step 3: spirv-dis
         result = subprocess.run([spirv_dis, "-o", dis_txt, opt_spv],
-                                stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+                                stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
         if result.returncode != 0:
             print(f"ERROR: spirv-dis failed for {src_name}", file=sys.stderr)
             if result.stderr:

@@ -494,13 +494,6 @@ void Window::OnMonitorUpdate(MonitorUpdateEvent& e) {
   }
 }
 
-void Window::OnUsbDeviceChanged(
-    bool is_arrival, WindowDestructionReceiver& destruction_receiver) {
-  SendEventToListeners(
-      [is_arrival](auto listener) { listener->OnUsbDeviceChanged(is_arrival); },
-      destruction_receiver);
-}
-
 bool Window::OnActualSizeUpdate(
     uint32_t new_physical_width, uint32_t new_physical_height,
     WindowResizeAction cause_action,

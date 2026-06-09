@@ -15,6 +15,7 @@
 #include "xenia/apu/audio_system.h"
 #include "xenia/base/assert.h"
 #include "xenia/base/byte_order.h"
+#include "xenia/base/frame_stats.h"
 #include "xenia/base/logging.h"
 #include "xenia/base/math.h"
 #include "xenia/base/profiling.h"
@@ -1384,6 +1385,10 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
                                        uint32_t frontbuffer_width,
                                        uint32_t frontbuffer_height) {
   SCOPE_profile_cpu_f("gpu");
+
+  // Count one presented guest frame for the debug overlay's FPS / frame-time
+  // stats (the game's real frame rate, independent of the host present path).
+  xe::RecordGuestPresent();
 
   ui::Presenter* presenter = graphics_system_->presenter();
   if (!presenter) {

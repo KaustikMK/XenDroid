@@ -32,7 +32,11 @@
 #elif defined(WIN32) || defined(_WIN32)
 #define XE_PLATFORM_WIN32 1
 #elif defined(__ANDROID__)
-#define XE_PLATFORM_ANDROID 1
+// The fork IS an Android build: define XE_PLATFORM_ANDROID so upstream's
+// (now-mature) `#if XE_PLATFORM_ANDROID` code paths activate, and keep
+// XE_PLATFORM_AX360E for fork-specific overrides on top.
+//#define XE_PLATFORM_ANDROID 1
+#define XE_PLATFORM_AX360E 1
 #define XE_PLATFORM_LINUX 1
 #elif defined(__gnu_linux__)
 #define XE_PLATFORM_GNU_LINUX 1

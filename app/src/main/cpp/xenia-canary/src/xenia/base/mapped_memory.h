@@ -34,6 +34,10 @@ class MappedMemory {
       size_t length = 0);
 #endif  // XE_PLATFORM_ANDROID
 
+#if XE_PLATFORM_AX360E
+        static std::unique_ptr<MappedMemory> OpenForUnixFd(int fd);
+#endif
+
   MappedMemory() : data_(nullptr), size_(0) {}
   MappedMemory(void* data, size_t size) : data_(data), size_(size) {}
   MappedMemory(const MappedMemory& mapped_memory) = delete;

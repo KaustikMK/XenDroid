@@ -9,6 +9,7 @@
 
 #include "xenia/ui/vulkan/vulkan_instance.h"
 
+#include <cstdlib>
 #include <sstream>
 #include <string>
 #include <unordered_map>
@@ -24,6 +25,25 @@
 #include <dlfcn.h>
 #elif XE_PLATFORM_WIN32
 #include "xenia/base/platform_win.h"
+#endif
+
+#if XE_PLATFORM_AX360E||XE_PLATFORM_ANDROID
+#include "../libadrenotools/include/adrenotools/priv.h"
+#include "../libadrenotools/include/adrenotools/driver.h"
+extern std::string g_native_lib_dir;
+
+DEFINE_string(vulkan_lib_path, "", "Custom Driver Library Path", "Vulkan");
+DEFINE_bool(
+        adrenotools_force_max_clocks, false,
+        "Custom Driver Force Max Clocks",
+        "Vulkan");
+DEFINE_string(
+        turnip_debug, "sysmem",
+        "TU_DEBUG flags passed to the Turnip (Mesa freedreno) Vulkan driver, "
+        "comma-separated. 'sysmem' forces sysmem (untiled) rendering, which "
+        "avoids a class of Adreno GPU hangs (device-loss). Empty leaves "
+        "TU_DEBUG unset.",
+        "Vulkan");
 #endif
 
 DEFINE_bool(
@@ -50,13 +70,61 @@ std::unique_ptr<VulkanInstance> VulkanInstance::Create(
 
   bool functions_loaded = true;
 #if XE_PLATFORM_LINUX
-#if XE_PLATFORM_ANDROID
+#if XE_PLATFORM_ANDROID||XE_PLATFORM_AX360E
   const char* const loader_library_name = "libvulkan.so";
 #else
   const char* const loader_library_name = "libvulkan.so.1";
 #endif
+#if XE_PLATFORM_ANDROID||XE_PLATFORM_AX360E
+    // Turnip reads TU_DEBUG from the environment at vkCreateInstance, so set it
+    // before the driver is loaded. Default "sysmem" forces untiled rendering,
+    // which avoids a class of Adreno GPU hangs (device-loss).
+    if (!cvars::turnip_debug.empty()) {
+      setenv("TU_DEBUG", cvars::turnip_debug.c_str(), 1);
+      XELOGI("Set TU_DEBUG={} for the Turnip Vulkan driver",
+             cvars::turnip_debug);
+    }
+    std::string custom_lib_path=cvars::vulkan_lib_path;
+    bool custom_lib_exists =
+        !custom_lib_path.empty() && std::filesystem::exists(custom_lib_path);
+    if(custom_lib_exists){
+
+        std::string hook_dir=g_native_lib_dir+'/';
+
+        std::string custom_lib_dir=custom_lib_path.substr(0,custom_lib_path.find_last_of('/')+1);
+        std::string custom_lib_name=custom_lib_path.substr(custom_lib_path.find_last_of('/')+1);
+
+        XELOGI("Loading custom Vulkan driver: {}", custom_lib_path);
+
+        vulkan_instance->loader_= adrenotools_open_libvulkan(RTLD_NOW,ADRENOTOOLS_DRIVER_CUSTOM,nullptr
+                ,hook_dir.c_str()
+                ,custom_lib_dir.c_str()
+                ,custom_lib_name.c_str()
+                ,nullptr,nullptr);
+
+        if (!vulkan_instance->loader_) {
+          XELOGE("adrenotools failed to load custom Vulkan driver '{}': {}",
+                 custom_lib_path, dlerror());
+        }
+
+        adrenotools_set_turbo(cvars::adrenotools_force_max_clocks);
+    }
+    else {
+        if (!custom_lib_path.empty()) {
+          XELOGW(
+              "Custom Vulkan driver path '{}' was set but the file does not "
+              "exist; using the system Vulkan driver instead.",
+              custom_lib_path);
+        }
+#endif
+
   // http://developer.download.nvidia.com/mobile/shield/assets/Vulkan/UsingtheVulkanAPI.pdf
   vulkan_instance->loader_ = dlopen(loader_library_name, RTLD_NOW | RTLD_LOCAL);
+
+#if XE_PLATFORM_ANDROID || XE_PLATFORM_AX360E
+    }
+#endif
+
   if (!vulkan_instance->loader_) {
     XELOGE("Failed to load {}", loader_library_name);
     return nullptr;
@@ -220,6 +288,14 @@ std::unique_ptr<VulkanInstance> VulkanInstance::Create(
   if (try_enable_validation) {
     requested_layers.emplace("VK_LAYER_KHRONOS_validation",
                              &layer_khronos_validation);
+    // Also turn on synchronization validation (WAR/RAW/WAW hazards from
+    // missing or insufficient barriers). Standard API validation can't see
+    // these, but they're the usual cause of intermittent rendering glitches
+    // (e.g. a depth buffer read/tested before a prior write completes -> stale
+    // depth -> flickering occlusion). The Khronos validation layer reads
+    // VK_LAYER_ENABLES at vkCreateInstance; set it before instance creation.
+    setenv("VK_LAYER_ENABLES",
+           "VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT", 1);
   }
 
   std::vector<const char*> enabled_layers;
@@ -350,9 +426,22 @@ std::unique_ptr<VulkanInstance> VulkanInstance::Create(
           ? VulkanDevice::kHighestUsedApiMinorVersion
           : VK_MAKE_API_VERSION(0, 1, 0, 0);
 
+  // Turn on synchronization validation when the validation layer is enabled -
+  // catches WAR/RAW/WAW hazards (missing/insufficient barriers -> stale reads)
+  // that plain API validation can't see. Chained via the layer-provided
+  // VK_EXT_validation_features; must outlive the vkCreateInstance call(s) below.
+  static const VkValidationFeatureEnableEXT kEnabledValidationFeatures[] = {
+      VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT};
+  VkValidationFeaturesEXT validation_features = {};
+  validation_features.sType = VK_STRUCTURE_TYPE_VALIDATION_FEATURES_EXT;
+  validation_features.enabledValidationFeatureCount = uint32_t(
+      sizeof(kEnabledValidationFeatures) / sizeof(kEnabledValidationFeatures[0]));
+  validation_features.pEnabledValidationFeatures = kEnabledValidationFeatures;
+
   VkInstanceCreateInfo instance_create_info;
   instance_create_info.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
-  instance_create_info.pNext = nullptr;
+  instance_create_info.pNext =
+      layer_khronos_validation ? &validation_features : nullptr;
   instance_create_info.flags = 0;
   // VK_KHR_get_physical_device_properties2 is needed to get the portability
   // subset features.
@@ -382,6 +471,8 @@ std::unique_ptr<VulkanInstance> VulkanInstance::Create(
          requested_layers) {
       *requested_layer.second = false;
     }
+    // The validation layer is gone now, so drop the validation-features pNext.
+    instance_create_info.pNext = nullptr;
     instance_create_info.enabledLayerCount = 0;
     instance_create_info.enabledExtensionCount =
         uint32_t(enabled_implementation_extension_count);

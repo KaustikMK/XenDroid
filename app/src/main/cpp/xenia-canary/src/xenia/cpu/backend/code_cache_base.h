@@ -31,6 +31,8 @@
 #include "xenia/cpu/backend/code_cache.h"
 #include "xenia/cpu/function.h"
 
+DECLARE_uint32(mmap_address_high);
+
 namespace xe {
 namespace cpu {
 namespace backend {
@@ -102,11 +104,17 @@ class CodeCacheBase : public CodeCache {
       mapping_ = xe::memory::kFileMappingHandleInvalid;
     }
   }
-
+    static uintptr_t execute_address_high() {
+#if XE_ARCH_AMD64
+      return 0;
+#else
+        return uint64_t(cvars::mmap_address_high+2)<<32;
+#endif
+    }
+     uintptr_t execute_base_address() const override {
+        return execute_address_high()|kGeneratedCodeExecuteBaseLow;
+    }
   const std::filesystem::path& file_name() const override { return file_name_; }
-  uintptr_t execute_base_address() const override {
-    return kGeneratedCodeExecuteBase;
-  }
   size_t total_size() const override { return kGeneratedCodeSize; }
 
   bool has_indirection_table() { return indirection_table_base_ != nullptr; }
@@ -120,7 +128,7 @@ class CodeCacheBase : public CodeCache {
       return;
     }
     uint32_t* indirection_slot = reinterpret_cast<uint32_t*>(
-        indirection_table_base_ + (guest_address - kIndirectionTableBase));
+        indirection_table_base_ + (guest_address - kIndirectionTableBaseLow));
     *indirection_slot = host_address;
   }
 
@@ -129,12 +137,12 @@ class CodeCacheBase : public CodeCache {
       return;
     }
     xe::memory::AllocFixed(
-        indirection_table_base_ + (guest_low - kIndirectionTableBase),
+        indirection_table_base_ + (guest_low - kIndirectionTableBaseLow),
         guest_high - guest_low, xe::memory::AllocationType::kCommit,
         xe::memory::PageAccess::kReadWrite);
     uint32_t* p = reinterpret_cast<uint32_t*>(indirection_table_base_);
     for (uint32_t address = guest_low; address < guest_high; ++address) {
-      p[(address - kIndirectionTableBase) / 4] = indirection_default_value_;
+      p[(address - kIndirectionTableBaseLow) / 4] = indirection_default_value_;
     }
   }
 
@@ -213,7 +221,7 @@ class CodeCacheBase : public CodeCache {
     // Fix up indirection table.
     if (guest_address && indirection_table_base_) {
       uint32_t* indirection_slot = reinterpret_cast<uint32_t*>(
-          indirection_table_base_ + (guest_address - kIndirectionTableBase));
+          indirection_table_base_ + (guest_address - kIndirectionTableBaseLow));
       *indirection_slot =
           uint32_t(reinterpret_cast<uint64_t>(code_execute_address));
     }
@@ -270,11 +278,11 @@ class CodeCacheBase : public CodeCache {
 
  protected:
   static constexpr size_t kIndirectionTableSize = 0x1FFFFFFF;
-  static constexpr uintptr_t kIndirectionTableBase = 0x80000000;
+  static constexpr uintptr_t kIndirectionTableBaseLow = 0x80000000;
   static constexpr size_t kGeneratedCodeSize = 0x0FFFFFFF;
-  static constexpr uintptr_t kGeneratedCodeExecuteBase = 0xA0000000;
-  static const uintptr_t kGeneratedCodeWriteBase =
-      kGeneratedCodeExecuteBase + kGeneratedCodeSize + 1;
+  static constexpr uintptr_t kGeneratedCodeExecuteBaseLow = 0xA0000000;
+  static const uintptr_t kGeneratedCodeWriteBaseLow =
+      kGeneratedCodeExecuteBaseLow + kGeneratedCodeSize + 1;
   static constexpr size_t kMaximumFunctionCount = 1000000;
 
   struct UnwindReservation {
@@ -286,6 +294,12 @@ class CodeCacheBase : public CodeCache {
   CodeCacheBase() = default;
 
   bool Initialize() {
+
+      const uintptr_t kExecuteAddrHigh=execute_address_high();
+      const uintptr_t kIndirectionTableBase=kExecuteAddrHigh|kIndirectionTableBaseLow;
+      const uintptr_t kGeneratedCodeExecuteBase=kExecuteAddrHigh|kGeneratedCodeExecuteBaseLow;
+      const uintptr_t kGeneratedCodeWriteBase=kExecuteAddrHigh|kGeneratedCodeWriteBaseLow;
+
     indirection_table_base_ = reinterpret_cast<uint8_t*>(xe::memory::AllocFixed(
         reinterpret_cast<void*>(kIndirectionTableBase), kIndirectionTableSize,
         xe::memory::AllocationType::kReserve,

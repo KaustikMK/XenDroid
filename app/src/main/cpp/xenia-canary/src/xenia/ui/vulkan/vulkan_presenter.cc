@@ -18,7 +18,7 @@
 #include "xenia/base/platform.h"
 #include "xenia/ui/vulkan/vulkan_util.h"
 
-#if XE_PLATFORM_ANDROID
+#if XE_PLATFORM_ANDROID || XE_PLATFORM_AX360E
 #include "xenia/ui/surface_android.h"
 #endif
 #if XE_PLATFORM_GNU_LINUX
@@ -203,7 +203,7 @@ Surface::TypeFlags VulkanPresenter::GetSurfaceTypesSupportedByInstance(
     return 0;
   }
   Surface::TypeFlags type_flags = 0;
-#if XE_PLATFORM_ANDROID
+#if XE_PLATFORM_ANDROID || XE_PLATFORM_AX360E
   if (instance_extensions.ext_KHR_android_surface) {
     type_flags |= Surface::kTypeFlag_AndroidNativeWindow;
   }
@@ -571,7 +571,7 @@ VulkanPresenter::ConnectOrReconnectPaintingToSurfaceFromUIThread(
     }
     VkResult vulkan_surface_create_result = VK_ERROR_UNKNOWN;
     switch (surface_type) {
-#if XE_PLATFORM_ANDROID
+#if XE_PLATFORM_ANDROID || XE_PLATFORM_AX360E
       case Surface::kTypeIndex_AndroidNativeWindow: {
         auto& android_native_window_surface =
             static_cast<const AndroidNativeWindowSurface&>(new_surface);
@@ -1036,7 +1036,7 @@ VkSwapchainKHR VulkanPresenter::PaintContext::CreateSwapchainForVulkanSurface(
     // specification violation).
     surface_formats.clear();
   }
-#if XE_PLATFORM_ANDROID
+#if XE_PLATFORM_ANDROID || XE_PLATFORM_AX360E
   // Android uses R8G8B8A8.
   static constexpr VkFormat kFormat8888Primary = VK_FORMAT_R8G8B8A8_UNORM;
   static constexpr VkFormat kFormat8888Secondary = VK_FORMAT_B8G8R8A8_UNORM;

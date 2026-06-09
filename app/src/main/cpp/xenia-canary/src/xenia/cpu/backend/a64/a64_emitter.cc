@@ -54,7 +54,12 @@ static uint64_t UndefinedCallExtern(void* raw_context, uint64_t function_ptr) {
   return 0;
 }
 
-static constexpr size_t kMaxCodeSize = 1_MiB;
+// Max host code per translated guest function. 1 MiB was too small for large,
+// FP-heavy guest functions (each PowerPC FP op emits NaN-handling overhead),
+// which overflowed the Xbyak buffer -> uncaught Xbyak_aarch64::Error "code is
+// too big" -> terminate. The buffer is a single per-emitter allocation reused
+// (reset) across functions, so enlarging it is cheap.
+static constexpr size_t kMaxCodeSize = 4_MiB;
 
 // Register maps:
 // GPR allocatable registers: x22, x23, x24, x25, x26, x27, x28
@@ -361,8 +366,11 @@ void A64Emitter::Call(const hir::Instr* instr, GuestFunction* function) {
 
   if (code_cache_->has_indirection_table()) {
     // Load host code address from indirection table.
+    mov(x0,A64CodeCache::execute_address_high());
     mov(w16, function->address());
+    orr(x16, x16,x0);
     ldr(w9, ptr(x16, static_cast<uint32_t>(0)));
+    orr(x9, x9,x0);
   } else {
     // Fallback: resolve at runtime.
     mov(x0, x20);  // context
@@ -404,9 +412,12 @@ void A64Emitter::CallIndirect(const hir::Instr* instr, int reg_index) {
 
   // Load host code address from indirection table.
   if (code_cache_->has_indirection_table()) {
+    mov(x0,A64CodeCache::execute_address_high());
     mov(w16, target_w);  // w16 = guest address (also used by resolve thunk)
+    orr(x16, x16,x0);
     ldr(w9, ptr(x16, static_cast<uint32_t>(
                          0)));  // w9 = host code from indirection table
+    orr(x9, x9,x0);
   } else {
     // Fallback: resolve at runtime.
     mov(w16, target_w);
@@ -586,7 +597,13 @@ void A64Emitter::PushStackpoint() {
     e.CallNativeSafe(
         reinterpret_cast<void*>(A64Emitter::HandleStackpointOverflowError));
   });
-  b(GE, overflow_label);
+  // Far-safe branch to the tail: overflow_label is emitted at the function end,
+  // which can exceed B.cond's +/-1 MiB range in large functions. Invert the
+  // condition and skip over an unconditional B (which reaches +/-128 MiB).
+  auto& no_overflow = NewCachedLabel();
+  b(LT, no_overflow);
+  b(overflow_label);
+  L(no_overflow);
 }
 
 void A64Emitter::PopStackpoint() {
@@ -616,17 +633,27 @@ void A64Emitter::EnsureSynchronizedGuestAndHostStack() {
                        StackLayout::GUEST_SAVED_STACKPOINT_DEPTH)));
   cmp(w17, w16);
 
-  auto& sync_label = AddToTail([&return_from_sync](A64Emitter& e, Label& lbl) {
-    // Set up arguments for the sync helper:
-    //   x8 = return address (where to resume after fixup)
+  auto& sync_label = AddToTail([](A64Emitter& e, Label& lbl) {
+    // x8 (the resume address) is set in the body before branching here, where
+    // return_from_sync is adjacent so the adr stays in range even in large
+    // functions. Set up the remaining sync-helper arguments:
     //   x9 = this function's stack size
-    e.adr(e.x8, return_from_sync);
     e.mov(e.x9, static_cast<uint64_t>(e.stack_size()));
     e.mov(e.x10, reinterpret_cast<uint64_t>(
                      e.backend()->synchronize_guest_and_host_stack_helper()));
     e.br(e.x10);
   });
-  b(NE, sync_label);
+  // x8 = address to resume at after the sync helper. Computed here rather than
+  // in the tail so the adr reaches return_from_sync (adjacent) instead of
+  // reaching back from the function-end tail (>1 MiB in large functions, beyond
+  // adr's +/-1 MiB range).
+  adr(x8, return_from_sync);
+  // Far-safe branch to the tail (sync_label sits at the function end, which can
+  // exceed B.cond's +/-1 MiB range): on EQ (synced) fall through to
+  // return_from_sync; otherwise unconditionally B (+/-128 MiB) to the tail,
+  // which jumps back to return_from_sync via x8.
+  b(EQ, return_from_sync);
+  b(sync_label);
 
   L(return_from_sync);
 }

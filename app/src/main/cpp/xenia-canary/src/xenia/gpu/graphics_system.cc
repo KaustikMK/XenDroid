@@ -73,6 +73,7 @@ X_STATUS GraphicsSystem::Setup(cpu::Processor* processor,
 
   if (with_presentation && provider_) {
     // Safe if either the UI thread call or the presenter creation fails.
+#if !XE_PLATFORM_AX360E
     if (app_context_) {
       app_context_->CallInUIThreadSynchronous([this]() {
         presenter_ = provider_->CreatePresenter(
@@ -80,7 +81,9 @@ X_STATUS GraphicsSystem::Setup(cpu::Processor* processor,
               OnHostGpuLossFromAnyThread(is_responsible);
             });
       });
-    } else {
+    } else
+#endif
+    {
       // May be needed for offscreen use, such as capturing the guest output
       // image.
       presenter_ = provider_->CreatePresenter(

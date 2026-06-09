@@ -13,6 +13,7 @@
 #include "xenia/base/cvar.h"
 #include "xenia/base/main_win.h"
 #include "xenia/base/platform_win.h"
+
 #include "xenia/kernel/kernel_state.cc"
 #include "xenia/ui/windowed_app.h"
 #include "xenia/ui/windowed_app_context_win.h"

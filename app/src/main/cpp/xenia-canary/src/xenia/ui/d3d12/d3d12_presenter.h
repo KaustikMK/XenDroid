@@ -11,13 +11,12 @@
 #define XENIA_UI_D3D12_D3D12_PRESENTER_H_
 
 #include <array>
-#include <cstdint>
 #include <memory>
 #include <utility>
 
 #include "xenia/base/math.h"
-#include "xenia/ui/d3d12/d3d12_gpu_completion_timeline.h"
 #include "xenia/ui/d3d12/d3d12_provider.h"
+#include "xenia/ui/d3d12/d3d12_submission_tracker.h"
 #include "xenia/ui/presenter.h"
 #include "xenia/ui/surface.h"
 
@@ -30,8 +29,8 @@ class D3D12UIDrawContext final : public UIDrawContext {
   D3D12UIDrawContext(Presenter& presenter, uint32_t render_target_width,
                      uint32_t render_target_height,
                      ID3D12GraphicsCommandList* command_list,
-                     uint64_t submission_index_current,
-                     uint64_t submission_index_completed)
+                     UINT64 submission_index_current,
+                     UINT64 submission_index_completed)
       : UIDrawContext(presenter, render_target_width, render_target_height),
         command_list_(command_list),
         submission_index_current_(submission_index_current),
@@ -40,17 +39,15 @@ class D3D12UIDrawContext final : public UIDrawContext {
   ID3D12GraphicsCommandList* command_list() const {
     return command_list_.Get();
   }
-  uint64_t submission_index_current() const {
-    return submission_index_current_;
-  }
-  uint64_t submission_index_completed() const {
+  UINT64 submission_index_current() const { return submission_index_current_; }
+  UINT64 submission_index_completed() const {
     return submission_index_completed_;
   }
 
  private:
   Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> command_list_;
-  uint64_t submission_index_current_;
-  uint64_t submission_index_completed_;
+  UINT64 submission_index_current_;
+  UINT64 submission_index_completed_;
 };
 
 class D3D12Presenter final : public Presenter {
@@ -102,9 +99,8 @@ class D3D12Presenter final : public Presenter {
 
   bool CaptureGuestOutput(RawImage& image_out) override;
 
-  void AwaitUISubmissionCompletionFromUIThread(uint64_t submission_index) {
-    ui_completion_timeline_->AwaitSubmissionAndUpdateCompleted(
-        submission_index);
+  void AwaitUISubmissionCompletionFromUIThread(UINT64 submission_index) {
+    ui_submission_tracker_.AwaitSubmissionCompletion(submission_index);
   }
 
  protected:
@@ -217,19 +213,12 @@ class D3D12Presenter final : public Presenter {
     };
 
     void AwaitSwapChainUsageCompletion() {
-      // May be called during destruction.
-
       // Presentation engine usage.
-      if (present_completion_timeline) {
-        present_completion_timeline->AwaitAllSubmissions();
-      }
-
+      present_submission_tracker.AwaitAllSubmissionsCompletion();
       // Paint (render target) usage. While the presentation fence is signaled
       // on the same queue, and presentation happens after painting, awaiting
       // anyway for safety just to make less assumptions in the architecture.
-      if (paint_completion_timeline) {
-        paint_completion_timeline->AwaitAllSubmissions();
-      }
+      paint_submission_tracker.AwaitAllSubmissionsCompletion();
     }
 
     void DestroySwapChain();
@@ -237,9 +226,9 @@ class D3D12Presenter final : public Presenter {
     // Connection-independent.
 
     // Signaled before presenting.
-    std::unique_ptr<D3D12GPUCompletionTimeline> paint_completion_timeline;
+    D3D12SubmissionTracker paint_submission_tracker;
     // Signaled after presenting.
-    std::unique_ptr<D3D12GPUCompletionTimeline> present_completion_timeline;
+    D3D12SubmissionTracker present_submission_tracker;
 
     std::array<Microsoft::WRL::ComPtr<ID3D12CommandAllocator>,
                kSwapChainBufferCount>
@@ -262,7 +251,7 @@ class D3D12Presenter final : public Presenter {
     // the reference is not in this array yet, the most outdated reference, if
     // needed, is replaced with the new one, awaiting the completion of the last
     // paint usage.
-    std::array<std::pair<uint64_t, Microsoft::WRL::ComPtr<ID3D12Resource>>,
+    std::array<std::pair<UINT64, Microsoft::WRL::ComPtr<ID3D12Resource>>,
                kGuestOutputMailboxSize>
         guest_output_resource_paint_refs;
 
@@ -272,7 +261,7 @@ class D3D12Presenter final : public Presenter {
     std::array<Microsoft::WRL::ComPtr<ID3D12Resource>,
                kMaxGuestOutputPaintEffects - 1>
         guest_output_intermediate_textures;
-    uint64_t guest_output_intermediate_texture_last_usage = 0;
+    UINT64 guest_output_intermediate_texture_last_usage = 0;
 
     // Connection-specific.
 
@@ -312,23 +301,22 @@ class D3D12Presenter final : public Presenter {
              size_t(GuestOutputPaintEffect::kCount)>
       guest_output_paint_final_pipelines_;
 
-  // The first is the refresher completion timeline submission index at which
-  // the guest output texture was last refreshed, the second is the reference to
-  // the texture, which may be null. The indices are the mailbox indices.
-  std::array<std::pair<uint64_t, Microsoft::WRL::ComPtr<ID3D12Resource>>,
+  // The first is the refresher submission tracker fence value at which the
+  // guest output texture was last refreshed, the second is the reference to the
+  // texture, which may be null. The indices are the mailbox indices.
+  std::array<std::pair<UINT64, Microsoft::WRL::ComPtr<ID3D12Resource>>,
              kGuestOutputMailboxSize>
       guest_output_resources_;
-  // The guest output resources are protected by two completion timelines - the
-  // refresher one (for writing to them via the guest_output_resources_
+  // The guest output resources are protected by two submission trackers - the
+  // refresher ones (for writing to them via the guest_output_resources_
   // references) and the paint one (for presenting it via the
   // paint_context_.guest_output_resource_paint_refs references taken from
   // guest_output_resources_).
-  std::unique_ptr<D3D12GPUCompletionTimeline>
-      guest_output_resource_refresher_completion_timeline_;
+  D3D12SubmissionTracker guest_output_resource_refresher_submission_tracker_;
 
-  // UI completion timeline with the submission index that can be given to UI
+  // UI submission tracker with the submission index that can be given to UI
   // drawers (accessible from the UI thread only, at any time).
-  std::unique_ptr<D3D12GPUCompletionTimeline> ui_completion_timeline_;
+  D3D12SubmissionTracker ui_submission_tracker_;
 
   // Accessible only by painting and by surface connection lifetime management
   // (ConnectOrReconnectPaintingToSurfaceFromUIThread,

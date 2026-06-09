@@ -155,7 +155,6 @@ if(NOT APPLE)
     ${_glslang_spirv_cpp}
     ${_glslang_spirv_h}
     ${_glslang_spirv_hpp}
-    glslang/glslang/Include/visibility.h
   )
   target_include_directories(glslang-spirv PUBLIC glslang)
 endif()

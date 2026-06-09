@@ -528,7 +528,7 @@ void FatalError(const std::string_view str) {
 
   ShutdownLogging();
 
-#if XE_PLATFORM_ANDROID
+#if XE_PLATFORM_ANDROID||XE_PLATFORM_AX360E
   // Throw an error that can be reported to the developers via the store.
   std::abort();
 #else

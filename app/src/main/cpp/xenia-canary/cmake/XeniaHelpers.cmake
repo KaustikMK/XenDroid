@@ -63,6 +63,10 @@ function(xe_platform_sources target base_path)
     file(${glob_mode} _plat_sources      "${base_path}/*_win.h"
       "${base_path}/*_win.cc"
     )
+  elseif (ANDROID)
+    file(${glob_mode} _plat_sources      "${base_path}/*_posix.h"
+            "${base_path}/*_posix.cc"
+    )
   elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     file(${glob_mode} _plat_sources      "${base_path}/*_posix.h"
       "${base_path}/*_posix.cc"

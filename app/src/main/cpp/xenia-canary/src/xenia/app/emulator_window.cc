@@ -809,7 +809,6 @@ bool EmulatorWindow::Initialize() {
         MenuItem::Type::kString, "Time Scalar *= 2", "Numpad +",
         std::bind(&EmulatorWindow::CpuTimeScalarSetDouble, this)));
   }
-#if XE_OPTION_PROFILING
   cpu_menu->AddChild(MenuItem::Create(MenuItem::Type::kSeparator));
   {
     cpu_menu->AddChild(MenuItem::Create(MenuItem::Type::kString,
@@ -819,7 +818,6 @@ bool EmulatorWindow::Initialize() {
                                         "&Pause/Resume Profiler", "`",
                                         []() { Profiler::TogglePause(); }));
   }
-#endif
   cpu_menu->AddChild(MenuItem::Create(MenuItem::Type::kSeparator));
   {
     cpu_menu->AddChild(MenuItem::Create(

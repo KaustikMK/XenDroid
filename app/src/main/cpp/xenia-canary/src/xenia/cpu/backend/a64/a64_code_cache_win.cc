@@ -415,6 +415,8 @@ void Win32A64CodeCache::InitializeUnwindEntry(
 void* Win32A64CodeCache::LookupUnwindInfo(uint64_t host_pc) {
   // ARM64 RUNTIME_FUNCTION lacks EndAddress, so we do a manual binary search
   // using our parallel end address array.
+    const uintptr_t kGeneratedCodeExecuteBase =
+            kGeneratedCodeExecuteBaseLow + A64CodeCache::execute_address_high();
   uint32_t key = static_cast<uint32_t>(host_pc - kGeneratedCodeExecuteBase);
   uint32_t count = unwind_table_count_;
   uint32_t lo = 0, hi = count;

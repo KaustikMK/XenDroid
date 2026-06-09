@@ -40,10 +40,11 @@ add_subdirectory(app/discord)
 add_subdirectory(app)
 
 # SDL-based modules (not Android)
+if(NOT ANDROID)
 add_subdirectory(apu/sdl)
 add_subdirectory(helper/sdl)
 add_subdirectory(hid/sdl)
-
+endif ()
 # Platform-conditional modules
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   add_subdirectory(apu/alsa)

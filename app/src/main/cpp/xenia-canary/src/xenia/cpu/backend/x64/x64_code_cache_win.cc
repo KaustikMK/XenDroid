@@ -328,6 +328,9 @@ void* Win32X64CodeCache::LookupUnwindInfo(uint64_t host_pc) {
       &host_pc, unwind_table_.data(), unwind_table_count_,
       sizeof(RUNTIME_FUNCTION),
       [](const void* key_ptr, const void* element_ptr) {
+
+          const uintptr_t kGeneratedCodeExecuteBase =
+                  kGeneratedCodeExecuteBaseLow + X64CodeCache::execute_address_high();
         auto key = *reinterpret_cast<const uintptr_t*>(key_ptr) -
                    kGeneratedCodeExecuteBase;
         auto element = reinterpret_cast<const RUNTIME_FUNCTION*>(element_ptr);

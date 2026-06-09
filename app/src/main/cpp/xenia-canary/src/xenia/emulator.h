@@ -31,6 +31,14 @@
 #include "xenia/vfs/virtual_file_system.h"
 #include "xenia/xbox.h"
 
+#if XE_PLATFORM_AX360E
+#include "../document_file.h"
+#include "../xe_saf_xex_device.h"
+#include "../xe_saf_stfs_device.h"
+#include "../xe_saf_disc_image_device.h"
+#include "../xe_saf_disc_archive_device.h"
+#endif
+
 namespace xe {
 namespace apu {
 class AudioSystem;
@@ -235,7 +243,16 @@ class Emulator {
   X_STATUS LaunchStfsContainer(const std::filesystem::path& path);
 
   X_STATUS LaunchDefaultModule(const std::filesystem::path& path);
-
+#if XE_PLATFORM_AX360E
+        const std::unique_ptr<vfs::Device> CreateVfsDevice(
+                std::unique_ptr<DocumentFile> path,std::unique_ptr<DocumentFile> data_dir,FileSignatureType type, const std::string_view mount_path);
+        X_STATUS MountPath(std::unique_ptr<DocumentFile> path,std::unique_ptr<DocumentFile> data_dir,FileSignatureType type,
+                           const std::string_view mount_path);
+        X_STATUS LaunchXexFile(std::unique_ptr<DocumentFile> xex_path);
+        X_STATUS LaunchDiscImage(std::unique_ptr<DocumentFile> path);
+        X_STATUS LaunchDiscArchive(std::unique_ptr<DocumentFile> path);
+        X_STATUS LaunchStfsContainer(std::unique_ptr<DocumentFile> path,std::unique_ptr<DocumentFile> data_dir);
+#endif
   enum class InstallState : uint8_t {
     preparing,
     pending,

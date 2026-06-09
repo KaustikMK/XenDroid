@@ -2,6 +2,8 @@
 
 if(WIN32)
   add_executable(xenia-app WIN32)
+elseif (ANDROID)
+  return()
 else()
   add_executable(xenia-app)
 endif()

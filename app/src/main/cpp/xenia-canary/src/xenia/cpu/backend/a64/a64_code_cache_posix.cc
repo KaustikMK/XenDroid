@@ -16,11 +16,43 @@
 #include "xenia/base/logging.h"
 #include "xenia/base/math.h"
 #include "xenia/cpu/backend/a64/a64_stack_layout.h"
+#include "xenia/base/platform.h"
 
 // libgcc/libunwind APIs for registering DWARF .eh_frame unwind info.
 extern "C" void __register_frame(void*);
 extern "C" void __deregister_frame(void*);
 
+#if XE_PLATFORM_AX360E
+#include "../aarch64_disasm.h"
+#include <unwind.h>
+extern "C" _Unwind_Reason_Code __gxx_personality_v0(
+        int version,
+        _Unwind_Action actions,
+        uint64_t exceptionClass,
+        _Unwind_Exception* exceptionObject,
+        _Unwind_Context* context);
+
+static _Unwind_Reason_Code trace(struct _Unwind_Context* ctx,void*){
+    uint64_t ip=reinterpret_cast<uint64_t>(_Unwind_GetIP(ctx));
+    XELOGI("FRAME: {:16X}",ip);
+    std::string insts= aarch64_disasm(ip,reinterpret_cast<uint32_t*>(ip),16);
+    XELOGI(insts);
+    return _URC_NO_REASON;
+}
+
+static _Unwind_Reason_Code __jit_personality(
+        int version,
+        _Unwind_Action actions,
+        uint64_t exceptionClass,
+        _Unwind_Exception* exceptionObject,
+        _Unwind_Context* context){
+    if(actions&_UA_CLEANUP_PHASE){
+        XELOGI("_UA_CLEANUP_PHASE IPs={:16X}",reinterpret_cast<uint64_t>(_Unwind_GetIP(context)));
+        _Unwind_Backtrace(trace,nullptr);
+    }
+    return __gxx_personality_v0(version,actions,exceptionClass,exceptionObject,context);
+}
+#endif
 namespace xe {
 namespace cpu {
 namespace backend {
@@ -55,6 +87,7 @@ static constexpr uint8_t kDwarfRegD15 = 79;
 // DWARF CFA opcodes.
 static constexpr uint8_t kDW_CFA_advance_loc1 = 0x02;
 static constexpr uint8_t kDW_CFA_advance_loc2 = 0x03;
+static constexpr uint8_t kDW_CFA_advance_loc4 = 0x04;
 static constexpr uint8_t kDW_CFA_def_cfa = 0x0c;
 static constexpr uint8_t kDW_CFA_def_cfa_offset = 0x0e;
 static constexpr uint8_t kDW_CFA_nop = 0x00;
@@ -62,6 +95,10 @@ static constexpr uint8_t kDW_CFA_nop = 0x00;
 // DWARF pointer encoding constants.
 static constexpr uint8_t kDW_EH_PE_pcrel = 0x10;
 static constexpr uint8_t kDW_EH_PE_sdata4 = 0x0b;
+static constexpr uint8_t kDW_EH_PE_udata8 = 0x04;
+static constexpr uint8_t kDW_EH_PE_absptr = 0x00;
+
+
 
 static size_t WriteULEB128(uint8_t* p, uint64_t value) {
   size_t count = 0;
@@ -74,6 +111,18 @@ static size_t WriteULEB128(uint8_t* p, uint64_t value) {
     p[count++] = byte;
   } while (value);
   return count;
+}
+
+static std::vector<uint8_t> encode_uleb128(uint64_t value) {
+  // WriteULEB128 writes the bytes into the buffer while it computes the length,
+  // so it needs a valid buffer up front. The previous code passed
+  // result.data() of the still-empty vector (a null pointer), so WriteULEB128
+  // wrote through nullptr -> SIGSEGV at address 0 on the very first JIT code
+  // placement, hanging the emulator before any game could boot.
+  // A 64-bit value encodes to at most 10 ULEB128 bytes.
+  uint8_t tmp[10];
+  size_t count = WriteULEB128(tmp, value);
+  return std::vector<uint8_t>(tmp, tmp + count);
 }
 
 static size_t WriteSLEB128(uint8_t* p, int64_t value) {
@@ -113,6 +162,16 @@ class PosixA64CodeCache : public A64CodeCache {
 
   std::vector<void*> registered_frames_;
   uint32_t unwind_table_count_ = 0;
+
+#if XE_PLATFORM_AX360E
+  // Bump allocator for the JIT's DWARF .eh_frame (a CIE+FDE per function).
+  // eh_frame_table_ is the current write cursor; _base_/_end_ bound the
+  // allocation so the cursor can be size-checked and the buffer freed correctly
+  // (the cursor is advanced past the base, so it must not itself be delete[]d).
+  uint8_t* eh_frame_table_ = nullptr;
+  uint8_t* eh_frame_table_base_ = nullptr;
+  uint8_t* eh_frame_table_end_ = nullptr;
+#endif
 };
 
 std::unique_ptr<A64CodeCache> A64CodeCache::Create() {
@@ -125,12 +184,32 @@ PosixA64CodeCache::~PosixA64CodeCache() {
   for (auto frame : registered_frames_) {
     __deregister_frame(frame);
   }
+
+#if XE_PLATFORM_AX360E
+  // Free the original allocation, not the advanced write cursor.
+  delete[] eh_frame_table_base_;
+#endif
 }
 
 bool PosixA64CodeCache::Initialize() {
   if (!A64CodeCache::Initialize()) {
     return false;
   }
+
+#if XE_PLATFORM_AX360E
+  // 128 MiB. Worst case kMaximumFunctionCount (1,000,000) x ~70 B/entry
+  // (CIE+FDE) ~= 70 MB; 128 MiB leaves headroom, and the per-write bounds check
+  // in InitializeUnwindEntry turns exhaustion into a clean abort rather than a
+  // silent heap overflow.
+  constexpr size_t kEhFrameTableSize = size_t(128) * 1024 * 1024;
+  eh_frame_table_base_ = new uint8_t[kEhFrameTableSize];
+  eh_frame_table_ = eh_frame_table_base_;
+  eh_frame_table_end_ = eh_frame_table_base_ + kEhFrameTableSize;
+  if(reinterpret_cast<uint64_t>(eh_frame_table_)%4!=0){
+      xe::FatalError("Unwind table is not 4-byte aligned!");
+  }
+#endif
+
   registered_frames_.reserve(kMaximumFunctionCount);
   return true;
 }
@@ -163,8 +242,11 @@ void PosixA64CodeCache::PlaceCode(uint32_t guest_address, void* machine_code,
   void* unwind_execute_address = unwind_reservation.entry_address -
                                  generated_code_write_base_ +
                                  generated_code_execute_base_;
+
+#if !XE_PLATFORM_AX360E
   __register_frame(unwind_execute_address);
   registered_frames_.push_back(unwind_execute_address);
+#endif
 }
 
 void PosixA64CodeCache::InitializeUnwindEntry(
@@ -175,9 +257,229 @@ void PosixA64CodeCache::InitializeUnwindEntry(
                                  generated_code_write_base_ +
                                  generated_code_execute_base_;
 
-  uint8_t* p = unwind_entry_address;
+  uint8_t* p = eh_frame_table_;
   uint8_t* cie_start = p;
+#if XE_PLATFORM_AX360E
 
+    // Refuse to bump past the end of the table instead of corrupting the heap.
+    // Real entries are <= ~140 B (a thunk's CIE+FDE); 1 KiB is a safe ceiling.
+    if (eh_frame_table_ + 1024 > eh_frame_table_end_) {
+      xe::FatalError(
+          "A64 unwind table exhausted: this session compiled more JIT code "
+          "than the eh_frame table can hold. Increase kEhFrameTableSize.");
+    }
+
+    struct cie_t{
+        uint32_t len;
+        uint32_t id;
+        uint8_t version; //1 or 3
+        uint8_t augmentation[5]; //zPLR\0
+        uint8_t code_alignment_factor;
+        uint8_t data_alignment_factor;
+        uint8_t return_address_register;
+        uint8_t augmentation_data_size; //
+        uint8_t augmentation_data[3+8];
+        uint8_t program[3];
+    } cie={
+            .len=sizeof(cie_t)-4,
+            .id=0,
+            .version=1,
+            .augmentation={'z','P','L','R','\0'},
+            .code_alignment_factor=1,//ULEB128 1
+            .data_alignment_factor=0x78,//SLEB128 -8
+            .return_address_register=30,
+            .augmentation_data_size=11,
+            .augmentation_data={
+                kDW_EH_PE_absptr|kDW_EH_PE_udata8,
+                0,0,0,0,0,0,0,0,
+                kDW_EH_PE_pcrel|kDW_EH_PE_sdata4,
+                kDW_EH_PE_absptr|kDW_EH_PE_udata8,
+            },
+            .program={
+                    kDW_CFA_def_cfa,31,0,//DW_CFA_def_cfa: reg31(SP) +0
+            }
+
+    };
+
+    {
+        uint64_t p__jit_personality=reinterpret_cast<uint64_t>(__gxx_personality_v0);
+        memcpy(&cie.augmentation_data[0+1],&p__jit_personality,8);
+    }
+
+    memcpy(p,&cie, sizeof(cie_t));
+    p+=sizeof(cie_t);
+
+    struct fde_t{
+        uint32_t len;
+        uint32_t cie_pointer;
+        uint64_t pc_start;
+        uint64_t pc_range;
+        uint8_t augmentation_data_size;
+        uint8_t augmentation_data[4];
+        uint8_t program[0];//pad 3
+    } fde={
+            .len=sizeof(fde_t)-4,
+            .cie_pointer=4+cie.len+4,
+            .pc_start=reinterpret_cast<uint64_t>(code_execute_address),
+            .pc_range=func_info.code_size.total,
+            .augmentation_data_size=4,
+            .augmentation_data={0,0,0,0,},//LSDA
+            .program={}
+    };
+    std::vector<uint8_t> fde_program;
+    constexpr uint8_t DW_CFA_advance_loc = 0x40;
+// FDE instructions.
+    if (func_info.stack_size > 0) {
+        // Advance to the instruction after the stack allocation.
+        size_t alloc_offset = func_info.prolog_stack_alloc_offset;
+        if (alloc_offset > 0) {
+            // ARM64 code alignment factor is 4, so divide by 4.
+            uint32_t factored_offset = alloc_offset;
+            if (factored_offset < 64) {
+                fde_program.push_back(DW_CFA_advance_loc | static_cast<uint8_t>(factored_offset));
+            } else if (factored_offset < 256) {
+                fde_program.push_back(kDW_CFA_advance_loc1);
+                fde_program.push_back(static_cast<uint8_t>(factored_offset));
+            } else if (factored_offset < 65536){
+                fde_program.push_back(kDW_CFA_advance_loc2);
+                uint16_t factored_offset_u16 = static_cast<uint16_t>(factored_offset);
+                //little endian
+                fde_program.push_back(*(reinterpret_cast<uint8_t*>(&factored_offset_u16)+0));
+                fde_program.push_back(*(reinterpret_cast<uint8_t*>(&factored_offset_u16)+1));
+            }
+            else {
+                fde_program.push_back(kDW_CFA_advance_loc4);
+                //little endian
+                fde_program.push_back(*(reinterpret_cast<uint8_t*>(&factored_offset)+0));
+                fde_program.push_back(*(reinterpret_cast<uint8_t*>(&factored_offset)+1));
+                fde_program.push_back(*(reinterpret_cast<uint8_t*>(&factored_offset)+2));
+                fde_program.push_back(*(reinterpret_cast<uint8_t*>(&factored_offset)+3));
+            }
+        }
+
+        // DW_CFA_def_cfa_offset: CFA = SP + stack_size.
+        fde_program.push_back(kDW_CFA_def_cfa_offset);
+        //p += WriteULEB128(p, func_info.stack_size);
+        std::vector uleb128_stack_size = encode_uleb128(func_info.stack_size);
+        fde_program.insert(fde_program.end(), uleb128_stack_size.begin(), uleb128_stack_size.end());
+
+        if (func_info.stack_size == StackLayout::THUNK_STACK_SIZE) {
+            // Thunk: encode all callee-saved register save locations.
+            // See a64_stack_layout.h for the layout.
+            size_t cfa = func_info.stack_size;  // 224
+
+            // GPRs: x19-x28 saved as stp pairs at sp+0x00..0x48
+            constexpr uint8_t DW_CFA_offset=0x80;
+            fde_program.push_back(DW_CFA_offset | kDwarfRegX19);
+            std::vector uleb128_x19_offset = encode_uleb128((func_info.stack_size - 0x000)/8);
+            fde_program.insert(fde_program.end(), uleb128_x19_offset.begin(), uleb128_x19_offset.end());
+            fde_program.push_back(DW_CFA_offset | kDwarfRegX20);
+            std::vector uleb128_x20_offset = encode_uleb128((func_info.stack_size - 0x008)/8);
+            fde_program.insert(fde_program.end(), uleb128_x20_offset.begin(), uleb128_x20_offset.end());
+            fde_program.push_back(DW_CFA_offset | kDwarfRegX21);
+            std::vector uleb128_x21_offset = encode_uleb128((func_info.stack_size - 0x010)/8);
+            fde_program.insert(fde_program.end(), uleb128_x21_offset.begin(), uleb128_x21_offset.end());
+            fde_program.push_back(DW_CFA_offset | kDwarfRegX22);
+            std::vector uleb128_x22_offset = encode_uleb128((func_info.stack_size - 0x018)/8);
+            fde_program.insert(fde_program.end(), uleb128_x22_offset.begin(), uleb128_x22_offset.end());
+            fde_program.push_back(DW_CFA_offset | kDwarfRegX23);
+            std::vector uleb128_x23_offset = encode_uleb128((func_info.stack_size - 0x020)/8);
+            fde_program.insert(fde_program.end(), uleb128_x23_offset.begin(), uleb128_x23_offset.end());
+            fde_program.push_back(DW_CFA_offset | kDwarfRegX24);
+            std::vector uleb128_x24_offset = encode_uleb128((func_info.stack_size - 0x028)/8);
+            fde_program.insert(fde_program.end(), uleb128_x24_offset.begin(), uleb128_x24_offset.end());
+            fde_program.push_back(DW_CFA_offset | kDwarfRegX25);
+            std::vector uleb128_x25_offset = encode_uleb128((func_info.stack_size - 0x030)/8);
+            fde_program.insert(fde_program.end(), uleb128_x25_offset.begin(), uleb128_x25_offset.end());
+            fde_program.push_back(DW_CFA_offset | kDwarfRegX26);
+            std::vector uleb128_x26_offset = encode_uleb128((func_info.stack_size - 0x038)/8);
+            fde_program.insert(fde_program.end(), uleb128_x26_offset.begin(), uleb128_x26_offset.end());
+            fde_program.push_back(DW_CFA_offset | kDwarfRegX27);
+            std::vector uleb128_x27_offset = encode_uleb128((func_info.stack_size - 0x040)/8);
+            fde_program.insert(fde_program.end(), uleb128_x27_offset.begin(), uleb128_x27_offset.end());
+            fde_program.push_back(DW_CFA_offset | kDwarfRegX28);
+            std::vector uleb128_x28_offset = encode_uleb128((func_info.stack_size - 0x048)/8);
+            fde_program.insert(fde_program.end(), uleb128_x28_offset.begin(), uleb128_x28_offset.end());
+            fde_program.push_back(DW_CFA_offset | kDwarfRegFP);
+            std::vector uleb128_fp_offset = encode_uleb128((func_info.stack_size - 0x050)/8);
+            fde_program.insert(fde_program.end(), uleb128_fp_offset.begin(), uleb128_fp_offset.end());
+            fde_program.push_back(DW_CFA_offset | kDwarfRegLR);
+            std::vector uleb128_lr_offset = encode_uleb128((func_info.stack_size - 0x058)/8);
+            fde_program.insert(fde_program.end(), uleb128_lr_offset.begin(), uleb128_lr_offset.end());
+            // NEON: d8-d15 saved as full q8-q15 via stp pairs at sp+0x060..0xDF.
+            // Each Q is 16 bytes; d8-d15 are the low 64 bits of q8-q15.
+            // stp q8,q9 at sp+0x060: d8=sp+0x060, d9=sp+0x070
+            // stp q10,q11 at sp+0x080: d10=sp+0x080, d11=sp+0x090
+            // stp q12,q13 at sp+0x0A0: d12=sp+0x0A0, d13=sp+0x0B0
+            // stp q14,q15 at sp+0x0C0: d14=sp+0x0C0, d15=sp+0x0D0
+            constexpr uint8_t DW_CFA_offset_extended=0x05;
+            fde_program.push_back(DW_CFA_offset_extended);
+            fde_program.push_back(kDwarfRegD8);
+            std::vector uleb128_d8_offset = encode_uleb128((func_info.stack_size - 0x060)/8);
+            fde_program.insert(fde_program.end(), uleb128_d8_offset.begin(), uleb128_d8_offset.end());
+            fde_program.push_back(DW_CFA_offset_extended);
+            fde_program.push_back(kDwarfRegD9);
+            std::vector uleb128_d9_offset = encode_uleb128((func_info.stack_size - 0x070)/8);
+            fde_program.insert(fde_program.end(), uleb128_d9_offset.begin(), uleb128_d9_offset.end());
+            fde_program.push_back(DW_CFA_offset_extended);
+            fde_program.push_back(kDwarfRegD10);
+            std::vector uleb128_d10_offset = encode_uleb128((func_info.stack_size - 0x080)/8);
+            fde_program.insert(fde_program.end(), uleb128_d10_offset.begin(), uleb128_d10_offset.end());
+            fde_program.push_back(DW_CFA_offset_extended);
+            fde_program.push_back(kDwarfRegD11);
+            std::vector uleb128_d11_offset = encode_uleb128((func_info.stack_size - 0x090)/8);
+            fde_program.insert(fde_program.end(), uleb128_d11_offset.begin(), uleb128_d11_offset.end());
+            fde_program.push_back(DW_CFA_offset_extended);
+            fde_program.push_back(kDwarfRegD12);
+            std::vector uleb128_d12_offset = encode_uleb128((func_info.stack_size - 0x0A0)/8);
+            fde_program.insert(fde_program.end(), uleb128_d12_offset.begin(), uleb128_d12_offset.end());
+            fde_program.push_back(DW_CFA_offset_extended);
+            fde_program.push_back(kDwarfRegD13);
+            std::vector uleb128_d13_offset = encode_uleb128((func_info.stack_size - 0x0B0)/8);
+            fde_program.insert(fde_program.end(), uleb128_d13_offset.begin(), uleb128_d13_offset.end());
+            fde_program.push_back(DW_CFA_offset_extended);
+            fde_program.push_back(kDwarfRegD14);
+            std::vector uleb128_d14_offset = encode_uleb128((func_info.stack_size - 0x0C0)/8);
+            fde_program.insert(fde_program.end(), uleb128_d14_offset.begin(), uleb128_d14_offset.end());
+            fde_program.push_back(DW_CFA_offset_extended);
+            fde_program.push_back(kDwarfRegD15);
+            std::vector uleb128_d15_offset = encode_uleb128((func_info.stack_size - 0x0D0)/8);
+            fde_program.insert(fde_program.end(), uleb128_d15_offset.begin(), uleb128_d15_offset.end());
+
+        } else if (func_info.lr_save_offset > 0) {
+            // Record where x30 (LR / return address) is saved.
+            // Without this, the unwinder cannot find the return address.
+            fde_program.push_back(0x80 | kDwarfRegLR);
+            std::vector uleb128_lr_offset = encode_uleb128((func_info.stack_size - func_info.lr_save_offset)/8);
+            fde_program.insert(fde_program.end(), uleb128_lr_offset.begin(), uleb128_lr_offset.end());
+        }
+    }
+
+    // Pad FDE.
+
+    int len=sizeof(fde_t)+fde_program.size()-3-4;
+    int pad=len%4;
+    len+=pad;
+    for(;pad>0;pad--){
+        fde_program.push_back(kDW_CFA_nop);
+    }
+    fde.len=len;
+    memcpy(p,&fde,sizeof(fde_t));
+    p+=sizeof(fde_t)-3;
+    memcpy(p,fde_program.data(),fde_program.size());
+    p+=fde_program.size();
+    // Android's LLVM libunwind __register_frame() expects a pointer to the FDE
+    // (libgcc instead takes the .eh_frame/CIE start). The CIE is at
+    // eh_frame_table_ and the FDE immediately follows it. Passing the CIE made
+    // libunwind reject the entry (a CIE's CIE-id field is 0, so it is not a
+    // valid FDE) -> no unwind info for JIT frames -> XThread::Reenter's
+    // FiberReentryException could not unwind through them -> std::terminate.
+    uint8_t* fde_address = eh_frame_table_ + sizeof(cie_t);
+    __register_frame(fde_address);
+    registered_frames_.push_back(fde_address);
+    eh_frame_table_=p;
+
+#else
   // === CIE (Common Information Entry) ===
   uint8_t* cie_length_ptr = p;
   p += 4;
@@ -352,9 +654,16 @@ void PosixA64CodeCache::InitializeUnwindEntry(
   // === Terminator ===
   *reinterpret_cast<uint32_t*>(p) = 0;
   p += 4;
-
+#endif
+#if !XE_PLATFORM_AX360E
+  // The AX360E path writes unwind data into its own 64 MiB eh_frame_table_
+  // bump buffer (p starts at eh_frame_table_, not at unwind_entry_address, and
+  // the per-function unwind_entry_address reservation is unused). So this
+  // bound compares unrelated pointers (heap vs. code-cache mmap) and does not
+  // apply to it.
   assert_true(static_cast<size_t>(p - unwind_entry_address) <=
               kMaxUnwindInfoSize);
+#endif
 }
 
 }  // namespace a64
