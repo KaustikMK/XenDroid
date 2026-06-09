@@ -288,6 +288,14 @@ std::unique_ptr<VulkanInstance> VulkanInstance::Create(
   if (try_enable_validation) {
     requested_layers.emplace("VK_LAYER_KHRONOS_validation",
                              &layer_khronos_validation);
+    // Also turn on synchronization validation (WAR/RAW/WAW hazards from
+    // missing or insufficient barriers). Standard API validation can't see
+    // these, but they're the usual cause of intermittent rendering glitches
+    // (e.g. a depth buffer read/tested before a prior write completes -> stale
+    // depth -> flickering occlusion). The Khronos validation layer reads
+    // VK_LAYER_ENABLES at vkCreateInstance; set it before instance creation.
+    setenv("VK_LAYER_ENABLES",
+           "VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT", 1);
   }
 
   std::vector<const char*> enabled_layers;
@@ -418,9 +426,22 @@ std::unique_ptr<VulkanInstance> VulkanInstance::Create(
           ? VulkanDevice::kHighestUsedApiMinorVersion
           : VK_MAKE_API_VERSION(0, 1, 0, 0);
 
+  // Turn on synchronization validation when the validation layer is enabled -
+  // catches WAR/RAW/WAW hazards (missing/insufficient barriers -> stale reads)
+  // that plain API validation can't see. Chained via the layer-provided
+  // VK_EXT_validation_features; must outlive the vkCreateInstance call(s) below.
+  static const VkValidationFeatureEnableEXT kEnabledValidationFeatures[] = {
+      VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT};
+  VkValidationFeaturesEXT validation_features = {};
+  validation_features.sType = VK_STRUCTURE_TYPE_VALIDATION_FEATURES_EXT;
+  validation_features.enabledValidationFeatureCount = uint32_t(
+      sizeof(kEnabledValidationFeatures) / sizeof(kEnabledValidationFeatures[0]));
+  validation_features.pEnabledValidationFeatures = kEnabledValidationFeatures;
+
   VkInstanceCreateInfo instance_create_info;
   instance_create_info.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
-  instance_create_info.pNext = nullptr;
+  instance_create_info.pNext =
+      layer_khronos_validation ? &validation_features : nullptr;
   instance_create_info.flags = 0;
   // VK_KHR_get_physical_device_properties2 is needed to get the portability
   // subset features.
@@ -450,6 +471,8 @@ std::unique_ptr<VulkanInstance> VulkanInstance::Create(
          requested_layers) {
       *requested_layer.second = false;
     }
+    // The validation layer is gone now, so drop the validation-features pNext.
+    instance_create_info.pNext = nullptr;
     instance_create_info.enabledLayerCount = 0;
     instance_create_info.enabledExtensionCount =
         uint32_t(enabled_implementation_extension_count);
