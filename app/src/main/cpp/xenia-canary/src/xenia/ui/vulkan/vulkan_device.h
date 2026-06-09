@@ -147,6 +147,31 @@ class VulkanDevice {
     // Stage 2 (deferred) would add EDS3 dynamic blend on top of this.
     bool extendedDynamicState = false;
 
+    // VK_EXT_extended_dynamic_state3 (#456, NOT promoted to core) - Stage 2.
+    // Independently-gated derived bools, each dual-gated on (driver feature /
+    // property advertised) AND (a user-facing Vulkan cvar, default true, a hard
+    // kill switch for Turnip/Adreno drivers that advertise EDS3 bits they do not
+    // correctly implement). Default false so unsupported / disabled devices stay
+    // byte-for-byte identical to the baked path.
+    // - eds3_color_blend: per-render-target blend (enable / equation / color
+    //   write mask) is moved out of the baked key into dynamic state. Requires
+    //   all three of extendedDynamicState3ColorBlendEnable /
+    //   ColorBlendEquation / ColorWriteMask. Blend is the major permutation
+    //   driver and lands independently of topology.
+    // - eds3_logic_op: derived / logged for completeness only - INERT. Logic op
+    //   has no Xenos register source (RB_COLORCONTROL has no logicop field), the
+    //   baked logicOpEnable always stays VK_FALSE, so it is never made dynamic
+    //   and no setter is ever recorded.
+    // - eds3_topology: primitive topology + restart are moved into dynamic
+    //   state. Requires apiVersion >= 1.3 (the topology / restart setters are
+    //   core 1.3/1.2) AND the EDS3 dynamicPrimitiveTopologyUnrestricted property,
+    //   because Xenos mixes point / line / triangle primitive classes across
+    //   draws sharing one render pass - without "unrestricted" a single dynamic
+    //   topology cannot serve all classes, so topology stays baked.
+    bool eds3_color_blend = false;
+    bool eds3_logic_op = false;
+    bool eds3_topology = false;
+
     // VK_EXT_fragment_shader_interlock (#252)
 
     bool fragmentShaderSampleInterlock = false;
@@ -184,7 +209,9 @@ class VulkanDevice {
     bool ext_EXT_memory_budget = false;                 // #238
     // Has optional features not implied by this being true.
     bool ext_1_3_EXT_extended_dynamic_state = false;  // #268
-    bool ext_1_3_KHR_maintenance4 = false;            // #414
+    // Has optional features not implied by this being true.
+    bool ext_EXT_extended_dynamic_state3 = false;  // #456 (never core)
+    bool ext_1_3_KHR_maintenance4 = false;         // #414
   };
 
   const Extensions& extensions() const { return extensions_; }
@@ -208,6 +235,12 @@ class VulkanDevice {
     // The members are declared unconditionally (PFN_##core_name exists in the
     // header); they stay nullptr on devices that never load them.
 #include "xenia/ui/vulkan/functions/device_ext_extended_dynamic_state.inc"
+    // VK_EXT_extended_dynamic_state3 (#456, never core) - Stage 2 per-RT blend
+    // setters. Members stay nullptr unless eds3_color_blend loads them.
+#include "xenia/ui/vulkan/functions/device_ext_extended_dynamic_state3.inc"
+    // Dynamic primitive topology + restart (core 1.3/1.2) - Stage 2 topology.
+    // Members stay nullptr unless eds3_topology loads them.
+#include "xenia/ui/vulkan/functions/device_1_3_core_dynamic_topology.inc"
 #undef XE_UI_VULKAN_FUNCTION_PROMOTED
 #undef XE_UI_VULKAN_FUNCTION
   };

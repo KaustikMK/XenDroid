@@ -29,6 +29,29 @@ DEFINE_bool(
     "Turnip build mishandles extended dynamic state.",
     "Vulkan");
 
+DEFINE_bool(
+    vulkan_extended_dynamic_state3_blend, true,
+    "Use VK_EXT_extended_dynamic_state3 (EDS3) to move per-render-target blend "
+    "(enable / color+alpha factors and ops / color write mask) out of the baked "
+    "graphics pipeline into dynamic state. Blend is a MAJOR pipeline-permutation "
+    "driver, so this substantially reduces shader-compile hitching. Used only "
+    "when the driver advertises the ColorBlendEnable / ColorBlendEquation / "
+    "ColorWriteMask EDS3 feature bits. Some Turnip/Adreno drivers advertise EDS3 "
+    "bits they do not correctly implement; disable to force blend back into the "
+    "baked pipeline.",
+    "Vulkan");
+
+DEFINE_bool(
+    vulkan_extended_dynamic_state3_topology, true,
+    "Use VK_EXT_extended_dynamic_state3 (EDS3) to move primitive topology + "
+    "restart out of the baked graphics pipeline into dynamic state. Used only "
+    "when the driver advertises Vulkan 1.3 (the topology/restart setters are "
+    "core there) AND the EDS3 dynamicPrimitiveTopologyUnrestricted property "
+    "(required because Xenos mixes point/line/triangle primitive classes across "
+    "draws in one render pass). Some Turnip/Adreno drivers advertise EDS3 "
+    "support they do not correctly implement; disable to keep topology baked.",
+    "Vulkan");
+
 namespace xe {
 namespace ui {
 namespace vulkan {
@@ -169,6 +192,16 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
     // bool true without requiring the extension). On <1.3 the EXT feature
     // struct is queried and its extendedDynamicState feature must be enabled.
     XE_UI_VULKAN_STRUCT_PROMOTED_EXTENSION(EXT_extended_dynamic_state, 1, 3)
+  }
+  if (with_gpu_emulation && get_physical_device_properties2_supported &&
+      (cvars::vulkan_extended_dynamic_state3_blend ||
+       cvars::vulkan_extended_dynamic_state3_topology)) {
+    // #456. Extended dynamic state 3 (EDS3). NEVER promoted to core - always a
+    // pure EXT, so use the non-promoted extension macro. Used to move per-RT
+    // blend (and, when dynamicPrimitiveTopologyUnrestricted is advertised,
+    // primitive topology + restart) out of the baked pipeline key. The feature
+    // / property structs are linked below only when this extension is present.
+    XE_UI_VULKAN_STRUCT_EXTENSION(EXT_extended_dynamic_state3)
   }
 
   if (with_swapchain) {
@@ -312,6 +345,17 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
       VkPhysicalDeviceExtendedDynamicStateFeaturesEXT,
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_FEATURES_EXT>
       features_EXT_extended_dynamic_state;
+  // #456. EDS3 feature + property structs. The property struct is aggregate-
+  // initialized with only sType, which zero-inits dynamicPrimitiveTopology
+  // Unrestricted (and pNext) so reading it is safe even if the extension is
+  // absent (the struct is never chained into properties_2 in that case).
+  VulkanFeatures<
+      VkPhysicalDeviceExtendedDynamicState3FeaturesEXT,
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_3_FEATURES_EXT>
+      features_EXT_extended_dynamic_state3;
+  VkPhysicalDeviceExtendedDynamicState3PropertiesEXT
+      properties_EXT_extended_dynamic_state3 = {
+          VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_3_PROPERTIES_EXT};
 
   if (get_physical_device_properties2_supported) {
     if (properties.apiVersion >= VK_MAKE_API_VERSION(0, 1, 2, 0)) {
@@ -354,6 +398,19 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
         device->extensions_.ext_1_3_EXT_extended_dynamic_state) {
       features_EXT_extended_dynamic_state.Link(supported_features_2,
                                                device_create_info);
+    }
+    // #456. EDS3. Link the feature struct into both the supported-query and the
+    // device-create chains (Link does both), and chain the property struct into
+    // the property query, only when the extension is present and at least one
+    // EDS3 cvar is enabled. The .enabled bits are populated AFTER the queries,
+    // in the derivation below, so only advertised bits are enabled.
+    if ((cvars::vulkan_extended_dynamic_state3_blend ||
+         cvars::vulkan_extended_dynamic_state3_topology) &&
+        device->extensions_.ext_EXT_extended_dynamic_state3) {
+      features_EXT_extended_dynamic_state3.Link(supported_features_2,
+                                                device_create_info);
+      properties_EXT_extended_dynamic_state3.pNext = properties_2.pNext;
+      properties_2.pNext = &properties_EXT_extended_dynamic_state3;
     }
     ifn.vkGetPhysicalDeviceProperties2(physical_device, &properties_2);
     ifn.vkGetPhysicalDeviceFeatures2(physical_device, &supported_features_2);
@@ -745,6 +802,46 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
     }
   }
 
+  // #456. Derive the EDS3 source-of-truth bools (Stage 2). Each is DUAL-gated:
+  // the user cvar AND the advertised driver feature / property. Because the
+  // Properties bool names (eds3_*) differ from the Vulkan feature field names,
+  // XE_UI_VULKAN_FEATURE_2 can't be used - set the .enabled bits manually (only
+  // for advertised bits) so the features are actually enabled at vkCreateDevice
+  // (the enabled struct was chained into device_create_info by Link above). The
+  // function-pointer loader below #includes the EDS3 .inc only inside the
+  // matching eds3_* gate, and a failed load aborts device creation.
+  if (with_gpu_emulation &&
+      device->extensions_.ext_EXT_extended_dynamic_state3) {
+    const auto& eds3_supported = features_EXT_extended_dynamic_state3.supported;
+    auto& eds3_enabled = features_EXT_extended_dynamic_state3.enabled;
+    // Blend: requires all three per-RT blend feature bits.
+    if (cvars::vulkan_extended_dynamic_state3_blend &&
+        eds3_supported.extendedDynamicState3ColorBlendEnable &&
+        eds3_supported.extendedDynamicState3ColorBlendEquation &&
+        eds3_supported.extendedDynamicState3ColorWriteMask) {
+      eds3_enabled.extendedDynamicState3ColorBlendEnable = VK_TRUE;
+      eds3_enabled.extendedDynamicState3ColorBlendEquation = VK_TRUE;
+      eds3_enabled.extendedDynamicState3ColorWriteMask = VK_TRUE;
+      device->properties_.eds3_color_blend = true;
+      XELOGI("* eds3_color_blend");
+    }
+    // Logic op: derived / logged for completeness only - INERT. Not enabled, no
+    // setter, no dynamic state (logicOpEnable stays baked VK_FALSE).
+    if (eds3_supported.extendedDynamicState3LogicOpEnable) {
+      device->properties_.eds3_logic_op = true;
+      XELOGI("* eds3_logic_op (advertised; inert - no Xenos logic-op source)");
+    }
+    // Topology: requires apiVersion >= 1.3 (core topology/restart setters) AND
+    // the unrestricted property (Xenos mixes primitive classes per render pass).
+    if (cvars::vulkan_extended_dynamic_state3_topology &&
+        properties.apiVersion >= VK_MAKE_API_VERSION(0, 1, 3, 0) &&
+        properties_EXT_extended_dynamic_state3
+            .dynamicPrimitiveTopologyUnrestricted) {
+      device->properties_.eds3_topology = true;
+      XELOGI("* eds3_topology (dynamicPrimitiveTopologyUnrestricted)");
+    }
+  }
+
 #undef XE_UI_VULKAN_LIMIT
 #undef XE_UI_VULKAN_ENUM_LIMIT
 #undef XE_UI_VULKAN_FEATURE
@@ -794,6 +891,13 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
     if (device->properties_.extendedDynamicState) {
 #include "xenia/ui/vulkan/functions/device_ext_extended_dynamic_state.inc"
     }
+    // #456. EDS3 topology: vkCmdSetPrimitiveTopology (core 1.3) and
+    // vkCmdSetPrimitiveRestartEnable (core 1.3) - load by core name. eds3_topology
+    // is only ever true on a >= 1.3 device, so this block is unconditional within
+    // the >= 1.3 region.
+    if (device->properties_.eds3_topology) {
+#include "xenia/ui/vulkan/functions/device_1_3_core_dynamic_topology.inc"
+    }
   }
 #undef XE_UI_VULKAN_FUNCTION_PROMOTED
 
@@ -827,6 +931,15 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
 #include "xenia/ui/vulkan/functions/device_khr_swapchain.inc"
   }
 #undef XE_UI_VULKAN_FUNCTION_PROMOTED
+
+  // #456. EDS3 per-RT blend setters - NEVER core, always loaded by EXT name via
+  // the plain XE_UI_VULKAN_FUNCTION macro. eds3_color_blend already folds in the
+  // cvar AND the advertised feature bits, so a failed load (unexpected on a
+  // device that advertised the bits) aborts device creation rather than leaving
+  // a null setter that the gated emission would later call.
+  if (device->properties_.eds3_color_blend) {
+#include "xenia/ui/vulkan/functions/device_ext_extended_dynamic_state3.inc"
+  }
 
 #undef XE_UI_VULKAN_FUNCTION
 

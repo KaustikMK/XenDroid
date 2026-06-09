@@ -423,6 +423,70 @@ class DeferredCommandBuffer {
                 sizeof(VkViewport) * viewport_count);
   }
 
+  // VK_EXT_extended_dynamic_state3 (EDS3) - Stage 2 per-RT blend setters. Only
+  // recorded when the device advertises eds3_color_blend (function pointers
+  // loaded). The per-attachment arrays are recorded inline after the header,
+  // mirroring CmdVkSetScissor / CmdVkSetViewport.
+  void CmdVkSetColorBlendEnableEXT(uint32_t first_attachment,
+                                   uint32_t attachment_count,
+                                   const VkBool32* enables) {
+    constexpr size_t header_size =
+        xe::align(sizeof(ArgsVkSetColorBlend), alignof(VkBool32));
+    uint8_t* args_ptr = reinterpret_cast<uint8_t*>(WriteCommand(
+        Command::kVkSetColorBlendEnableEXT,
+        header_size + sizeof(VkBool32) * attachment_count));
+    auto& args = *reinterpret_cast<ArgsVkSetColorBlend*>(args_ptr);
+    args.first_attachment = first_attachment;
+    args.attachment_count = attachment_count;
+    std::memcpy(args_ptr + header_size, enables,
+                sizeof(VkBool32) * attachment_count);
+  }
+
+  void CmdVkSetColorBlendEquationEXT(uint32_t first_attachment,
+                                     uint32_t attachment_count,
+                                     const VkColorBlendEquationEXT* equations) {
+    constexpr size_t header_size = xe::align(
+        sizeof(ArgsVkSetColorBlend), alignof(VkColorBlendEquationEXT));
+    uint8_t* args_ptr = reinterpret_cast<uint8_t*>(WriteCommand(
+        Command::kVkSetColorBlendEquationEXT,
+        header_size + sizeof(VkColorBlendEquationEXT) * attachment_count));
+    auto& args = *reinterpret_cast<ArgsVkSetColorBlend*>(args_ptr);
+    args.first_attachment = first_attachment;
+    args.attachment_count = attachment_count;
+    std::memcpy(args_ptr + header_size, equations,
+                sizeof(VkColorBlendEquationEXT) * attachment_count);
+  }
+
+  void CmdVkSetColorWriteMaskEXT(uint32_t first_attachment,
+                                 uint32_t attachment_count,
+                                 const VkColorComponentFlags* write_masks) {
+    constexpr size_t header_size =
+        xe::align(sizeof(ArgsVkSetColorBlend), alignof(VkColorComponentFlags));
+    uint8_t* args_ptr = reinterpret_cast<uint8_t*>(WriteCommand(
+        Command::kVkSetColorWriteMaskEXT,
+        header_size + sizeof(VkColorComponentFlags) * attachment_count));
+    auto& args = *reinterpret_cast<ArgsVkSetColorBlend*>(args_ptr);
+    args.first_attachment = first_attachment;
+    args.attachment_count = attachment_count;
+    std::memcpy(args_ptr + header_size, write_masks,
+                sizeof(VkColorComponentFlags) * attachment_count);
+  }
+
+  // VK_EXT_extended_dynamic_state3 (EDS3) - Stage 2 topology setters. Scalar -
+  // reuse ArgsVkSetU32 exactly like the EDS1 scalar setters. The underlying
+  // entry points are core 1.3/1.2, recorded only when eds3_topology is on.
+  void CmdVkSetPrimitiveTopology(VkPrimitiveTopology primitive_topology) {
+    auto& args = *reinterpret_cast<ArgsVkSetU32*>(
+        WriteCommand(Command::kVkSetPrimitiveTopology, sizeof(ArgsVkSetU32)));
+    args.value = uint32_t(primitive_topology);
+  }
+
+  void CmdVkSetPrimitiveRestartEnable(VkBool32 primitive_restart_enable) {
+    auto& args = *reinterpret_cast<ArgsVkSetU32*>(WriteCommand(
+        Command::kVkSetPrimitiveRestartEnable, sizeof(ArgsVkSetU32)));
+    args.value = uint32_t(primitive_restart_enable);
+  }
+
  private:
   enum class Command {
     kVkBeginRenderPass,
@@ -456,6 +520,13 @@ class DeferredCommandBuffer {
     kVkSetStencilTestEnable,
     kVkSetStencilWriteMask,
     kVkSetViewport,
+    // VK_EXT_extended_dynamic_state3 (EDS3) - Stage 2. Array-valued per-RT blend
+    // setters + scalar topology / restart setters.
+    kVkSetColorBlendEnableEXT,
+    kVkSetColorBlendEquationEXT,
+    kVkSetColorWriteMaskEXT,
+    kVkSetPrimitiveTopology,
+    kVkSetPrimitiveRestartEnable,
   };
 
   struct CommandHeader {
@@ -629,6 +700,19 @@ class DeferredCommandBuffer {
     uint32_t viewport_count;
     // Followed by aligned VkViewport[].
     static_assert(alignof(VkViewport) <= alignof(uintmax_t));
+  };
+
+  // VK_EXT_extended_dynamic_state3 (EDS3) - Stage 2. Shared header for the three
+  // array-valued per-RT blend setters. Followed by an aligned inline array of
+  // the element type (VkBool32 for blend enable, VkColorBlendEquationEXT for the
+  // equation, VkColorComponentFlags for the write mask). All element types are
+  // uint32/enum POD with alignment <= alignof(uintmax_t).
+  struct ArgsVkSetColorBlend {
+    uint32_t first_attachment;
+    uint32_t attachment_count;
+    static_assert(alignof(VkColorBlendEquationEXT) <= alignof(uintmax_t));
+    static_assert(alignof(VkBool32) <= alignof(uintmax_t));
+    static_assert(alignof(VkColorComponentFlags) <= alignof(uintmax_t));
   };
 
   void* WriteCommand(Command command, size_t arguments_size_bytes);

@@ -733,6 +733,116 @@ bool VulkanPipelineCache::TranslateAnalyzedShader(
   return true;
 }
 
+namespace {
+
+// Composition of the two blend-factor maps that historically lived separately:
+// the guest xenos::BlendFactor (0..16, with the unknown entries 2 and 3 mapped
+// to ZERO, and 16 = kSrcAlphaSaturate) -> VkBlendFactor directly, baking in the
+// guest '?'->ZERO normalization and the saturate path. 32 entries for safety
+// (the guest field is 5 bits). Mirrors kBlendFactorMap[742] composed with
+// kBlendFactorMap[2385] in the pre-Stage-2 code.
+constexpr VkBlendFactor kGuestBlendFactorToVk[32] = {
+    /*  0 */ VK_BLEND_FACTOR_ZERO,
+    /*  1 */ VK_BLEND_FACTOR_ONE,
+    /*  2 */ VK_BLEND_FACTOR_ZERO,  // ?
+    /*  3 */ VK_BLEND_FACTOR_ZERO,  // ?
+    /*  4 */ VK_BLEND_FACTOR_SRC_COLOR,
+    /*  5 */ VK_BLEND_FACTOR_ONE_MINUS_SRC_COLOR,
+    /*  6 */ VK_BLEND_FACTOR_SRC_ALPHA,
+    /*  7 */ VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+    /*  8 */ VK_BLEND_FACTOR_DST_COLOR,
+    /*  9 */ VK_BLEND_FACTOR_ONE_MINUS_DST_COLOR,
+    /* 10 */ VK_BLEND_FACTOR_DST_ALPHA,
+    /* 11 */ VK_BLEND_FACTOR_ONE_MINUS_DST_ALPHA,
+    /* 12 */ VK_BLEND_FACTOR_CONSTANT_COLOR,
+    /* 13 */ VK_BLEND_FACTOR_ONE_MINUS_CONSTANT_COLOR,
+    /* 14 */ VK_BLEND_FACTOR_CONSTANT_ALPHA,
+    /* 15 */ VK_BLEND_FACTOR_ONE_MINUS_CONSTANT_ALPHA,
+    /* 16 */ VK_BLEND_FACTOR_SRC_ALPHA_SATURATE,
+    /* 17.. */ VK_BLEND_FACTOR_ZERO,
+    VK_BLEND_FACTOR_ZERO, VK_BLEND_FACTOR_ZERO, VK_BLEND_FACTOR_ZERO,
+    VK_BLEND_FACTOR_ZERO, VK_BLEND_FACTOR_ZERO, VK_BLEND_FACTOR_ZERO,
+    VK_BLEND_FACTOR_ZERO, VK_BLEND_FACTOR_ZERO, VK_BLEND_FACTOR_ZERO,
+    VK_BLEND_FACTOR_ZERO, VK_BLEND_FACTOR_ZERO, VK_BLEND_FACTOR_ZERO,
+    VK_BLEND_FACTOR_ZERO, VK_BLEND_FACTOR_ZERO,
+};
+
+// 8 entries for safety since 3 bits from the guest are passed directly.
+constexpr VkBlendOp kGuestBlendOpToVk[8] = {
+    VK_BLEND_OP_ADD,          VK_BLEND_OP_SUBTRACT,
+    VK_BLEND_OP_MIN,          VK_BLEND_OP_MAX,
+    VK_BLEND_OP_REVERSE_SUBTRACT, VK_BLEND_OP_ADD,
+    VK_BLEND_OP_ADD,          VK_BLEND_OP_ADD};
+
+}  // namespace
+
+void VulkanPipelineCache::DeriveVkColorBlendAttachment(
+    reg::RB_BLENDCONTROL blend_control, uint32_t write_mask,
+    bool constant_alpha_color_blend_factors, VkBool32& enable_out,
+    VkColorBlendEquationEXT& equation_out,
+    VkColorComponentFlags& write_mask_out) {
+  VkBlendFactor src_color;
+  VkBlendFactor dst_color;
+  VkBlendOp color_op;
+  VkBlendFactor src_alpha;
+  VkBlendFactor dst_alpha;
+  VkBlendOp alpha_op;
+  if (write_mask) {
+    src_color = kGuestBlendFactorToVk[uint32_t(blend_control.color_srcblend)];
+    dst_color = kGuestBlendFactorToVk[uint32_t(blend_control.color_destblend)];
+    color_op = kGuestBlendOpToVk[uint32_t(blend_control.color_comb_fcn)];
+    src_alpha = kGuestBlendFactorToVk[uint32_t(blend_control.alpha_srcblend)];
+    dst_alpha = kGuestBlendFactorToVk[uint32_t(blend_control.alpha_destblend)];
+    alpha_op = kGuestBlendOpToVk[uint32_t(blend_control.alpha_comb_fcn)];
+    // Constant-alpha -> constant-color remap, on the COLOR factors ONLY (never
+    // alpha), recomputed here so the baked and dynamic paths share it. Tested
+    // against the RAW guest BlendFactor (before the table lookup result is
+    // committed). Dropping this corrupts blending on devices lacking
+    // constantAlphaColorBlendFactors (Adreno/Turnip).
+    if (!constant_alpha_color_blend_factors) {
+      if (blend_control.color_srcblend == xenos::BlendFactor::kConstantAlpha) {
+        src_color = VK_BLEND_FACTOR_CONSTANT_COLOR;
+      } else if (blend_control.color_srcblend ==
+                 xenos::BlendFactor::kOneMinusConstantAlpha) {
+        src_color = VK_BLEND_FACTOR_ONE_MINUS_CONSTANT_COLOR;
+      }
+      if (blend_control.color_destblend == xenos::BlendFactor::kConstantAlpha) {
+        dst_color = VK_BLEND_FACTOR_CONSTANT_COLOR;
+      } else if (blend_control.color_destblend ==
+                 xenos::BlendFactor::kOneMinusConstantAlpha) {
+        dst_color = VK_BLEND_FACTOR_ONE_MINUS_CONSTANT_COLOR;
+      }
+    }
+  } else {
+    // write_mask == 0 -> the disabled identity (matches the else-branch of the
+    // baked WritePipelineRenderTargetDescription).
+    src_color = VK_BLEND_FACTOR_ONE;
+    dst_color = VK_BLEND_FACTOR_ZERO;
+    color_op = VK_BLEND_OP_ADD;
+    src_alpha = VK_BLEND_FACTOR_ONE;
+    dst_alpha = VK_BLEND_FACTOR_ZERO;
+    alpha_op = VK_BLEND_OP_ADD;
+  }
+  // blendEnable: TRUE iff any equation field differs from the disabled default
+  // (ONE/ZERO/ADD x2), computed POST-remap - the SAME comparison the baked build
+  // performed on the stored (already-remapped) factors.
+  enable_out = (src_color != VK_BLEND_FACTOR_ONE ||
+                dst_color != VK_BLEND_FACTOR_ZERO ||
+                color_op != VK_BLEND_OP_ADD ||
+                src_alpha != VK_BLEND_FACTOR_ONE ||
+                dst_alpha != VK_BLEND_FACTOR_ZERO ||
+                alpha_op != VK_BLEND_OP_ADD)
+                   ? VK_TRUE
+                   : VK_FALSE;
+  equation_out.srcColorBlendFactor = src_color;
+  equation_out.dstColorBlendFactor = dst_color;
+  equation_out.colorBlendOp = color_op;
+  equation_out.srcAlphaBlendFactor = src_alpha;
+  equation_out.dstAlphaBlendFactor = dst_alpha;
+  equation_out.alphaBlendOp = alpha_op;
+  write_mask_out = VkColorComponentFlags(write_mask);
+}
+
 void VulkanPipelineCache::WritePipelineRenderTargetDescription(
     reg::RB_BLENDCONTROL blend_control, uint32_t write_mask,
     PipelineRenderTarget& render_target_out) const {
@@ -998,20 +1108,63 @@ bool VulkanPipelineCache::GetCurrentStateDescription(
       description_out.stencil_back_compare_op = xenos::CompareFunction::kNever;
     }
 
+    // VK_EXT_extended_dynamic_state3 (EDS3) - Stage 2 topology. Zero the
+    // primitive topology + restart key fields when topology is dynamic, so the
+    // permutations collapse. NEVER touch geometry_shader: it stays baked and is
+    // selected from the same host_primitive_type that the dynamic topology is
+    // derived from, so they can never desync. The default kTriangleList maps to a
+    // valid VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST in CreateGraphicsPipeline that is
+    // overridden dynamically; primitive_restart = 0 -> primitiveRestartEnable
+    // VK_FALSE (valid since dynamic). Inside the kHostRenderTargets guard,
+    // symmetric with the EDS3 dynamic-state-array append and per-draw emission.
+    if (device_properties.eds3_topology) {
+      description_out.primitive_topology =
+          PipelinePrimitiveTopology::kTriangleList;
+      description_out.primitive_restart = 0;
+    }
+
+    // VK_EXT_extended_dynamic_state3 (EDS3) - Stage 2 per-RT blend. Zero ALL
+    // per-RT blend key fields (enable / factors / ops / color write mask) for
+    // every attachment when blend is dynamic - the values are emitted per draw
+    // via vkCmdSetColorBlend*EXT / vkCmdSetColorWriteMaskEXT in UpdateDynamicState
+    // (re-derived from the SAME RB_BLENDCONTROL + normalized_color_mask through
+    // the shared DeriveVkColorBlendAttachment helper). Loop all 4, not just the
+    // render-pass attachments, so the key is fully canonical. Same host-RT guard
+    // as the array-append + emission. This is placed BEFORE the baked
+    // WritePipelineRenderTargetDescription loop below so it would overwrite it -
+    // instead the baked fill is skipped entirely under this gate.
+    if (device_properties.eds3_color_blend) {
+      for (uint32_t i = 0; i < xenos::kMaxColorRenderTargets; ++i) {
+        PipelineRenderTarget& rt = description_out.render_targets[i];
+        rt.src_color_blend_factor = PipelineBlendFactor::kOne;
+        rt.dst_color_blend_factor = PipelineBlendFactor::kZero;
+        rt.color_blend_op = xenos::BlendOp::kAdd;
+        rt.src_alpha_blend_factor = PipelineBlendFactor::kOne;
+        rt.dst_alpha_blend_factor = PipelineBlendFactor::kZero;
+        rt.alpha_blend_op = xenos::BlendOp::kAdd;
+        rt.color_write_mask = 0;
+      }
+    }
+
     // Color blending and write masks (filled only for the attachments present
-    // in the render pass object).
-    uint32_t render_pass_color_rts = render_pass_key.depth_and_color_used >> 1;
+    // in the render pass object). Skipped entirely when blend is dynamic
+    // (eds3_color_blend) - the key fields were canonically zeroed above and the
+    // values are emitted per draw. assert_true(independentBlend) holds on the
+    // host-RT path regardless (per-attachment state requires it).
     assert_true(device_properties.independentBlend);
-    uint32_t render_pass_color_rts_remaining = render_pass_color_rts;
-    uint32_t color_rt_index;
-    while (xe::bit_scan_forward(render_pass_color_rts_remaining,
-                                &color_rt_index)) {
-      render_pass_color_rts_remaining &= ~(uint32_t(1) << color_rt_index);
-      WritePipelineRenderTargetDescription(
-          regs.Get<reg::RB_BLENDCONTROL>(
-              reg::RB_BLENDCONTROL::rt_register_indices[color_rt_index]),
-          (normalized_color_mask >> (color_rt_index * 4)) & 0b1111,
-          description_out.render_targets[color_rt_index]);
+    if (!device_properties.eds3_color_blend) {
+      uint32_t render_pass_color_rts = render_pass_key.depth_and_color_used >> 1;
+      uint32_t render_pass_color_rts_remaining = render_pass_color_rts;
+      uint32_t color_rt_index;
+      while (xe::bit_scan_forward(render_pass_color_rts_remaining,
+                                  &color_rt_index)) {
+        render_pass_color_rts_remaining &= ~(uint32_t(1) << color_rt_index);
+        WritePipelineRenderTargetDescription(
+            regs.Get<reg::RB_BLENDCONTROL>(
+                reg::RB_BLENDCONTROL::rt_register_indices[color_rt_index]),
+            (normalized_color_mask >> (color_rt_index * 4)) & 0b1111,
+            description_out.render_targets[color_rt_index]);
+      }
     }
   }
 
@@ -2446,8 +2599,11 @@ bool VulkanPipelineCache::EnsurePipelineCreated(
 
   // Capacity: 2 unconditional (viewport, scissor) + 5 host-RT-only (depth bias,
   // blend constants, stencil compare/write/reference masks) + 7 EDS1 host-RT-
-  // only (cull mode, front face, depth test/write/compare-op, stencil test, op).
-  std::array<VkDynamicState, 16> dynamic_states;
+  // only (cull mode, front face, depth test/write/compare-op, stencil test, op)
+  // + 3 EDS3 blend host-RT-only (color blend enable, equation, color write mask)
+  // + 2 EDS3 topology host-RT-only (primitive topology, primitive restart) = 19.
+  // Sized 21 for headroom.
+  std::array<VkDynamicState, 21> dynamic_states;
   VkPipelineDynamicStateCreateInfo dynamic_state;
   dynamic_state.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
   dynamic_state.pNext = nullptr;
@@ -2496,6 +2652,32 @@ bool VulkanPipelineCache::EnsurePipelineCreated(
         VK_DYNAMIC_STATE_STENCIL_TEST_ENABLE;
     dynamic_states[dynamic_state.dynamicStateCount++] =
         VK_DYNAMIC_STATE_STENCIL_OP;
+  }
+  // VK_EXT_extended_dynamic_state3 (EDS3) - Stage 2 per-RT blend. Mark blend
+  // enable / equation / color write mask as dynamic so per-RT blend no longer
+  // participates in the baked key (zeroed in GetCurrentStateDescription under the
+  // same gate). The static color_blend_attachments above are spec-ignored for
+  // these dynamic states. NOTE: logic op is intentionally NOT made dynamic
+  // (no Xenos source - logicOpEnable stays baked VK_FALSE). Same host-RT guard.
+  if (vulkan_device->properties().eds3_color_blend &&
+      !edram_fragment_shader_interlock) {
+    dynamic_states[dynamic_state.dynamicStateCount++] =
+        VK_DYNAMIC_STATE_COLOR_BLEND_ENABLE_EXT;
+    dynamic_states[dynamic_state.dynamicStateCount++] =
+        VK_DYNAMIC_STATE_COLOR_BLEND_EQUATION_EXT;
+    dynamic_states[dynamic_state.dynamicStateCount++] =
+        VK_DYNAMIC_STATE_COLOR_WRITE_MASK_EXT;
+  }
+  // VK_EXT_extended_dynamic_state3 (EDS3) - Stage 2 topology. Mark primitive
+  // topology + restart dynamic (only when dynamicPrimitiveTopologyUnrestricted;
+  // folded into the eds3_topology bool). The static input_assembly_state.topology
+  // / primitiveRestartEnable above are spec-ignored. Same host-RT guard.
+  if (vulkan_device->properties().eds3_topology &&
+      !edram_fragment_shader_interlock) {
+    dynamic_states[dynamic_state.dynamicStateCount++] =
+        VK_DYNAMIC_STATE_PRIMITIVE_TOPOLOGY;
+    dynamic_states[dynamic_state.dynamicStateCount++] =
+        VK_DYNAMIC_STATE_PRIMITIVE_RESTART_ENABLE;
   }
 
   VkGraphicsPipelineCreateInfo pipeline_create_info;

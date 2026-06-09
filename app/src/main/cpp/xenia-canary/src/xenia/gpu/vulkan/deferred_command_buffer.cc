@@ -342,6 +342,51 @@ void DeferredCommandBuffer::Execute(VkCommandBuffer command_buffer) {
                 xe::align(sizeof(ArgsVkSetViewport), alignof(VkViewport))));
       } break;
 
+      // VK_EXT_extended_dynamic_state3 (EDS3) - Stage 2. The dfn.vkCmdSet*EXT
+      // blend setters are loaded from the EDS3 extension and the topology /
+      // restart setters from core 1.3/1.2; both are only ever recorded when the
+      // matching eds3_* device bool is on.
+      case Command::kVkSetColorBlendEnableEXT: {
+        auto& args = *reinterpret_cast<const ArgsVkSetColorBlend*>(stream);
+        dfn.vkCmdSetColorBlendEnableEXT(
+            command_buffer, args.first_attachment, args.attachment_count,
+            reinterpret_cast<const VkBool32*>(
+                reinterpret_cast<const uint8_t*>(stream) +
+                xe::align(sizeof(ArgsVkSetColorBlend), alignof(VkBool32))));
+      } break;
+
+      case Command::kVkSetColorBlendEquationEXT: {
+        auto& args = *reinterpret_cast<const ArgsVkSetColorBlend*>(stream);
+        dfn.vkCmdSetColorBlendEquationEXT(
+            command_buffer, args.first_attachment, args.attachment_count,
+            reinterpret_cast<const VkColorBlendEquationEXT*>(
+                reinterpret_cast<const uint8_t*>(stream) +
+                xe::align(sizeof(ArgsVkSetColorBlend),
+                          alignof(VkColorBlendEquationEXT))));
+      } break;
+
+      case Command::kVkSetColorWriteMaskEXT: {
+        auto& args = *reinterpret_cast<const ArgsVkSetColorBlend*>(stream);
+        dfn.vkCmdSetColorWriteMaskEXT(
+            command_buffer, args.first_attachment, args.attachment_count,
+            reinterpret_cast<const VkColorComponentFlags*>(
+                reinterpret_cast<const uint8_t*>(stream) +
+                xe::align(sizeof(ArgsVkSetColorBlend),
+                          alignof(VkColorComponentFlags))));
+      } break;
+
+      case Command::kVkSetPrimitiveTopology: {
+        auto& args = *reinterpret_cast<const ArgsVkSetU32*>(stream);
+        dfn.vkCmdSetPrimitiveTopology(command_buffer,
+                                      VkPrimitiveTopology(args.value));
+      } break;
+
+      case Command::kVkSetPrimitiveRestartEnable: {
+        auto& args = *reinterpret_cast<const ArgsVkSetU32*>(stream);
+        dfn.vkCmdSetPrimitiveRestartEnable(command_buffer,
+                                           VkBool32(args.value));
+      } break;
+
       default:
         assert_unhandled_case(header.command);
         break;

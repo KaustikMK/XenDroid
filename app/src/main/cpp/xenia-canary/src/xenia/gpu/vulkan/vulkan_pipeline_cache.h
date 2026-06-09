@@ -131,6 +131,26 @@ class VulkanPipelineCache {
   // No-op when no creation threads are active.
   void AwaitCreationCompletion();
 
+  // Shared draw-time / create-time per-render-target blend derivation (Stage 2
+  // EDS3). Produces the Vulkan blend enable / equation / color write mask
+  // directly from the guest RB_BLENDCONTROL + write mask, so the baked
+  // CreateGraphicsPipeline path and the dynamic UpdateDynamicState emission
+  // (VulkanCommandProcessor) go through the SAME code and cannot diverge.
+  // Performs, in order: guest BlendFactor -> VkBlendFactor + guest BlendOp ->
+  // VkBlendOp mapping (or the ONE/ZERO/ADD identity when write_mask == 0), the
+  // constant-alpha -> constant-color remap on the COLOR factors only (when
+  // constant_alpha_color_blend_factors is false), then computes blendEnable from
+  // the POST-remap factors using the same ONE/ZERO/ADD default comparison as the
+  // baked build. The disabled-equation bytes are filled to identity for stable
+  // cached comparison (they are spec-ignored when blendEnable is VK_FALSE).
+  // Public + static so the command processor can call it without a cache
+  // instance.
+  static void DeriveVkColorBlendAttachment(
+      reg::RB_BLENDCONTROL blend_control, uint32_t write_mask,
+      bool constant_alpha_color_blend_factors, VkBool32& enable_out,
+      VkColorBlendEquationEXT& equation_out,
+      VkColorComponentFlags& write_mask_out);
+
  private:
   enum class PipelineGeometryShader : uint32_t {
     kNone,

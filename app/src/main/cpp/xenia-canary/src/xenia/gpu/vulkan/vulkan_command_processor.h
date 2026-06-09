@@ -461,11 +461,12 @@ class VulkanCommandProcessor final : public CommandProcessor {
 
   void DestroyScratchBuffer();
 
-  void UpdateDynamicState(const draw_util::ViewportInfo& viewport_info,
-                          bool primitive_polygonal,
-                          reg::RB_DEPTHCONTROL normalized_depth_control,
-                          uint32_t draw_resolution_scale_x,
-                          uint32_t draw_resolution_scale_y);
+  void UpdateDynamicState(
+      const draw_util::ViewportInfo& viewport_info, bool primitive_polygonal,
+      reg::RB_DEPTHCONTROL normalized_depth_control,
+      uint32_t normalized_color_mask,
+      const PrimitiveProcessor::ProcessingResult& primitive_processing_result,
+      uint32_t draw_resolution_scale_x, uint32_t draw_resolution_scale_y);
   void UpdateSystemConstantValues(
       bool primitive_polygonal,
       const PrimitiveProcessor::ProcessingResult& primitive_processing_result,
@@ -740,6 +741,29 @@ class VulkanCommandProcessor final : public CommandProcessor {
   bool dynamic_stencil_test_enable_update_needed_;
   bool dynamic_stencil_op_front_update_needed_;
   bool dynamic_stencil_op_back_update_needed_;
+
+  // VK_EXT_extended_dynamic_state3 (EDS3) - Stage 2. Only used / emitted when
+  // GetVulkanDevice()->properties().eds3_color_blend / eds3_topology is true.
+  // Values are re-derived from the same registers (RB_BLENDCONTROL +
+  // normalized_color_mask for blend, primitive_processing_result for topology)
+  // that the baked pipeline key would have used, through the SAME shared helper
+  // (DeriveVkColorBlendAttachment) for blend, so dynamic == baked. update_needed
+  // flags are forced true on command-buffer (re)start and external-pipeline
+  // binds. The blend arrays are seeded to an impossible 0xFF sentinel in the ctor
+  // so the first draw always emits all 4 attachments.
+  VkBool32 dynamic_color_blend_enables_[xenos::kMaxColorRenderTargets];
+  VkColorBlendEquationEXT
+      dynamic_color_blend_equations_[xenos::kMaxColorRenderTargets];
+  VkColorComponentFlags
+      dynamic_color_write_masks_[xenos::kMaxColorRenderTargets];
+  VkPrimitiveTopology dynamic_primitive_topology_ =
+      VK_PRIMITIVE_TOPOLOGY_MAX_ENUM;
+  VkBool32 dynamic_primitive_restart_enable_ = VK_FALSE;
+  bool dynamic_color_blend_enable_update_needed_;
+  bool dynamic_color_blend_equation_update_needed_;
+  bool dynamic_color_write_mask_update_needed_;
+  bool dynamic_primitive_topology_update_needed_;
+  bool dynamic_primitive_restart_enable_update_needed_;
 
   // Currently used samplers.
   std::vector<std::pair<VulkanTextureCache::SamplerParameters, VkSampler>>

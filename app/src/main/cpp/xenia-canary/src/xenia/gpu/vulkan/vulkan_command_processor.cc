@@ -89,7 +89,19 @@ VulkanCommandProcessor::VulkanCommandProcessor(
               ->vulkan_device(),
           kDescriptorPoolSizeTextures,
           uint32_t(xe::countof(kDescriptorPoolSizeTextures)),
-          kLinkedTypeDescriptorPoolSetCount) {}
+          kLinkedTypeDescriptorPoolSetCount) {
+  // VK_EXT_extended_dynamic_state3 (EDS3) - Stage 2. Seed the cached per-RT
+  // blend arrays to an impossible 0xFF sentinel so the first per-draw compare
+  // always mismatches and all 4 attachments are emitted (the update_needed flags
+  // are also force-set at command-buffer start, but the sentinel makes the very
+  // first emission unconditional regardless).
+  std::memset(dynamic_color_blend_enables_, 0xFF,
+              sizeof(dynamic_color_blend_enables_));
+  std::memset(dynamic_color_blend_equations_, 0xFF,
+              sizeof(dynamic_color_blend_equations_));
+  std::memset(dynamic_color_write_masks_, 0xFF,
+              sizeof(dynamic_color_write_masks_));
+}
 
 VulkanCommandProcessor::~VulkanCommandProcessor() = default;
 
@@ -2163,6 +2175,20 @@ void VulkanCommandProcessor::BindExternalGraphicsPipeline(
     dynamic_stencil_op_front_update_needed_ = true;
     dynamic_stencil_op_back_update_needed_ = true;
   }
+  // VK_EXT_extended_dynamic_state3 (EDS3) - Stage 2. Same rationale: external
+  // pipelines do not declare blend / topology dynamic, so binding one
+  // invalidates the EDS3 dynamic state for any subsequently-bound guest pipeline
+  // that does. Force re-emission on the next guest draw, gated on the device
+  // bools so non-EDS3 devices are unaffected.
+  if (GetVulkanDevice()->properties().eds3_color_blend) {
+    dynamic_color_blend_enable_update_needed_ = true;
+    dynamic_color_blend_equation_update_needed_ = true;
+    dynamic_color_write_mask_update_needed_ = true;
+  }
+  if (GetVulkanDevice()->properties().eds3_topology) {
+    dynamic_primitive_topology_update_needed_ = true;
+    dynamic_primitive_restart_enable_update_needed_ = true;
+  }
   if (current_external_graphics_pipeline_ == pipeline) {
     return;
   }
@@ -2552,7 +2578,8 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
   draw_util::GetHostViewportInfo(&gviargs, viewport_info);
   // Update dynamic graphics pipeline state.
   UpdateDynamicState(viewport_info, primitive_polygonal,
-                     normalized_depth_control, draw_resolution_scale_x,
+                     normalized_depth_control, normalized_color_mask,
+                     primitive_processing_result, draw_resolution_scale_x,
                      draw_resolution_scale_y);
 
   auto vgt_draw_initiator = regs.Get<reg::VGT_DRAW_INITIATOR>();
@@ -3287,6 +3314,13 @@ bool VulkanCommandProcessor::BeginSubmission(bool is_guest_command) {
     dynamic_stencil_test_enable_update_needed_ = true;
     dynamic_stencil_op_front_update_needed_ = true;
     dynamic_stencil_op_back_update_needed_ = true;
+    // VK_EXT_extended_dynamic_state3 (EDS3) - Stage 2. Force re-emission on the
+    // first draw of the new command buffer.
+    dynamic_color_blend_enable_update_needed_ = true;
+    dynamic_color_blend_equation_update_needed_ = true;
+    dynamic_color_write_mask_update_needed_ = true;
+    dynamic_primitive_topology_update_needed_ = true;
+    dynamic_primitive_restart_enable_update_needed_ = true;
     current_render_pass_ = VK_NULL_HANDLE;
     current_framebuffer_ = nullptr;
     current_guest_graphics_pipeline_ = nullptr;
@@ -3746,6 +3780,8 @@ void VulkanCommandProcessor::DestroyScratchBuffer() {
 void VulkanCommandProcessor::UpdateDynamicState(
     const draw_util::ViewportInfo& viewport_info, bool primitive_polygonal,
     reg::RB_DEPTHCONTROL normalized_depth_control,
+    uint32_t normalized_color_mask,
+    const PrimitiveProcessor::ProcessingResult& primitive_processing_result,
     uint32_t draw_resolution_scale_x, uint32_t draw_resolution_scale_y) {
 #if XE_GPU_FINE_GRAINED_DRAW_SCOPES
   SCOPE_profile_cpu_f("gpu");
@@ -4143,6 +4179,153 @@ void VulkanCommandProcessor::UpdateDynamicState(
             VK_STENCIL_FACE_BACK_BIT, back_fail_op, back_pass_op,
             back_depth_fail_op, back_compare_op);
         dynamic_stencil_op_back_update_needed_ = false;
+      }
+    }
+  }
+
+  const ui::vulkan::VulkanDevice::Properties& eds3_device_properties =
+      GetVulkanDevice()->properties();
+
+  // VK_EXT_extended_dynamic_state3 (EDS3) - Stage 2 per-RT blend. Emit blend
+  // enable / equation / color write mask dynamically (removed from the baked key
+  // in GetCurrentStateDescription under the same gate). Values are re-derived
+  // from the SAME RB_BLENDCONTROL + normalized_color_mask through the SHARED
+  // DeriveVkColorBlendAttachment helper (which carries the constant-alpha ->
+  // constant-color remap), so dynamic == baked by construction. All 4
+  // attachments are filled and emitted as first=0,count=4 every time the cache
+  // mismatches; attachments NOT present in this draw's render pass are filled to
+  // the disabled/zero default (matching the baked per-RT fill which only touches
+  // render-pass attachments and leaves the rest {}), so no in-range gap can
+  // diverge from baked. Host-RT path only, symmetric with the key-zeroing and
+  // dynamic-state-array append.
+  if (eds3_device_properties.eds3_color_blend) {
+    if (render_target_cache_->GetPath() ==
+        RenderTargetCache::Path::kHostRenderTargets) {
+      // Render-pass color RT set: only these attachments get register-derived
+      // blend; the rest stay disabled (blendEnable=FALSE, writeMask=0, identity
+      // equation), exactly as the baked path leaves them.
+      uint32_t render_pass_color_rts =
+          render_target_cache_->last_update_render_pass_key()
+              .depth_and_color_used >>
+          1;
+      VkBool32 blend_enables[xenos::kMaxColorRenderTargets] = {};
+      VkColorBlendEquationEXT
+          blend_equations[xenos::kMaxColorRenderTargets] = {};
+      VkColorComponentFlags
+          color_write_masks[xenos::kMaxColorRenderTargets] = {};
+      for (uint32_t i = 0; i < xenos::kMaxColorRenderTargets; ++i) {
+        if (render_pass_color_rts & (uint32_t(1) << i)) {
+          VulkanPipelineCache::DeriveVkColorBlendAttachment(
+              regs.Get<reg::RB_BLENDCONTROL>(
+                  reg::RB_BLENDCONTROL::rt_register_indices[i]),
+              (normalized_color_mask >> (i * 4)) & 0b1111,
+              eds3_device_properties.constantAlphaColorBlendFactors,
+              blend_enables[i], blend_equations[i], color_write_masks[i]);
+        } else {
+          // Disabled / identity default for attachments not in the render pass
+          // (matches the baked {} attachment: blendEnable FALSE, writeMask 0).
+          blend_enables[i] = VK_FALSE;
+          blend_equations[i].srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
+          blend_equations[i].dstColorBlendFactor = VK_BLEND_FACTOR_ZERO;
+          blend_equations[i].colorBlendOp = VK_BLEND_OP_ADD;
+          blend_equations[i].srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+          blend_equations[i].dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+          blend_equations[i].alphaBlendOp = VK_BLEND_OP_ADD;
+          color_write_masks[i] = 0;
+        }
+      }
+
+      dynamic_color_blend_enable_update_needed_ |=
+          std::memcmp(dynamic_color_blend_enables_, blend_enables,
+                      sizeof(blend_enables)) != 0;
+      if (dynamic_color_blend_enable_update_needed_) {
+        std::memcpy(dynamic_color_blend_enables_, blend_enables,
+                    sizeof(blend_enables));
+        deferred_command_buffer_.CmdVkSetColorBlendEnableEXT(
+            0, xenos::kMaxColorRenderTargets, dynamic_color_blend_enables_);
+        dynamic_color_blend_enable_update_needed_ = false;
+      }
+      dynamic_color_blend_equation_update_needed_ |=
+          std::memcmp(dynamic_color_blend_equations_, blend_equations,
+                      sizeof(blend_equations)) != 0;
+      if (dynamic_color_blend_equation_update_needed_) {
+        std::memcpy(dynamic_color_blend_equations_, blend_equations,
+                    sizeof(blend_equations));
+        deferred_command_buffer_.CmdVkSetColorBlendEquationEXT(
+            0, xenos::kMaxColorRenderTargets, dynamic_color_blend_equations_);
+        dynamic_color_blend_equation_update_needed_ = false;
+      }
+      dynamic_color_write_mask_update_needed_ |=
+          std::memcmp(dynamic_color_write_masks_, color_write_masks,
+                      sizeof(color_write_masks)) != 0;
+      if (dynamic_color_write_mask_update_needed_) {
+        std::memcpy(dynamic_color_write_masks_, color_write_masks,
+                    sizeof(color_write_masks));
+        deferred_command_buffer_.CmdVkSetColorWriteMaskEXT(
+            0, xenos::kMaxColorRenderTargets, dynamic_color_write_masks_);
+        dynamic_color_write_mask_update_needed_ = false;
+      }
+    }
+  }
+
+  // VK_EXT_extended_dynamic_state3 (EDS3) - Stage 2 topology. Emit primitive
+  // topology + restart dynamically (removed from the baked key under the same
+  // gate). The topology is mapped from primitive_processing_result.
+  // host_primitive_type with the SAME mapping the input_assembly switch in
+  // CreateGraphicsPipeline uses, and restart from host_primitive_reset_enabled,
+  // so dynamic == baked. Host-RT path only, symmetric with key-zeroing and the
+  // dynamic-state-array append.
+  if (eds3_device_properties.eds3_topology) {
+    if (render_target_cache_->GetPath() ==
+        RenderTargetCache::Path::kHostRenderTargets) {
+      VkPrimitiveTopology primitive_topology;
+      switch (primitive_processing_result.host_primitive_type) {
+        case xenos::PrimitiveType::kPointList:
+          primitive_topology = VK_PRIMITIVE_TOPOLOGY_POINT_LIST;
+          break;
+        case xenos::PrimitiveType::kLineList:
+          primitive_topology = VK_PRIMITIVE_TOPOLOGY_LINE_LIST;
+          break;
+        case xenos::PrimitiveType::kLineStrip:
+          primitive_topology = VK_PRIMITIVE_TOPOLOGY_LINE_STRIP;
+          break;
+        case xenos::PrimitiveType::kTriangleList:
+        case xenos::PrimitiveType::kRectangleList:
+          primitive_topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+          break;
+        case xenos::PrimitiveType::kTriangleFan:
+          primitive_topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN;
+          break;
+        case xenos::PrimitiveType::kTriangleStrip:
+          primitive_topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;
+          break;
+        case xenos::PrimitiveType::kQuadList:
+          primitive_topology = VK_PRIMITIVE_TOPOLOGY_LINE_LIST_WITH_ADJACENCY;
+          break;
+        default:
+          // Other primitive types never reach a successful draw (rejected in
+          // GetCurrentStateDescription); fall back to the baked default which is
+          // overridden on the next valid draw.
+          primitive_topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+          break;
+      }
+      VkBool32 primitive_restart_enable =
+          primitive_processing_result.host_primitive_reset_enabled ? VK_TRUE
+                                                                    : VK_FALSE;
+      dynamic_primitive_topology_update_needed_ |=
+          dynamic_primitive_topology_ != primitive_topology;
+      if (dynamic_primitive_topology_update_needed_) {
+        dynamic_primitive_topology_ = primitive_topology;
+        deferred_command_buffer_.CmdVkSetPrimitiveTopology(primitive_topology);
+        dynamic_primitive_topology_update_needed_ = false;
+      }
+      dynamic_primitive_restart_enable_update_needed_ |=
+          dynamic_primitive_restart_enable_ != primitive_restart_enable;
+      if (dynamic_primitive_restart_enable_update_needed_) {
+        dynamic_primitive_restart_enable_ = primitive_restart_enable;
+        deferred_command_buffer_.CmdVkSetPrimitiveRestartEnable(
+            primitive_restart_enable);
+        dynamic_primitive_restart_enable_update_needed_ = false;
       }
     }
   }

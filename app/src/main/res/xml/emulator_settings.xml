@@ -29,6 +29,13 @@
             app:key="Vulkan|vulkan_pipeline_creation_threads"
             app:summary="@string/es_hint_vulkan_vulkan_pipeline_creation_threads" />
 
+        <aenu.preference.CheckBoxPreference app:title="@string/es_vulkan_vulkan_extended_dynamic_state3_blend"
+            app:key="Vulkan|vulkan_extended_dynamic_state3_blend"
+            app:summary="@string/es_hint_vulkan_vulkan_extended_dynamic_state3_blend" />
+        <aenu.preference.CheckBoxPreference app:title="@string/es_vulkan_vulkan_extended_dynamic_state3_topology"
+            app:key="Vulkan|vulkan_extended_dynamic_state3_topology"
+            app:summary="@string/es_hint_vulkan_vulkan_extended_dynamic_state3_topology" />
+
         <PreferenceScreen app:title="@string/es_vulkan_vulkan_lib_path"
             app:key="Vulkan|vulkan_lib_path"/>
 
