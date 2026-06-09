@@ -39,6 +39,14 @@
 
 DECLARE_bool(clear_memory_page_state);
 
+DEFINE_bool(
+    vulkan_cache_texture_descriptors, true,
+    "Skip re-writing and re-binding the texture/sampler descriptor sets on "
+    "draws whose resolved image views and samplers have not changed since the "
+    "last write. Disable to force a descriptor-set write and bind every draw "
+    "(pre-optimization behavior) for debugging texture corruption.",
+    "Vulkan");
+
 namespace xe {
 namespace gpu {
 namespace vulkan {
@@ -2588,7 +2596,18 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
     if (current_guest_graphics_pipeline_layout_) {
       // Keep descriptor set layouts for which the new pipeline layout is
       // compatible with the previous one (pipeline layouts are compatible for
-      // set N if set layouts 0 through N are compatible).
+      // set N if set layouts 0 through N are compatible). The two texture sets
+      // are the highest enum indices, so a change of the vertex texture set
+      // layout breaks compatibility for the pixel texture set too; a pixel-only
+      // change breaks only the pixel set.
+      //
+      // Previously the unconditional clear of the texture values-up-to-date
+      // bits in UpdateBindings made this case safe even though the computed
+      // descriptor_sets_kept was discarded. Now that the value cache may keep
+      // those bits set, this block must actively invalidate the values bit,
+      // the bound bit, and the value-cache hash for every texture set whose
+      // layout is no longer compatible - otherwise a set written under layout A
+      // could be skipped and bound under an incompatible layout B.
       uint32_t descriptor_sets_kept =
           uint32_t(SpirvShaderTranslator::kDescriptorSetCount);
       if (current_guest_graphics_pipeline_layout_
@@ -2605,12 +2624,36 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
             descriptor_sets_kept,
             uint32_t(SpirvShaderTranslator::kDescriptorSetTexturesPixel));
       }
-      // Invalidate descriptor set bindings for incompatible sets.
-      current_graphics_descriptor_sets_bound_up_to_date_ &=
-          (UINT32_C(1) << descriptor_sets_kept) - 1;
+      // Invalidate every texture set at or above the lowest changed index
+      // (the cascade: incompatibility for set N breaks all sets >= N). This
+      // supersedes upstream's `bound_up_to_date_ &= (1<<descriptor_sets_kept)-1`
+      // masking: in this block descriptor_sets_kept never drops below
+      // kDescriptorSetTexturesVertex, so the per-set clears below cover the same
+      // bound bits AND add the value/hash invalidation the texture-set cache needs.
+      if (descriptor_sets_kept <=
+          uint32_t(SpirvShaderTranslator::kDescriptorSetTexturesVertex)) {
+        current_graphics_descriptor_set_values_up_to_date_ &= ~(
+            UINT32_C(1) << SpirvShaderTranslator::kDescriptorSetTexturesVertex);
+        current_graphics_descriptor_sets_bound_up_to_date_ &= ~(
+            UINT32_C(1) << SpirvShaderTranslator::kDescriptorSetTexturesVertex);
+        current_texture_descriptor_set_hash_valid_vertex_ = false;
+      }
+      if (descriptor_sets_kept <=
+          uint32_t(SpirvShaderTranslator::kDescriptorSetTexturesPixel)) {
+        current_graphics_descriptor_set_values_up_to_date_ &= ~(
+            UINT32_C(1) << SpirvShaderTranslator::kDescriptorSetTexturesPixel);
+        current_graphics_descriptor_sets_bound_up_to_date_ &= ~(
+            UINT32_C(1) << SpirvShaderTranslator::kDescriptorSetTexturesPixel);
+        current_texture_descriptor_set_hash_valid_pixel_ = false;
+      }
     } else {
       // No or unknown pipeline layout previously bound - all bindings are in an
-      // indeterminate state.
+      // indeterminate state. The transient pool has NOT reset within the frame
+      // (that path resets the hash validity at frame open), so the cached
+      // texture sets are still valid memory; clearing the bound bits forces a
+      // re-bind of the still-valid sets without a re-write. Do not invalidate
+      // the hash here - the value cache stays usable across an intra-frame
+      // submission/command-buffer restart.
       current_graphics_descriptor_sets_bound_up_to_date_ = 0;
     }
     current_guest_graphics_pipeline_layout_ = pipeline_layout;
@@ -3849,6 +3892,14 @@ bool VulkanCommandProcessor::BeginSubmission(bool is_guest_command) {
     current_graphics_descriptor_set_values_up_to_date_ =
         UINT32_C(1)
         << SpirvShaderTranslator::kDescriptorSetSharedMemoryAndEdram;
+    // MANDATORY: the transient descriptor pool resets at the frame boundary, so
+    // every cached texture set written in the previous frame is now invalid.
+    // Invalidate in lockstep with the values bitmask reset and the
+    // current_graphics_descriptor_sets_ memset above, otherwise a first-draw
+    // whose content hash equals the previous frame's could skip the rewrite and
+    // sample recycled transient-pool memory (the #1 corruption path).
+    current_texture_descriptor_set_hash_valid_vertex_ = false;
+    current_texture_descriptor_set_hash_valid_pixel_ = false;
 
     // Reclaim pool pages - no need to do this every small submission since some
     // may be reused.
@@ -4157,6 +4208,10 @@ void VulkanCommandProcessor::ClearTransientDescriptorPools() {
   texture_transient_descriptor_sets_free_.clear();
   texture_transient_descriptor_sets_used_.clear();
   transient_descriptor_allocator_textures_.Reset();
+  // MANDATORY: all transient texture sets are destroyed here, so the value
+  // cache for them is no longer valid.
+  current_texture_descriptor_set_hash_valid_vertex_ = false;
+  current_texture_descriptor_set_hash_valid_pixel_ = false;
 
   constants_transient_descriptors_free_.clear();
   constants_transient_descriptors_used_.clear();
@@ -5248,10 +5303,89 @@ bool VulkanCommandProcessor::UpdateBindings(const VulkanShader* vertex_shader,
     sampler_count_pixel = 0;
     texture_count_pixel = 0;
   }
-  // TODO(Triang3l): Reuse texture and sampler bindings if not changed.
-  current_graphics_descriptor_set_values_up_to_date_ &=
-      ~((UINT32_C(1) << SpirvShaderTranslator::kDescriptorSetTexturesVertex) |
-        (UINT32_C(1) << SpirvShaderTranslator::kDescriptorSetTexturesPixel));
+  // Value-cache the texture/sampler descriptor sets: only force a re-write (by
+  // clearing the stage's values-up-to-date bit) when the resolved VkImageView /
+  // VkSampler handles, the binding counts, or the layout changed since the last
+  // successful write, OR an invalidation fired (the *_hash_valid_ flags are
+  // reset on new frame / transient-pool reset / pipeline-layout change). When
+  // nothing changed the bit stays set, the write-gate (write_*_textures below)
+  // is false, and the still-valid cached set is left bound (no
+  // vkUpdateDescriptorSets, no re-bind). The handle is hashed (never the fetch
+  // constant index) so texture eviction/recreation, which re-resolves the
+  // binding to a new handle before this point, always forces a re-write.
+  //
+  // Hash inputs, in this exact fixed order so an ordering/count change always
+  // changes the hash: packed layout key (texture_count | sampler_count<<16 |
+  // is_vertex<<31), then each resolved VkImageView in shader binding order,
+  // then each resolved VkSampler in order.
+  auto compute_texture_set_hash =
+      [](uint32_t texture_count, uint32_t sampler_count, bool is_vertex,
+         const std::vector<VulkanShader::TextureBinding>* textures,
+         VulkanTextureCache* texture_cache,
+         const std::pair<VulkanTextureCache::SamplerParameters, VkSampler>*
+             samplers) -> uint64_t {
+    // 64-bit FNV-1a.
+    uint64_t hash = UINT64_C(14695981039346656037);
+    auto accumulate = [&hash](uint64_t value) {
+      for (uint32_t byte_index = 0; byte_index < sizeof(value); ++byte_index) {
+        hash ^= uint64_t(value & 0xFF);
+        hash *= UINT64_C(1099511628211);
+        value >>= 8;
+      }
+    };
+    accumulate(uint64_t(uint32_t(texture_count & 0xFFFF) |
+                        ((sampler_count & 0x7FFF) << 16) |
+                        (is_vertex ? (UINT32_C(1) << 31) : 0)));
+    if (texture_count) {
+      for (const VulkanShader::TextureBinding& texture_binding : *textures) {
+        VkImageView image_view = texture_cache->GetActiveBindingOrNullImageView(
+            texture_binding.fetch_constant, texture_binding.dimension,
+            bool(texture_binding.is_signed));
+        accumulate(uint64_t(reinterpret_cast<uintptr_t>(image_view)));
+      }
+    }
+    for (uint32_t i = 0; i < sampler_count; ++i) {
+      accumulate(uint64_t(reinterpret_cast<uintptr_t>(samplers[i].second)));
+    }
+    return hash;
+  };
+  // Computed below when the cache is enabled; reused in the successful-write
+  // blocks to store the new cache entry.
+  uint64_t texture_set_hash_vertex = 0;
+  uint64_t texture_set_hash_pixel = 0;
+  if (cvars::vulkan_cache_texture_descriptors) {
+    // Vertex stage.
+    if (texture_count_vertex || sampler_count_vertex) {
+      texture_set_hash_vertex = compute_texture_set_hash(
+          texture_count_vertex, sampler_count_vertex, true, &textures_vertex,
+          texture_cache_.get(), current_samplers_vertex_.data());
+      if (!current_texture_descriptor_set_hash_valid_vertex_ ||
+          texture_set_hash_vertex !=
+              current_texture_descriptor_set_hash_vertex_) {
+        current_graphics_descriptor_set_values_up_to_date_ &= ~(
+            UINT32_C(1) << SpirvShaderTranslator::kDescriptorSetTexturesVertex);
+      }
+    }
+    // Pixel stage.
+    if (texture_count_pixel || sampler_count_pixel) {
+      texture_set_hash_pixel = compute_texture_set_hash(
+          texture_count_pixel, sampler_count_pixel, false, textures_pixel,
+          texture_cache_.get(),
+          samplers_pixel ? current_samplers_pixel_.data() : nullptr);
+      if (!current_texture_descriptor_set_hash_valid_pixel_ ||
+          texture_set_hash_pixel !=
+              current_texture_descriptor_set_hash_pixel_) {
+        current_graphics_descriptor_set_values_up_to_date_ &= ~(
+            UINT32_C(1) << SpirvShaderTranslator::kDescriptorSetTexturesPixel);
+      }
+    }
+  } else {
+    // Opt-out: reproduce the original unconditional clear (re-write + re-bind
+    // the texture/sampler descriptor sets every draw) for A/B debugging.
+    current_graphics_descriptor_set_values_up_to_date_ &=
+        ~((UINT32_C(1) << SpirvShaderTranslator::kDescriptorSetTexturesVertex) |
+          (UINT32_C(1) << SpirvShaderTranslator::kDescriptorSetTexturesPixel));
+  }
 
   // Make sure new descriptor sets are bound to the command buffer.
 
@@ -5268,6 +5402,20 @@ bool VulkanCommandProcessor::UpdateBindings(const VulkanShader* vertex_shader,
       (texture_count_pixel || sampler_count_pixel) &&
       !(current_graphics_descriptor_set_values_up_to_date_ &
         (UINT32_C(1) << SpirvShaderTranslator::kDescriptorSetTexturesPixel));
+  // When a needed texture set is skipped (not re-written this draw), the cached
+  // VkDescriptorSet must still be a real, allocated set - never the frame-open
+  // VK_NULL_HANDLE memset value - or the bind loop below would bind a null
+  // handle. A missed hash-validity reset would surface here as a fail-fast.
+  assert_true(write_vertex_textures ||
+              !(texture_count_vertex || sampler_count_vertex) ||
+              current_graphics_descriptor_sets_
+                      [SpirvShaderTranslator::kDescriptorSetTexturesVertex] !=
+                  VK_NULL_HANDLE);
+  assert_true(write_pixel_textures ||
+              !(texture_count_pixel || sampler_count_pixel) ||
+              current_graphics_descriptor_sets_
+                      [SpirvShaderTranslator::kDescriptorSetTexturesPixel] !=
+                  VK_NULL_HANDLE);
   descriptor_write_image_info_.clear();
   descriptor_write_image_info_.reserve(
       (write_vertex_textures ? texture_count_vertex + sampler_count_vertex
@@ -5397,6 +5545,11 @@ bool VulkanCommandProcessor::UpdateBindings(const VulkanShader* vertex_shader,
     current_graphics_descriptor_sets_
         [SpirvShaderTranslator::kDescriptorSetTexturesVertex] =
             write_textures[0].dstSet;
+    // Record the content hash of the set we just wrote so an unchanged next
+    // draw can skip the re-write+re-bind. Valid only until an invalidation
+    // (new frame / transient-pool reset / pipeline-layout change).
+    current_texture_descriptor_set_hash_vertex_ = texture_set_hash_vertex;
+    current_texture_descriptor_set_hash_valid_vertex_ = true;
   }
   // Pixel shader textures and samplers.
   if (write_pixel_textures) {
@@ -5418,6 +5571,8 @@ bool VulkanCommandProcessor::UpdateBindings(const VulkanShader* vertex_shader,
     current_graphics_descriptor_sets_
         [SpirvShaderTranslator::kDescriptorSetTexturesPixel] =
             write_textures[0].dstSet;
+    current_texture_descriptor_set_hash_pixel_ = texture_set_hash_pixel;
+    current_texture_descriptor_set_hash_valid_pixel_ = true;
   }
   // Write.
   if (write_descriptor_set_count) {

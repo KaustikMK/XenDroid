@@ -790,6 +790,22 @@ class VulkanCommandProcessor final : public CommandProcessor {
   // Whether descriptor sets in current_graphics_descriptor_sets_ point to
   // up-to-date data.
   uint32_t current_graphics_descriptor_set_values_up_to_date_;
+  // Value-cache for the texture/sampler descriptor sets (vertex and pixel,
+  // tracked independently). 64-bit FNV-1a content hash over the packed layout
+  // key + the resolved VkImageView and VkSampler handles of the last
+  // successfully-written transient set for the stage. The cached set lives in
+  // current_graphics_descriptor_sets_[kDescriptorSetTexturesVertex/Pixel]; the
+  // hash gates whether we may SKIP clearing that stage's
+  // current_graphics_descriptor_set_values_up_to_date_ bit (i.e. reuse the
+  // already-written, still-valid transient set without a vkUpdateDescriptorSets
+  // + re-bind). The *_valid_ flags are sentinel-free validity: they are reset
+  // to false at every point where the cached transient set can become invalid
+  // (new frame / transient-pool reset / pipeline-layout change) so a stale hash
+  // can never let the GPU sample recycled or freed descriptor memory.
+  uint64_t current_texture_descriptor_set_hash_vertex_ = 0;
+  uint64_t current_texture_descriptor_set_hash_pixel_ = 0;
+  bool current_texture_descriptor_set_hash_valid_vertex_ = false;
+  bool current_texture_descriptor_set_hash_valid_pixel_ = false;
   // Whether the descriptor sets currently bound to the command buffer - only
   // low bits for the descriptor set layouts that remained the same are kept
   // when changing the pipeline layout. May be out of sync with
