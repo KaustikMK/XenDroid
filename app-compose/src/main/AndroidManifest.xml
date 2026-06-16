@@ -1,12 +1,25 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- Scaffold: default Application (no android:name) so this slice isolates
-         "Compose builds + launches" from core's native bootstrap. SP1-B switches
-         android:name to aenu.ax360e.Application when the library needs the emulator.
-         @drawable/app_icon is provided by :emulator-core; @string/app_name and the
-         theme are app-compose's own. -->
+    <!-- Network: core's Application/native may probe; matches legacy :app. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- Legacy storage (maxSdkVersion guards: SAF is the real path on 29+). -->
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32" />
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="29" />
+    <!-- Controller rumble (host Activity, SP1-C; declared now so core code never NPEs). -->
+    <uses-permission android:name="android.permission.VIBRATE" />
+
+    <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
+
+    <!-- SP1-B: switch from default Application to core's bootstrap. onCreate now runs:
+         the Vulkan GPU probe (ProcessorInfo -> libhardware_ProcessorInfo.so, brings up
+         Vulkan to read the device name), first-run asset extraction (default_config.toml +
+         profile), and EAGER Emulator.load_library() on non-delay devices (Adreno 830). -->
     <application
+        android:name="aenu.ax360e.Application"
         android:allowBackup="true"
         android:icon="@drawable/app_icon"
         android:label="@string/app_name"
@@ -21,5 +34,4 @@
             </intent-filter>
         </activity>
     </application>
-
 </manifest>

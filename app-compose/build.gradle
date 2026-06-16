@@ -2,6 +2,7 @@ plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.compose.compiler)
+    alias(libs.plugins.kotlin.serialization)
 }
 
 // New Kotlin/Jetpack-Compose frontend. Depends on :emulator-core for the native
@@ -50,5 +51,13 @@ dependencies {
     implementation libs.androidx.activity.compose
     implementation libs.androidx.navigation.compose
     implementation libs.androidx.lifecycle.viewmodel.compose
+    implementation libs.androidx.lifecycle.runtime.compose
     debugImplementation libs.compose.ui.tooling
+
+    implementation libs.coil.compose
+    implementation libs.kotlinx.serialization.json
+    implementation libs.androidx.datastore.preferences
+
+    testImplementation libs.junit
+    testImplementation libs.kotlinx.coroutines.test
 }
