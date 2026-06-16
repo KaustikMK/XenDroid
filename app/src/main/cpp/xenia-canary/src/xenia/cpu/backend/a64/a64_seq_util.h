@@ -239,7 +239,11 @@ inline void LoadV128Const(A64Emitter& e, int vreg_idx, const vec128_t& val,
   const double splat_f64 = val.f64[0];
   if (all_equal_u64) {
     if (uint8_t movi_imm; TryMovi64Imm(val.low, movi_imm)) {
-      e.movi(VReg2D(vreg_idx), movi_imm);
+      // xbyak's movi(VReg2D, imm) takes the FULL 64-bit per-byte pattern and
+      // performs its own compression - passing the pre-compressed imm8 makes
+      // it reject the encoding (Xbyak_aarch64::Error on byte-mask constants,
+      // e.g. vector select masks).
+      e.movi(VReg2D(vreg_idx), val.low);
     } else if (IsFmov64Imm(splat_f64)) {
       e.fmov(VReg(vreg_idx).d2, splat_f64);
     } else {
