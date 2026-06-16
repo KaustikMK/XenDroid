@@ -38,6 +38,7 @@ fun GameLibraryScreen(
     onOpenKeymap: () -> Unit,
     onOpenAbout: () -> Unit,
     onOpenTouchControls: () -> Unit,
+    onOpenPerGameSettings: (titleId: String, gameName: String) -> Unit,
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val context = LocalContext.current
@@ -47,7 +48,9 @@ fun GameLibraryScreen(
         ActivityResultContracts.OpenDocumentTree()
     ) { uri -> uri?.let(viewModel::onDirectoryPicked) }
 
-    var pendingShortcut by remember { mutableStateOf<Game?>(null) }
+    // The long-press menu target (per-game settings, optionally shortcut).
+    var pendingGame by remember { mutableStateOf<Game?>(null) }
+    val titleIdState by viewModel.titleIdState.collectAsStateWithLifecycle()
 
     Scaffold(
         topBar = {
@@ -113,26 +116,57 @@ fun GameLibraryScreen(
                             runCatching { context.startActivity(viewModel.buildLaunchIntent(game)) }
                             // SP1-C provides the resolving host; until then this is a no-op.
                         },
-                        // Suppress the shortcut affordance until a launchable host exists (SP1-C).
-                        onLongPress = { if (viewModel.canLaunchGames) pendingShortcut = it },
+                        // Long-press opens the per-game menu (independent of canLaunchGames,
+                        // which only gates the shortcut affordance inside the dialog).
+                        onLongPress = { pendingGame = it },
                     )
             }
         }
     }
 
-    pendingShortcut?.let { game ->
-        if (viewModel.isPinShortcutSupported) {
-            AlertDialog(
-                onDismissRequest = { pendingShortcut = null },
-                confirmButton = {
-                    TextButton(onClick = { viewModel.createShortcut(game); pendingShortcut = null }) {
-                        Text("Create shortcut")
+    pendingGame?.let { game ->
+        val dismiss = { pendingGame = null; viewModel.clearTitleIdRequest() }
+        AlertDialog(
+            onDismissRequest = dismiss,
+            title = { Text(game.name) },
+            text = {
+                when (val st = titleIdState) {
+                    is TitleIdState.Loading -> Row(verticalAlignment = Alignment.CenterVertically) {
+                        CircularProgressIndicator(Modifier.size(20.dp))
+                        Spacer(Modifier.width(12.dp))
+                        Text("Reading title id…")
                     }
-                },
-                dismissButton = { TextButton(onClick = { pendingShortcut = null }) { Text("Cancel") } },
-                title = { Text(game.name) },
-            )
-        } else pendingShortcut = null
+                    is TitleIdState.Error -> Text(st.message)
+                    else -> Text("Configure settings that apply only to this game.")
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = titleIdState !is TitleIdState.Loading,
+                    onClick = { viewModel.requestPerGameSettings(game) },
+                ) { Text("Per-game settings") }
+            },
+            dismissButton = {
+                Row {
+                    // Keep the shortcut affordance when a launchable host exists (SP1-C).
+                    if (viewModel.canLaunchGames && viewModel.isPinShortcutSupported) {
+                        TextButton(onClick = { viewModel.createShortcut(game); dismiss() }) {
+                            Text("Create shortcut")
+                        }
+                    }
+                    TextButton(onClick = dismiss) { Text("Cancel") }
+                }
+            },
+        )
+    }
+
+    // Once resolved, navigate to the per-game editor and reset dialog + request state.
+    LaunchedEffect(titleIdState) {
+        (titleIdState as? TitleIdState.Resolved)?.let { r ->
+            onOpenPerGameSettings(r.titleId, r.game.name)
+            pendingGame = null
+            viewModel.clearTitleIdRequest()
+        }
     }
 }
 

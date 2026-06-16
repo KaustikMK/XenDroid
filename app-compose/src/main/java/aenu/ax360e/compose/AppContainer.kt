@@ -8,6 +8,8 @@ import aenu.ax360e.compose.data.GameLibraryRepository
 import aenu.ax360e.compose.data.IconCache
 import aenu.ax360e.compose.data.PreferencesStore
 import aenu.ax360e.compose.settings.ConfigStore
+import aenu.ax360e.compose.settings.GameSettingsRepository
+import aenu.ax360e.compose.settings.GameSettingsViewModel
 import aenu.ax360e.compose.settings.SettingsRepository
 import aenu.ax360e.compose.settings.SettingsViewModel
 import aenu.ax360e.compose.ui.library.GameLibraryViewModel
@@ -45,6 +47,17 @@ class AppContainer(context: Context) {
             override fun <T : ViewModel> create(modelClass: Class<T>): T {
                 require(modelClass == SettingsViewModel::class.java) { "Unknown ViewModel ${modelClass.name}" }
                 return SettingsViewModel(SettingsRepository(configStore)) as T
+            }
+        }
+
+    /** Per-game settings VM for one title id. Fresh repo per VM (it owns single-use
+     *  ConfigHandles), shared stateless configStore — same rule as settingsViewModelFactory. */
+    fun gameSettingsViewModelFactory(titleId: String): ViewModelProvider.Factory =
+        object : ViewModelProvider.Factory {
+            @Suppress("UNCHECKED_CAST")
+            override fun <T : ViewModel> create(modelClass: Class<T>): T {
+                require(modelClass == GameSettingsViewModel::class.java) { "Unknown ViewModel ${modelClass.name}" }
+                return GameSettingsViewModel(GameSettingsRepository(configStore, titleId)) as T
             }
         }
 

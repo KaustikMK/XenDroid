@@ -11,6 +11,37 @@ class ConfigStore(private val appContext: Context) {
     /** The live, editable config the emulator reads at boot. */
     fun globalConfigFile(): File = Application.get_global_config_file()
 
+    /** <app_data_dir>/config/<TITLE_ID>.config.toml — exactly the path native
+     *  config::LoadGameConfig reads (config.cc:309-311). The app_data_dir is the
+     *  parent of the global config file (Application.get_app_data_dir() is
+     *  package-private; its public sibling get_global_config_file() lives in it). */
+    fun perGameConfigFile(titleId: String): File =
+        File(File(globalConfigFile().parentFile, "config"), "$titleId.config.toml")
+
+    /** Open the per-game SPARSE overlay for editing. Bootstraps an EMPTY toml table
+     *  when missing (NOT the default template — that would make every key an override,
+     *  destroying sparseness). Mirrors [openLive]'s catch-and-retry but seeds "". */
+    fun openGameConfig(titleId: String): ConfigHandle {
+        val file = perGameConfigFile(titleId)
+        ensureEmptyFileExists(file)
+        return try {
+            ConfigHandle.openFile(file.absolutePath)
+        } catch (e: Emulator.ConfigFileException) {
+            // Corrupt existing -> reset to an empty table, retry once.
+            file.writeText("")
+            ConfigHandle.openFile(file.absolutePath)
+        }
+    }
+
+    /** The config/ subdir is NOT auto-created (only the global parent is, below);
+     *  seed an empty file (toml++ parses empty input to an empty table) since
+     *  open_config_file throws on a missing file. */
+    private fun ensureEmptyFileExists(file: File) {
+        if (file.exists()) return
+        file.parentFile?.mkdirs()
+        file.writeText("")
+    }
+
     /** Open the live config for editing. Bootstraps from the default template if the
      *  file is missing/unparseable (open does NOT auto-create). */
     fun openLive(): ConfigHandle {

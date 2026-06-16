@@ -58,11 +58,17 @@ public class Emulator extends aenu.emulator.Emulator{
 
     public native GameInfo meta_info_from_god_game(Context ctx,String uri) throws RuntimeException;
 
+    // Boot-free title-id read for ISO (format 0) / XEX_FOLDER (format 1) via a light
+    // XEX2 header parse. uri = ISO container uri or default.xex child uri. Returns
+    // an 8-char uppercase-hex id, or null for unsupported/unreadable/00000000.
+    public native String title_id_from_uri(Context ctx,String uri,int format) throws RuntimeException;
+
 
     public static class GameInfo{
 
         public String uri;
         public String name;
+        public String titleId;   // 8-char uppercase hex, or null for non-GOD / unreadable
         public int fd;
         public byte[] icon;
 
@@ -73,6 +79,8 @@ public class Emulator extends aenu.emulator.Emulator{
             json.put("uri",info.uri);
             if(info.name!=null)
                 json.put("name",info.name);
+            if(info.titleId!=null)
+                json.put("titleId",info.titleId);
 
             if(info.icon!=null)
                 json.put("icon", Base64.getEncoder().encodeToString(info.icon));
@@ -84,6 +92,8 @@ public class Emulator extends aenu.emulator.Emulator{
             info.uri=json.getString("uri");
             if(json.has("name"))
                 info.name=json.getString("name");
+            if(json.has("titleId"))
+                info.titleId=json.getString("titleId");
             if(json.has("icon"))
                 info.icon=Base64.getDecoder().decode(json.getString("icon"));
 

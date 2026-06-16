@@ -1,18 +1,23 @@
 package aenu.ax360e.compose.ui
 
+import android.net.Uri
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.navigation.NavType
+import androidx.navigation.navArgument
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import aenu.ax360e.compose.AppContainer
 import aenu.ax360e.compose.gamepad.GamepadController
 import aenu.ax360e.compose.gamepad.GamepadEditorScreen
+import aenu.ax360e.compose.settings.GameSettingsViewModel
 import aenu.ax360e.compose.settings.SettingsViewModel
 import aenu.ax360e.compose.ui.library.GameLibraryScreen
 import aenu.ax360e.compose.ui.library.GameLibraryViewModel
+import aenu.ax360e.compose.ui.settings.PerGameSettingsScreen
 import aenu.ax360e.compose.ui.settings.SettingsScreen
 
 object Routes {
@@ -22,6 +27,7 @@ object Routes {
     const val ABOUT = "about"
     const val USERDATA = "userdata"   // action, not a destination (see GameLibraryScreen)
     const val GAMEPAD_EDITOR = "gamepad_editor"
+    const val PER_GAME_SETTINGS = "per_game_settings"   // "$PER_GAME_SETTINGS/{titleId}?name={name}"
 }
 
 @Composable
@@ -37,6 +43,9 @@ fun AppNavHost(container: AppContainer) {
                 onOpenKeymap = { nav.navigate(Routes.KEYMAP) },
                 onOpenAbout = { nav.navigate(Routes.ABOUT) },
                 onOpenTouchControls = { nav.navigate(Routes.GAMEPAD_EDITOR) },
+                onOpenPerGameSettings = { titleId, name ->
+                    nav.navigate("${Routes.PER_GAME_SETTINGS}/$titleId?name=${Uri.encode(name)}")
+                },
             )
         }
         composable(Routes.SETTINGS) {
@@ -55,6 +64,19 @@ fun AppNavHost(container: AppContainer) {
             val ctx = LocalContext.current
             val controller = remember { GamepadController(ctx.applicationContext) }
             GamepadEditorScreen(controller = controller, onDone = { nav.popBackStack() })
+        }
+        composable(
+            route = "${Routes.PER_GAME_SETTINGS}/{titleId}?name={name}",
+            arguments = listOf(
+                navArgument("titleId") { type = NavType.StringType },
+                navArgument("name") { type = NavType.StringType; nullable = true; defaultValue = null },
+            ),
+        ) { backStackEntry ->
+            val titleId = backStackEntry.arguments?.getString("titleId") ?: return@composable
+            val gameName = backStackEntry.arguments?.getString("name") ?: ""
+            val vm: GameSettingsViewModel =
+                viewModel(factory = container.gameSettingsViewModelFactory(titleId))
+            PerGameSettingsScreen(vm = vm, gameName = gameName, onBack = { nav.popBackStack() })
         }
     }
 }

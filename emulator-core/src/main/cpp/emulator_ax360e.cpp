@@ -14,6 +14,12 @@
 #include "xenia/base/frame_stats.h"
 #include "xenia/base/shader_compile_counter.h"
 
+#include "xenia/cpu/xex_module.h"             // XexModule::GetOptHeader, kXEX2Signature/kXEX1Signature
+#include "xenia/kernel/util/xex2_info.h"      // xex2_header, xex2_opt_execution_info, XEX_HEADER_EXECUTION_INFO
+#include "xe_saf_disc_image_device.h"         // SAF_DiscImageDevice (ISO)
+#include "xe_saf_disc_image_entry.h"          // SAF_DiscImageEntry accessors (mmap/data_offset/data_size)
+#include "document_file.h"                    // DocumentFile::find / open_fd
+
 #include <cstdio>
 
 #include "cpuinfo.h"
@@ -29,6 +35,12 @@ jobject g_context;
 jobject g_doocument_file_tree;
 
 jmethodID mid_open_uri_fd;
+
+// Set in JNI_OnLoad (ax360e.cpp); used by DocumentFile::find for the ISO path.
+extern JavaVM* g_jvm;
+
+// Title-id format codes -- MUST match GameFormat.titleIdCode in Kotlin.
+enum : jint { TID_FMT_ISO = 0, TID_FMT_XEX_FOLDER = 1 };
 
 std::vector<std::string> g_launch_args;
 std::string g_uri_info_list_file_path;
@@ -140,11 +152,113 @@ static jstring j_simple_device_info(JNIEnv* env, jobject thiz)
     return env->NewStringUTF(info.c_str());
 }
 
+// Light, boot-free XEX2 header walk -> execution_info.title_id.
+// data/size span at least the first header_size bytes of the .xex (the whole
+// mmap is fine). Returns false (and leaves *out untouched) on any malformed /
+// missing-header case. Mirrors XexModule::GetOptHeader offset semantics for the
+// EXECUTION_INFO (0x00040006, low-byte 0x06 -> offset) optional header.
+// NOTE: the xex2_* structs live in namespace xe (xex2_info.h), while XexModule /
+// kXEX*Signature live in xe::cpu (xex_module.h).
+static bool read_xex_title_id(const uint8_t* data, size_t size, uint32_t* out) {
+    using namespace xe;            // xex2_header, xex2_opt_*, XEX_HEADER_EXECUTION_INFO
+    using namespace xe::cpu;       // XexModule, kXEX2Signature, kXEX1Signature
+
+    if (!data || size < sizeof(xex2_header)) return false;
+    auto* h = reinterpret_cast<const xex2_header*>(data);
+    const uint32_t magic = h->magic.get();
+    if (magic != kXEX2Signature && magic != kXEX1Signature) return false;
+
+    // Bound the optional-header directory inside the buffer (0x18 fixed header,
+    // then header_count entries of sizeof(xex2_opt_header) each).
+    const uint32_t count = h->header_count.get();
+    if (0x18ull + uint64_t(count) * sizeof(xex2_opt_header) > size) return false;
+
+    // Use the non-templated void** overload directly: the templated form casts
+    // away const on the out pointer, which the compiler rejects. GetOptHeader only
+    // does pointer arithmetic off `h`, never writes through it.
+    void* exec_raw = nullptr;
+    if (!XexModule::GetOptHeader(h, XEX_HEADER_EXECUTION_INFO, &exec_raw))
+        return false;              // title lacks execution_info
+    if (!exec_raw) return false;
+
+    // GetOptHeader's default branch computes header + offset with no bounds check
+    // on offset, so this guard is load-bearing for untrusted files.
+    const auto* p = reinterpret_cast<const uint8_t*>(exec_raw);
+    if (p < data || p + sizeof(xex2_opt_execution_info) > data + size) return false;
+
+    auto* exec_info = reinterpret_cast<const xex2_opt_execution_info*>(p);
+    *out = exec_info->title_id.get();
+    return true;
+}
+
+// nullptr jstring (treated as "unavailable") if title_id == 0 or unreadable.
+static jstring make_title_id_jstring(JNIEnv* env, bool ok, uint32_t title_id) {
+    if (!ok || title_id == 0) return nullptr;
+    return env->NewStringUTF(fmt::format("{:08X}", title_id).c_str());
+}
+
+// public native String title_id_from_uri(Context ctx, String uri, int format)
+static jstring j_title_id_from_uri(JNIEnv* env, jobject self,
+                                   jobject context, jstring uri_str, jint format) {
+    if (!uri_str) return nullptr;
+
+    jclass uri_class = env->FindClass("android/net/Uri");
+    jmethodID parse_method =
+            env->GetStaticMethodID(uri_class, "parse",
+                                   "(Ljava/lang/String;)Landroid/net/Uri;");
+    jobject uri = env->CallStaticObjectMethod(uri_class, parse_method, uri_str);
+    if (!uri) return nullptr;
+
+    uint32_t title_id = 0;
+    bool ok = false;
+
+    switch (format) {
+        case TID_FMT_XEX_FOLDER: {
+            // launchUri already points at default.xex; read its bytes directly.
+            int fd = env->CallStaticIntMethod(g_class_Emulator, mid_open_uri_fd,
+                                              context, uri);
+            if (fd == -1) break;
+            std::unique_ptr<xe::MappedMemory> mmap =
+                    xe::MappedMemory::OpenForUnixFd(fd);  // takes ownership of fd
+            if (!mmap) break;
+            ok = read_xex_title_id(mmap->data(), mmap->size(), &title_id);
+            break;
+        }
+        case TID_FMT_ISO: {
+            // Mount the disc just long enough to resolve+read default.xex. RAII
+            // frees the fd/mmap on scope exit; do NOT cache Entry/mmap past it.
+            std::unique_ptr<DocumentFile> file = DocumentFile::find(g_jvm, uri);
+            if (!file) break;                              // not in granted tree
+            xe::vfs::SAF_DiscImageDevice dev("\\Device\\Cdrom0", std::move(file));
+            if (!dev.Initialize()) break;                  // not XDVDFS / corrupt
+            xe::vfs::Entry* e = dev.ResolvePath("default.xex");
+            if (!e) break;                                 // multi-disc / custom launch
+            auto* de = static_cast<xe::vfs::SAF_DiscImageEntry*>(e);
+            if (!de->mmap()) break;
+            // GDFX file extents come straight from the on-disc directory and are NOT
+            // validated against the mapping size, so clamp the span to the actual mmap
+            // before the (untrusted-file) header read -- a truncated/crafted ISO must
+            // not OOB-read.
+            const size_t map_size = de->mmap()->size();
+            if (de->data_offset() > map_size) break;
+            const size_t span = std::min<size_t>(de->data_size(), map_size - de->data_offset());
+            const uint8_t* base = de->mmap()->data() + de->data_offset();
+            ok = read_xex_title_id(base, span, &title_id);
+            break;                                         // dev (mmap/fd) freed here
+        }
+        default:
+            break;                                         // GOD/ZAR not routed here
+    }
+
+    return make_title_id_jstring(env, ok, title_id);
+}
+
 static jobject j_meta_info_from_god_game(JNIEnv* env,jobject self,jobject context,jstring uri_str ) {
     jclass cls_Emulator$GameInfo = env->FindClass("aenu/ax360e/Emulator$GameInfo");
     jmethodID mid_Emulator$GameInfo = env->GetMethodID(cls_Emulator$GameInfo, "<init>", "()V");
     jfieldID fid_name = env->GetFieldID(cls_Emulator$GameInfo, "name", "Ljava/lang/String;");
     jfieldID fid_uri = env->GetFieldID(cls_Emulator$GameInfo, "uri", "Ljava/lang/String;");
+    jfieldID fid_title_id = env->GetFieldID(cls_Emulator$GameInfo, "titleId", "Ljava/lang/String;");
     jfieldID fid_icon = env->GetFieldID(cls_Emulator$GameInfo, "icon", "[B");
 
     jclass uri_class = env->FindClass("android/net/Uri");
@@ -176,6 +290,14 @@ static jobject j_meta_info_from_god_game(JNIEnv* env,jobject self,jobject contex
 
     std::string name = xe::to_utf8(header.content_metadata.title_name());
     env->SetObjectField(game_info, fid_name, env->NewStringUTF(name.c_str()));
+
+    // Title id for the per-game config file stem (<TITLE_ID>.config.toml). Same
+    // accessor + format spec xenia uses at emulator.cc:995 / :1687 so the stem
+    // matches what config::LoadGameConfig consumes.
+    uint32_t title_id = header.content_metadata.execution_info.title_id.get();
+    std::string title_id_hex = fmt::format("{:08X}", title_id);
+    env->SetObjectField(game_info, fid_title_id,
+                        env->NewStringUTF(title_id_hex.c_str()));
 
     jbyteArray icon = env->NewByteArray(header.content_metadata.thumbnail_size);
     env->SetByteArrayRegion(icon, 0, header.content_metadata.thumbnail_size, (const jbyte*)header.content_metadata.thumbnail);
@@ -747,6 +869,7 @@ int register_ax360e_Emulator(JNIEnv* env){
             { "setup_document_file_tree", "(Landroidx/documentfile/provider/DocumentFile;)V", (void *) j_setup_document_file_tree },
             { "setup_launch_args", "([Ljava/lang/String;)V", (void *) j_setup_launch_args },
             { "meta_info_from_god_game", "(Landroid/content/Context;Ljava/lang/String;)Laenu/ax360e/Emulator$GameInfo;", (void *) j_meta_info_from_god_game },
+            { "title_id_from_uri", "(Landroid/content/Context;Ljava/lang/String;I)Ljava/lang/String;", (void *) j_title_id_from_uri },
             { "setup_uri_info_list_file", "(Ljava/lang/String;)V", (void *) j_setup_uri_info_list_file },
             {"simple_device_info", "()Ljava/lang/String;", (void *) j_simple_device_info}
             ,{"generate_config_xml", "(Ljava/lang/String;)Ljava/lang/String;", (void *) generate_config_xml}

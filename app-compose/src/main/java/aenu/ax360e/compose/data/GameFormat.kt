@@ -14,6 +14,14 @@ enum class GameFormat {
         GOD, XEX_FOLDER -> fileName
     }
 
+    /** Native title-id format code (MUST match the enum in emulator_ax360e.cpp).
+     *  null for formats with no boot-free reader via title_id_from_uri. */
+    val titleIdCode: Int? get() = when (this) {
+        ISO -> 0
+        XEX_FOLDER -> 1
+        GOD, ZAR -> null   // GOD uses its own GameInfo reader; ZAR unsupported
+    }
+
     companion object {
         /** File-name -> format, or null if it's an ignored file. Detection order
          *  matches the scan: .iso, then .zar, then extensionless => GOD. */

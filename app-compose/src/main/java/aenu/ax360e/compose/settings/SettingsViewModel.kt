@@ -9,10 +9,10 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
-class SettingsViewModel(private val repo: SettingsRepository) : ViewModel() {
+class SettingsViewModel(private val repo: SettingsRepository) : ViewModel(), SettingsHost {
 
     val categories: List<SettingsCategory> = SettingsSchema.categories
-    val isCustomDriverSupported: Boolean get() = repo.isCustomDriverSupported
+    override val isCustomDriverSupported: Boolean get() = repo.isCustomDriverSupported
 
     private val _values = MutableStateFlow<Map<String, SettingValue>>(emptyMap())
     val values: StateFlow<Map<String, SettingValue>> = _values.asStateFlow()
@@ -40,13 +40,13 @@ class SettingsViewModel(private val repo: SettingsRepository) : ViewModel() {
         _values.value = _values.value.toMutableMap().apply { put(s.key, repo.valueOf(s)) }
     }
 
-    fun onBoolChanged(s: Setting.Bool, v: Boolean) { repo.setBool(s, v); refreshKey(s) }
-    fun onIntChanged(s: Setting.IntRange, v: Int) { repo.setInt(s, v); refreshKey(s) }
-    fun onListChanged(s: Setting.ListChoice, value: String) { repo.setListValue(s, value); refreshKey(s) }
+    override fun onBoolChanged(s: Setting.Bool, v: Boolean) { repo.setBool(s, v); refreshKey(s) }
+    override fun onIntChanged(s: Setting.IntRange, v: Int) { repo.setInt(s, v); refreshKey(s) }
+    override fun onListChanged(s: Setting.ListChoice, value: String) { repo.setListValue(s, value); refreshKey(s) }
     /** Custom driver picker writes the installed .so path ("" clears -> system driver).
      *  Persisted durably OFF the screen handle (the SAF picker pauses the screen, nulling
      *  the handle), then the snapshot is refreshed. Runs off the main thread. */
-    fun onDriverPathChanged(s: Setting.Action, value: String) {
+    override fun onDriverPathChanged(s: Setting.Action, value: String) {
         viewModelScope.launch(Dispatchers.IO) {
             runCatching {
                 repo.persistDriverPath(value)
@@ -56,10 +56,10 @@ class SettingsViewModel(private val repo: SettingsRepository) : ViewModel() {
         }
     }
 
-    fun currentBool(s: Setting.Bool) = repo.boolOf(s)
-    fun currentInt(s: Setting.IntRange) = repo.intOf(s)
-    fun currentListValue(s: Setting.ListChoice) = repo.listValueOf(s)
-    fun currentDriverPath(s: Setting.Action) = repo.stringOf(s)
+    override fun currentBool(s: Setting.Bool) = repo.boolOf(s)
+    override fun currentInt(s: Setting.IntRange) = repo.intOf(s)
+    override fun currentListValue(s: Setting.ListChoice) = repo.listValueOf(s)
+    override fun currentDriverPath(s: Setting.Action) = repo.stringOf(s)
 
     /** Durable write. Call from the screen on lifecycle pause and on dispose. */
     fun flush() = repo.flushAndClose()

@@ -13,6 +13,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import aenu.ax360e.compose.core.EmulatorRuntime
 import aenu.ax360e.compose.data.Game
+import aenu.ax360e.compose.data.GameFormat
 import aenu.ax360e.compose.data.GameLibraryRepository
 import aenu.ax360e.compose.data.IconCache
 import kotlinx.coroutines.Dispatchers
@@ -27,6 +28,15 @@ import kotlinx.coroutines.withContext
 const val ACTION_LAUNCH_GAME = "aenu.intent.action.AX360E"
 const val EXTRA_GAME_URI = "game_uri"
 
+/** Async resolution of a game's title id (needed before the per-game settings editor
+ *  can open). Driven by the long-press dialog; only GOD resolves (see [GameLibraryRepository.readTitleId]). */
+sealed interface TitleIdState {
+    data object Idle : TitleIdState
+    data class Loading(val game: Game) : TitleIdState
+    data class Resolved(val game: Game, val titleId: String) : TitleIdState
+    data class Error(val game: Game, val message: String) : TitleIdState
+}
+
 class GameLibraryViewModel(
     private val repo: GameLibraryRepository,
     private val iconCache: IconCache,
@@ -35,6 +45,9 @@ class GameLibraryViewModel(
 
     private val _state = MutableStateFlow<LibraryUiState>(LibraryUiState.Loading)
     val state: StateFlow<LibraryUiState> = _state.asStateFlow()
+
+    private val _titleId = MutableStateFlow<TitleIdState>(TitleIdState.Idle)
+    val titleIdState: StateFlow<TitleIdState> = _titleId.asStateFlow()
 
     init { refresh() }
 
@@ -61,6 +74,29 @@ class GameLibraryViewModel(
             refresh()
         }
     }
+
+    /** Resolve a game's title id off-main so the long-press dialog can open the per-game
+     *  editor. GOD/ISO/XEX_FOLDER have boot-free readers; ZAR short-circuits to an Error. */
+    fun requestPerGameSettings(game: Game) {
+        _titleId.value = TitleIdState.Loading(game)
+        viewModelScope.launch(Dispatchers.IO) {
+            _titleId.value = runCatching {
+                EmulatorRuntime.ensureLoaded()
+                if (game.format == GameFormat.ZAR) {
+                    return@runCatching TitleIdState.Error(
+                        game, "Per-game settings aren't available for ZAR games yet"
+                    )
+                }
+                val tid = repo.readTitleId(appContext, game)
+                // 00000000 is the unknown/placeholder title id (no real GOD carries it).
+                if (tid.isNullOrBlank() || tid == "00000000")
+                    TitleIdState.Error(game, "Couldn't read this game's title id")
+                else TitleIdState.Resolved(game, tid)
+            }.getOrElse { TitleIdState.Error(game, it.message ?: "Failed to read title id") }
+        }
+    }
+
+    fun clearTitleIdRequest() { _titleId.value = TitleIdState.Idle }
 
     /** Build the launch Intent (host pending in SP1-C). Caller startActivity()s it. */
     fun buildLaunchIntent(game: Game): Intent =

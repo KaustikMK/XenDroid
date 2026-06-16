@@ -5,6 +5,7 @@ import android.content.Intent
 import android.net.Uri
 import android.util.Log
 import androidx.documentfile.provider.DocumentFile
+import aenu.ax360e.compose.core.EmulatorRuntime
 import aenu.ax360e.compose.core.GameMetadataSource
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.firstOrNull
@@ -22,6 +23,10 @@ class GameLibraryRepository(
     private val iconCache: IconCache,
 ) {
     private val tag = "GameLibraryRepo"
+
+    /** Set once we've handed the native side this (main/library) process's context + SAF tree,
+     *  which the ISO title-id disc-mount needs (g_context + the tree); only :emu set them before. */
+    @Volatile private var nativeSafReady = false
 
     /** Result of a scan: distinguishes "no folder" / "grant lost" from a real list. */
     sealed interface ScanResult {
@@ -62,12 +67,36 @@ class GameLibraryRepository(
         val tree = DocumentFile.fromTreeUri(appContext, treeUri)
         if (tree == null || !tree.exists()) return@withContext ScanResult.PermissionLost
 
+        // Hand native THIS process's context + SAF tree (once). The ISO per-game-settings reader
+        // mounts the disc via DocumentFile::find/open_fd, which need g_context + the tree -- only
+        // the :emu process set them, so without this the ISO title-id read fails in the library.
+        if (!nativeSafReady) {
+            EmulatorRuntime.emulator?.let {
+                it.setup_context(appContext)
+                it.setup_document_file_tree(tree)
+                nativeSafReady = true
+            }
+        }
+
         val games = buildList {
             for (child in tree.listFiles()) {              // ONE level only
                 classify(child)?.let { add(it) }
             }
         }.sortedBy { it.name.lowercase() }
         ScanResult.Games(games)
+    }
+
+    /** Resolve a game's 8-char uppercase-hex title id for the per-game config path. GOD reads the
+     *  container header; ISO mounts the disc + reads default.xex's XEX header; XEX_FOLDER reads
+     *  default.xex directly. ZAR has no boot-free reader -> null (caller shows "unavailable").
+     *  MUST run off the main thread (these mmap SAF data); requires [scan]'s native-SAF setup. */
+    suspend fun readTitleId(ctx: Context, game: Game): String? = withContext(Dispatchers.IO) {
+        when (game.format) {
+            GameFormat.GOD -> metadata.readGod(ctx, game.launchUri)?.titleId
+            GameFormat.ISO, GameFormat.XEX_FOLDER ->
+                metadata.readTitleId(ctx, game.launchUri, game.format)
+            GameFormat.ZAR -> null
+        }
     }
 
     /** One DocumentFile child -> a Game, or null if ignored/unparseable. */

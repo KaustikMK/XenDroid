@@ -14,11 +14,11 @@ import androidx.compose.ui.unit.dp
 import aenu.ax360e.compose.settings.*
 
 @Composable
-fun SettingRow(vm: SettingsViewModel, s: Setting, modified: Boolean) = when (s) {
-    is Setting.Bool       -> BoolRow(vm, s, modified)
-    is Setting.IntRange   -> IntRow(vm, s, modified)
-    is Setting.ListChoice -> ListRow(vm, s, modified)
-    is Setting.Action     -> DriverActionRow(vm, s, modified)
+fun SettingRow(host: SettingsHost, s: Setting, modified: Boolean) = when (s) {
+    is Setting.Bool       -> BoolRow(host, s, modified)
+    is Setting.IntRange   -> IntRow(host, s, modified)
+    is Setting.ListChoice -> ListRow(host, s, modified)
+    is Setting.Action     -> DriverActionRow(host, s, modified)
 }
 
 @Composable
@@ -35,23 +35,23 @@ private fun RowTitle(text: String, modified: Boolean, sub: String? = null) {
 }
 
 @Composable
-private fun BoolRow(vm: SettingsViewModel, s: Setting.Bool, modified: Boolean) {
-    val checked = remember(modified) { vm.currentBool(s) }
+private fun BoolRow(host: SettingsHost, s: Setting.Bool, modified: Boolean) {
+    val checked = remember(modified) { host.currentBool(s) }
     var local by remember { mutableStateOf(checked) }
     Row(
-        Modifier.fillMaxWidth().clickable { local = !local; vm.onBoolChanged(s, local) }
+        Modifier.fillMaxWidth().clickable { local = !local; host.onBoolChanged(s, local) }
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Box(Modifier.weight(1f)) { RowTitle(s.title, modified) }
-        Switch(checked = local, onCheckedChange = { local = it; vm.onBoolChanged(s, it) })
+        Switch(checked = local, onCheckedChange = { local = it; host.onBoolChanged(s, it) })
     }
 }
 
 @Composable
-private fun IntRow(vm: SettingsViewModel, s: Setting.IntRange, modified: Boolean) {
+private fun IntRow(host: SettingsHost, s: Setting.IntRange, modified: Boolean) {
     var showDialog by remember { mutableStateOf(false) }
-    val current = remember(modified) { vm.currentInt(s) }
+    val current = remember(modified) { host.currentInt(s) }
     Row(Modifier.fillMaxWidth().clickable { showDialog = true }
         .padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
         Box(Modifier.weight(1f)) { RowTitle(s.title, modified, sub = current.toString()) }
@@ -70,7 +70,7 @@ private fun IntRow(vm: SettingsViewModel, s: Setting.IntRange, modified: Boolean
                 }
             },
             confirmButton = { TextButton(onClick = {
-                vm.onIntChanged(s, slider.toInt()); showDialog = false
+                host.onIntChanged(s, slider.toInt()); showDialog = false
             }) { Text("OK") } },
             dismissButton = { TextButton(onClick = { showDialog = false }) { Text("Cancel") } },
         )
@@ -78,9 +78,9 @@ private fun IntRow(vm: SettingsViewModel, s: Setting.IntRange, modified: Boolean
 }
 
 @Composable
-private fun ListRow(vm: SettingsViewModel, s: Setting.ListChoice, modified: Boolean) {
+private fun ListRow(host: SettingsHost, s: Setting.ListChoice, modified: Boolean) {
     var showDialog by remember { mutableStateOf(false) }
-    val currentValue = remember(modified) { vm.currentListValue(s) }
+    val currentValue = remember(modified) { host.currentListValue(s) }
     val currentLabel = s.options.firstOrNull { it.value == currentValue }?.label
         ?: if (currentValue.isEmpty()) "(default)" else currentValue
     Row(Modifier.fillMaxWidth().clickable { showDialog = true }
@@ -96,10 +96,10 @@ private fun ListRow(vm: SettingsViewModel, s: Setting.ListChoice, modified: Bool
                     s.options.forEach { opt ->
                         Row(Modifier.fillMaxWidth().selectable(
                             selected = opt.value == currentValue,
-                            onClick = { vm.onListChanged(s, opt.value); showDialog = false },
+                            onClick = { host.onListChanged(s, opt.value); showDialog = false },
                         ).padding(vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
                             RadioButton(selected = opt.value == currentValue, onClick = {
-                                vm.onListChanged(s, opt.value); showDialog = false })
+                                host.onListChanged(s, opt.value); showDialog = false })
                             Spacer(Modifier.width(8.dp)); Text(opt.label)
                         }
                     }
@@ -112,10 +112,10 @@ private fun ListRow(vm: SettingsViewModel, s: Setting.ListChoice, modified: Bool
 }
 
 @Composable
-private fun DriverActionRow(vm: SettingsViewModel, s: Setting.Action, modified: Boolean) {
-    if (!vm.isCustomDriverSupported) return  // gated: not an Adreno/kgsl device
+private fun DriverActionRow(host: SettingsHost, s: Setting.Action, modified: Boolean) {
+    if (!host.isCustomDriverSupported) return  // gated: not an Adreno/kgsl device
     val context = LocalContext.current
-    val current = remember(modified) { vm.currentDriverPath(s) }
+    val current = remember(modified) { host.currentDriverPath(s) }
     // .zip picker -> install via Utils on the host Activity (see note below).
     val pickZip = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument()
@@ -123,7 +123,7 @@ private fun DriverActionRow(vm: SettingsViewModel, s: Setting.Action, modified: 
         val activity = context as? android.app.Activity ?: return@rememberLauncherForActivityResult
         if (uri != null) {
             aenu.ax360e.Utils.install_custom_driver_from_zip(activity, uri) { path ->
-                vm.onDriverPathChanged(s, path)   // installed path
+                host.onDriverPathChanged(s, path)   // installed path
             }
         }
     }
@@ -137,7 +137,65 @@ private fun DriverActionRow(vm: SettingsViewModel, s: Setting.Action, modified: 
         }
         // "" clears vulkan_lib_path -> native falls back to the system driver. (Writing a
         // literal "default" would make native try to dlopen a driver named "default".)
-        TextButton(onClick = { vm.onDriverPathChanged(s, "") },
+        TextButton(onClick = { host.onDriverPathChanged(s, "") },
             modifier = Modifier.padding(start = 8.dp)) { Text("Use default driver") }
+    }
+}
+
+/**
+ * Wraps a [SettingRow] with a leading override Switch for the per-game editor. When
+ * [overridden] the inner control is the live editor (modified tint). When NOT overridden the
+ * row still SHOWS the setting at its inherited (global) value via a disabled control, greyed,
+ * so "by default" each row reads as its inherited value; flipping the Switch ON seeds the
+ * override from that value, OFF clears the key. Used ONLY by the per-game screen.
+ */
+@Composable
+fun OverrideRow(
+    host: SettingsHost,
+    s: Setting,
+    overridden: Boolean,
+    onOverrideToggle: (Boolean) -> Unit,
+) {
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Switch(checked = overridden, onCheckedChange = onOverrideToggle,
+            modifier = Modifier.padding(start = 12.dp))
+        Box(Modifier.weight(1f)) {
+            if (overridden) SettingRow(host, s, modified = true)
+            else InheritedPreview(host, s)
+        }
+    }
+}
+
+/** The setting at its inherited value, shown DISABLED (no editor). Reads host.current* live
+ *  (no remember) so it reflects the global snapshot once it has loaded. */
+@Composable
+private fun InheritedPreview(host: SettingsHost, s: Setting) {
+    val grey = MaterialTheme.colorScheme.onSurfaceVariant
+    when (s) {
+        is Setting.Bool -> Row(
+            Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(s.title, color = grey, style = MaterialTheme.typography.bodyLarge,
+                modifier = Modifier.weight(1f))
+            Switch(checked = host.currentBool(s), onCheckedChange = null, enabled = false)
+        }
+        is Setting.IntRange   -> InheritedTextRow(s.title, host.currentInt(s).toString(), grey)
+        is Setting.ListChoice -> {
+            val v = host.currentListValue(s)
+            val label = s.options.firstOrNull { it.value == v }?.label
+                ?: v.ifEmpty { "(default)" }
+            InheritedTextRow(s.title, label, grey)
+        }
+        is Setting.Action ->
+            InheritedTextRow(s.title, host.currentDriverPath(s).ifEmpty { "_default" }, grey)
+    }
+}
+
+@Composable
+private fun InheritedTextRow(title: String, value: String, grey: androidx.compose.ui.graphics.Color) {
+    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp)) {
+        Text(title, color = grey, style = MaterialTheme.typography.bodyLarge)
+        Text(value, color = grey, style = MaterialTheme.typography.bodySmall)
     }
 }
