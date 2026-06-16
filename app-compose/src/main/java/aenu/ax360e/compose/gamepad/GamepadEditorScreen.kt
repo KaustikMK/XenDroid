@@ -26,6 +26,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
@@ -48,6 +49,10 @@ fun GamepadEditorScreen(controller: GamepadController, onDone: () -> Unit) {
     var snap by remember { mutableStateOf(true) }
     var showGlobals by remember { mutableStateOf(false) }
     val base = remember(working, landscape) { controller.controlsFor(working, landscape) }
+    // Un-snapped live fraction of the control being dragged. The drag accumulates raw deltas
+    // here (NEVER snapped per frame) so it tracks the finger 1:1; snapFrac is applied once on
+    // drag-end. Reset explicitly on drag-end. Null when no drag is active.
+    var dragRaw by remember { mutableStateOf<Pair<ControlId, Offset>?>(null) }
 
     fun mutateControls(transform: (List<OnScreenControl>) -> List<OnScreenControl>) {
         val updated = transform(base).toDto()
@@ -103,13 +108,34 @@ fun GamepadEditorScreen(controller: GamepadController, onDone: () -> Unit) {
                 controls = base, opacity = working.globals.opacity,
                 onKeyEvent = { _, _, _ -> }, editMode = true,
                 selectedId = selected, onSelect = { selected = it },
-                onTranslate = { id, dx, dy -> mutateControls { list ->
-                    list.map { if (it.id == id) {
-                        var nx = (it.xFraction + dx).coerceIn(0.02f, 0.98f)
-                        var ny = (it.yFraction + dy).coerceIn(0.02f, 0.98f)
-                        if (snap) { nx = snapFrac(nx); ny = snapFrac(ny) }
-                        it.withLayout(x = nx, y = ny)
-                    } else it } } },
+                onTranslate = { id, dx, dy ->
+                    // Seed the raw accumulator from the control's CURRENT committed fraction on
+                    // the first delta of this drag, then advance it by the raw finger delta.
+                    // Never snap here -- snapping the running value re-rounds sub-half-step
+                    // deltas back to the same grid cell and freezes the control (the old bug).
+                    val cur = dragRaw?.takeIf { it.first == id }?.second
+                        ?: base.firstOrNull { it.id == id }
+                            ?.let { Offset(it.xFraction, it.yFraction) }
+                        ?: return@GamepadOverlay
+                    val nx = (cur.x + dx).coerceIn(0.02f, 0.98f)
+                    val ny = (cur.y + dy).coerceIn(0.02f, 0.98f)
+                    dragRaw = id to Offset(nx, ny)
+                    mutateControls { list ->
+                        list.map { if (it.id == id) it.withLayout(x = nx, y = ny) else it }
+                    }
+                },
+                onDragEnd = { id ->
+                    // Commit the grid-snap once, on release, when Snap is on.
+                    val raw = dragRaw?.takeIf { it.first == id }?.second
+                    dragRaw = null
+                    if (snap && raw != null) {
+                        val nx = snapFrac(raw.x.coerceIn(0.02f, 0.98f))
+                        val ny = snapFrac(raw.y.coerceIn(0.02f, 0.98f))
+                        mutateControls { list ->
+                            list.map { if (it.id == id) it.withLayout(x = nx, y = ny) else it }
+                        }
+                    }
+                },
                 onScale = { id, f -> mutateControls { list ->
                     list.map { if (it.id == id) it.withLayout(s = (it.scale * f).coerceIn(0.5f, 3f)) else it } } },
             )

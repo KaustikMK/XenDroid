@@ -68,6 +68,7 @@ fun GamepadOverlay(
     onSelect: (ControlId?) -> Unit = {},
     onTranslate: (ControlId, dxFrac: Float, dyFrac: Float) -> Unit = { _, _, _ -> },
     onScale: (ControlId, factor: Float) -> Unit = { _, _ -> },
+    onDragEnd: (ControlId) -> Unit = {},
 ) {
     // Create the emitter ONCE. The host's onKeyEvent lambda is unstable (captures the
     // Activity), so remember(onKeyEvent) would recreate the emitter on every touch (poke
@@ -88,6 +89,14 @@ fun GamepadOverlay(
     // produces a new `controls` list; if it keyed the pointerInput, the gesture would cancel
     // mid-drag (the button moves one frame then stutters/stops). Read this inside instead.
     val controlsState = rememberUpdatedState(controls)
+    // Edit callbacks must stay CURRENT for the long-lived pointer coroutine: pointerInput is
+    // keyed on (editMode, sizePx) and is NOT relaunched per drag frame, so a raw capture would
+    // freeze them to the gesture-start composition (the dragged control would only ever move by
+    // one frame's delta from its origin). Mirror the onKeyEvent pattern.
+    val onSelectState = rememberUpdatedState(onSelect)
+    val onTranslateState = rememberUpdatedState(onTranslate)
+    val onScaleState = rememberUpdatedState(onScale)
+    val onDragEndState = rememberUpdatedState(onDragEnd)
 
     // On teardown (overlay leaves composition: emulator exit / booted->false), release
     // every code so a control held at dispose can't stick. Keyed on Unit so it fires ONLY
@@ -103,7 +112,13 @@ fun GamepadOverlay(
             // the gesture. selectedId is not needed here (only the draw uses it).
             .pointerInput(editMode, sizePx) {
                 if (editMode) {
-                    editPointerLoop(controlsState, sizePx, density, onSelect, onTranslate, onScale)
+                    editPointerLoop(
+                        controlsState, sizePx, density,
+                        { id -> onSelectState.value(id) },
+                        { id, dx, dy -> onTranslateState.value(id, dx, dy) },
+                        { id, f -> onScaleState.value(id, f) },
+                        { id -> onDragEndState.value(id) },
+                    )
                 } else {
                     awaitPointerEventScope {
                         while (true) {
@@ -179,7 +194,10 @@ fun GamepadOverlay(
 }
 
 /** Edit-mode pointer loop: DOWN selects + claims; single-pointer drag translates the
- *  claimed control; two-pointer pinch scales the selected control by span ratio. */
+ *  claimed control; two-pointer pinch scales the selected control by span ratio.
+ *  onDragEnd fires once when a single-finger drag is released, so the editor can snap
+ *  the final resting position to the grid (snap is NOT applied per frame -- that would
+ *  round every sub-half-step delta back to the same cell and freeze the control). */
 private suspend fun PointerInputScope.editPointerLoop(
     controlsState: State<List<OnScreenControl>>,
     size: IntSize,
@@ -187,10 +205,12 @@ private suspend fun PointerInputScope.editPointerLoop(
     onSelect: (ControlId?) -> Unit,
     onTranslate: (ControlId, Float, Float) -> Unit,
     onScale: (ControlId, Float) -> Unit,
+    onDragEnd: (ControlId) -> Unit,
 ) {
     var dragId: ControlId? = null
     var lastDrag: Offset? = null
     var lastSpan: Float? = null
+    var didDrag = false                         // a single-finger translate actually happened
     awaitPointerEventScope {
         while (true) {
             val ev = awaitPointerEvent()
@@ -202,17 +222,20 @@ private suspend fun PointerInputScope.editPointerLoop(
                 dragId = hit?.id
                 lastDrag = if (hit != null) ch.position else null
                 lastSpan = null
+                didDrag = false
                 if (hit != null) ch.consume()
             }
             when {
                 pressed.size >= 2 && dragId != null -> {
-                    // Pinch: scale the selected control by the span ratio.
+                    // Pinch: scale the selected control by the span ratio. A pinch ends the
+                    // single-finger drag phase WITHOUT committing a snap (no position change).
                     val a = pressed[0].position; val b = pressed[1].position
                     val span = hypot(a.x - b.x, a.y - b.y)
                     val prev = lastSpan
                     if (prev != null && prev > 0f) onScale(dragId!!, span / prev)
                     lastSpan = span
                     lastDrag = null
+                    didDrag = false
                     pressed.forEach { it.consume() }
                 }
                 pressed.size == 1 && dragId != null -> {
@@ -221,13 +244,18 @@ private suspend fun PointerInputScope.editPointerLoop(
                     if (prev != null && size.width > 0 && size.height > 0) {
                         val dx = (ch.position.x - prev.x) / size.width
                         val dy = (ch.position.y - prev.y) / size.height
-                        if (dx != 0f || dy != 0f) onTranslate(dragId!!, dx, dy)
+                        if (dx != 0f || dy != 0f) { onTranslate(dragId!!, dx, dy); didDrag = true }
                     }
                     lastDrag = ch.position
                     lastSpan = null
                     ch.consume()
                 }
-                pressed.isEmpty() -> { dragId = null; lastDrag = null; lastSpan = null }
+                pressed.isEmpty() -> {
+                    // Pointer(s) lifted: commit the grid-snap of the final position (once).
+                    val ended = dragId
+                    if (ended != null && didDrag) onDragEnd(ended)
+                    dragId = null; lastDrag = null; lastSpan = null; didDrag = false
+                }
             }
         }
     }
