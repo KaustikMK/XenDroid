@@ -18,7 +18,15 @@ android {
         externalNativeBuild {
             cmake {
                 abiFilters 'arm64-v8a'
-                cppFlags ''
+                // The AGP debug variant configures CMake with empty Debug
+                // flags, i.e. -O0 with asserts active - unusable for an
+                // emulator (the PM4 translation thread is the fps ceiling).
+                // Optimize host code in all variants; keep -g for simpleperf
+                // (frame pointers are kept by the native CMakeLists).
+                // -fno-strict-aliasing: standard insurance for emulator
+                // codebases doing raw memory reinterpretation.
+                cFlags '-O2', '-DNDEBUG', '-g', '-fno-strict-aliasing'
+                cppFlags '-O2', '-DNDEBUG', '-g', '-fno-strict-aliasing'
             }
         }
         sourceSets{
