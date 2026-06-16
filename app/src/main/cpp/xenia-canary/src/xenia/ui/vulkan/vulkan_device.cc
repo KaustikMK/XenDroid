@@ -598,6 +598,8 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
   XE_UI_VULKAN_LIMIT(maxViewportDimensions[0])
   XE_UI_VULKAN_LIMIT(maxViewportDimensions[1])
   XE_UI_VULKAN_LIMIT(minUniformBufferOffsetAlignment)
+  XE_UI_VULKAN_LIMIT(maxUniformBufferRange)
+  XE_UI_VULKAN_LIMIT(maxDescriptorSetUniformBuffersDynamic)
   XE_UI_VULKAN_LIMIT(minStorageBufferOffsetAlignment)
   XE_UI_VULKAN_LIMIT(maxFramebufferWidth)
   XE_UI_VULKAN_LIMIT(maxFramebufferHeight)

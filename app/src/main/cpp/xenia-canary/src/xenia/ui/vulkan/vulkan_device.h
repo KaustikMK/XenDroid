@@ -74,6 +74,14 @@ class VulkanDevice {
     float maxSamplerAnisotropy = 1.0f;
     uint32_t maxViewportDimensions[2] = {4096, 4096};
     VkDeviceSize minUniformBufferOffsetAlignment = 256;
+    // Max size of a single uniform buffer range bound to a shader. Spec floor is
+    // 16384; used to assert the constants set's per-binding range stays legal
+    // when bound as UNIFORM_BUFFER_DYNAMIC.
+    uint32_t maxUniformBufferRange = 16384;
+    // Max number of UNIFORM_BUFFER_DYNAMIC descriptors usable across all sets in
+    // a single pipeline layout. Spec-guaranteed minimum is 8; the constants set
+    // needs kConstantBufferCount (5). Used to gate use_dynamic_constants_.
+    uint32_t maxDescriptorSetUniformBuffersDynamic = 8;
     VkDeviceSize minStorageBufferOffsetAlignment = 256;
     uint32_t maxFramebufferWidth = 4096;
     uint32_t maxFramebufferHeight = 4096;

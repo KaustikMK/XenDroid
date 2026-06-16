@@ -785,6 +785,46 @@ class VulkanCommandProcessor final : public CommandProcessor {
   // Whether up-to-date data has been written to constant (uniform) buffers, and
   // the buffer infos in current_constant_buffer_infos_ point to them.
   uint32_t current_constant_buffers_up_to_date_;
+  // Tier 2 #5: when true (gated at SetupContext on the device reporting
+  // maxDescriptorSetUniformBuffersDynamic >= kConstantBufferCount and the
+  // vulkan_dynamic_constant_buffers cvar), the kDescriptorSetConstants set uses
+  // VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC: the descriptor base offset is 0
+  // and the per-draw slice offset is supplied as a dynamic offset at bind time,
+  // so the transient set is re-allocated and re-written ONLY when a binding's
+  // backing VkBuffer changes (uniform_buffer_pool_ page rollover). Held constant
+  // for the device lifetime; all of the layout binding type, the
+  // VkWriteDescriptorSet type and the bind's pDynamicOffsets switch on it
+  // together (a partial switch is a VUID violation).
+  bool use_dynamic_constants_ = false;
+  // Value-cache for the constants descriptor set (one shared set, 5 bindings).
+  // Mirrors the sentinel-free validity discipline of the texture hash caches
+  // above: constants_descriptor_set_buffers_[i] records the VkBuffer handle last
+  // WRITTEN into binding i of the cached set in
+  // current_graphics_descriptor_sets_[kDescriptorSetConstants]. When all five
+  // still match the current_constant_buffer_infos_[i].buffer handles AND the
+  // recorded ranges still match (no page rollover and no constant-count change),
+  // the per-draw vkUpdateDescriptorSets + set allocation are skipped and only
+  // fresh pDynamicOffsets are bound. constants_descriptor_set_valid_ is reset to
+  // false at every point where the cached transient set can become invalid (new
+  // frame / transient-pool reset / used->free reclaim) so a stale handle can
+  // never let the GPU read recycled or freed descriptor memory. Only meaningful
+  // when use_dynamic_constants_ is true.
+  //
+  // The range is tracked alongside the buffer because the dynamic path only
+  // re-binds pDynamicOffsets per draw; the descriptor's range is baked at write
+  // time. The float-constant buffers' sizes vary with the shader's float_count
+  // (see UpdateBindings), and the upload pool returns the SAME page (only a new
+  // offset) when the new size still fits, so a buffer-only rollover check would
+  // keep a stale, too-small range and the shader's higher-index float constants
+  // would read as clamped/zero -> wrong transforms -> flicker, with no VUID
+  // (dynamicOffset + stale_range still fits the buffer). Comparing the range
+  // forces the cheap re-write on a constant-count change (a shader switch, far
+  // rarer than per-draw constant value changes).
+  VkBuffer constants_descriptor_set_buffers_
+      [SpirvShaderTranslator::kConstantBufferCount] = {};
+  VkDeviceSize constants_descriptor_set_ranges_
+      [SpirvShaderTranslator::kConstantBufferCount] = {};
+  bool constants_descriptor_set_valid_ = false;
   VkDescriptorSet current_graphics_descriptor_sets_
       [SpirvShaderTranslator::kDescriptorSetCount];
   // Whether descriptor sets in current_graphics_descriptor_sets_ point to
