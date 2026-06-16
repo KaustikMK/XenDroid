@@ -62,13 +62,43 @@ lifetime race (FORTIFY abort on the game's short-lived bank loader threads),
 and an a64 JIT vector-constant encoding bug (uncaught Xbyak error on select
 masks). Each was general — no Fable-specific hacks shipped.
 
-Recommended global setting: `mount_cache = true` (the game can use the
+**Recommended global setting**: `mount_cache = true` (the game can use the
 cache partition for its streaming installer; upstream desktop default since
-2024-08, Android fork defaults `false`).
+2024-08, Android fork defaults `false`). Also keep `gpu_allow_invalid_fetch_constants = true`.
 
-Known remaining issues match the upstream compat report
-(xenia-canary/game-compatibility#74): missing ground geometry in places and
-dialogue audio cutoffs.
+**Per-game** `config/4D5307F1.config.toml` (best-known as of 2026-06-13):
+
+```toml
+[GPU]
+vulkan_depth_unorm24 = false
+```
+
+- `vulkan_depth_unorm24 = false` forces the float32 depth-emulation path
+  instead of native `D24_UNORM_S8_UINT`. This gives the best overall result so
+  far on Adreno 830 + Turnip (other geometry/stability improved). It's kept
+  per-game on purpose — forcing it globally risks the known float32-depth fault
+  on other titles. (This cvar is read at GPU init; it was made per-game-applicable
+  by reading it live in `VulkanRenderTargetCache::depth_unorm24_vulkan_format_supported()`
+  — the per-game config loads before any guest depth render target is created.)
+
+**Known remaining issues** (as of 2026-06-13):
+- **Missing ground/floor geometry** (UNRESOLVED): the terrain renders see-through
+  on the Vulkan backend. Confirmed *not* occlusion/readback (draws are issued,
+  ~3.4M, but the ground writes nothing). The `nolrz` experiment proved the
+  **precise per-fragment depth test** is the culprit (disabling Turnip LRZ made
+  *more* geometry vanish, i.e. LRZ was masking part of the bug) — a reversed-Z +
+  float24-precision issue. No documented Vulkan ground fix exists anywhere (even
+  the dedicated just-harry femtofork: "ground transparent on Vulkan regardless").
+  Do NOT bother with: `readback_resolve`, `readback_memexport`, `occlusion_query`,
+  `depth_float24_round`, `render_target_path_vulkan=fsi` (Turnip lacks the feature
+  → silent fallback), or `turnip_debug=nolrz` (makes it worse). The remaining
+  lead is a code fix: quantize the color-pass shader depth to guest 20e4 float24.
+- **Intermittent loading-screen crash** during heavy disc streaming
+  (`XFileSectorInformation` flood): guest null-object derefs (atomic spinlock /
+  type-dispatch on a near-null object) across engine threads. Pre-existing,
+  not driver-related. A guest call-stack was added to the crash dump
+  (`emulator.cc`) to identify the null source on the next occurrence.
+- Dialogue audio cutoffs (matches upstream compat #74).
 
 > **Caveat: `mount_*` cvars cannot be set per-game.** Cache/scratch/MU devices
 > are registered during emulator setup (`ax360e_emu.cpp`, right after
