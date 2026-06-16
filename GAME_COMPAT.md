@@ -87,6 +87,24 @@ vulkan_depth_unorm24 = false
   by reading it live in `VulkanRenderTargetCache::depth_unorm24_vulkan_format_supported()`
   — the per-game config loads before any guest depth render target is created.)
 
+**Required title patch** `patches/4D5307F1.patch.toml` (ships in the repo;
+deploy to `<storage_root>/patches/`):
+
+- Fixes an **intermittent crash during disc streaming** (loading screens). A
+  lock-free streaming-deserializer pool checks emptiness via its `count` word
+  (`obj+0x138`) instead of the list `head` (`obj+0x16C`); under the fork's true
+  8-core concurrency the two desync (`count!=0`, `head==NULL`), the guard
+  passes, and `0x82C9F12C` dereferences a null head. The patch changes that one
+  guard load to read `head` so the engine's already-handled "pool empty / retry"
+  path runs instead. (Reverse-engineered from the guest dump; root cause is the
+  360's coarser scheduling + stronger store ordering masking the race.)
+- **Patch-system requirements** (so it actually loads): filename must match
+  `^[A-Fa-f0-9]{8}.*\.patch\.toml$` — i.e. `4D5307F1.patch.toml` (a bare
+  `.patch` extension is silently rejected, "incorrect filename", 0 titles
+  loaded). It also needs the module hash (`4145F96D2DEE2AB5`) to match the one
+  in the `.toml`. `apply_patches` defaults to `true`. Confirm via the log:
+  `PatchDB: Loaded patches for 1 titles` + `Patcher: Applying patch for: Fable II(4D5307F1)`.
+
 **Known remaining issues** (as of 2026-06-13):
 - **Missing ground/floor geometry** (UNRESOLVED): the terrain renders see-through
   on the Vulkan backend. Confirmed *not* occlusion/readback (draws are issued,
