@@ -93,4 +93,22 @@ class SettingsRepository(private val store: ConfigStore) {
         live?.closeFile()   // idempotent; the ONLY disk write
         live = null
     }
+
+    /** Durably persist the custom Vulkan driver path INDEPENDENTLY of the screen handle.
+     *  The SAF .zip picker pauses the settings activity (ON_PAUSE flushes + nulls `live`),
+     *  so the install callback can't write through the (null) screen handle -- that was the
+     *  Turnip-loader bug. Flush any open screen edits FIRST (so the on-disk file is current
+     *  and nothing is clobbered), then do a self-contained open -> put -> closeFile (the only
+     *  disk write) so the driver path is durable the instant install completes. The screen
+     *  handle re-opens on the next ensureOpen()/onResume(). Pass "" to clear (system driver). */
+    @Synchronized
+    fun persistDriverPath(value: String) {
+        flushAndClose()   // persist+close the screen handle (no-op if already paused-flushed)
+        val h = store.openLive()
+        try {
+            h.putString("Vulkan", "vulkan_lib_path", value)
+        } finally {
+            h.closeFile()
+        }
+    }
 }

@@ -43,8 +43,18 @@ class SettingsViewModel(private val repo: SettingsRepository) : ViewModel() {
     fun onBoolChanged(s: Setting.Bool, v: Boolean) { repo.setBool(s, v); refreshKey(s) }
     fun onIntChanged(s: Setting.IntRange, v: Int) { repo.setInt(s, v); refreshKey(s) }
     fun onListChanged(s: Setting.ListChoice, value: String) { repo.setListValue(s, value); refreshKey(s) }
-    /** Custom driver picker writes the installed path (or literal "default"). */
-    fun onDriverPathChanged(s: Setting.Action, value: String) { repo.setRawString(s, value); refreshKey(s) }
+    /** Custom driver picker writes the installed .so path ("" clears -> system driver).
+     *  Persisted durably OFF the screen handle (the SAF picker pauses the screen, nulling
+     *  the handle), then the snapshot is refreshed. Runs off the main thread. */
+    fun onDriverPathChanged(s: Setting.Action, value: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching {
+                repo.persistDriverPath(value)
+                repo.ensureOpen()
+                reloadAll()
+            }.onFailure { android.util.Log.w("SettingsViewModel", "driver path persist failed", it) }
+        }
+    }
 
     fun currentBool(s: Setting.Bool) = repo.boolOf(s)
     fun currentInt(s: Setting.IntRange) = repo.intOf(s)

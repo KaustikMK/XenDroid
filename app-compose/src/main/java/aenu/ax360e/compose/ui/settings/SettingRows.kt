@@ -135,7 +135,9 @@ private fun DriverActionRow(vm: SettingsViewModel, s: Setting.Action, modified: 
                     sub = current.ifEmpty { "_default" })
             }
         }
-        TextButton(onClick = { vm.onDriverPathChanged(s, "default") },
+        // "" clears vulkan_lib_path -> native falls back to the system driver. (Writing a
+        // literal "default" would make native try to dlopen a driver named "default".)
+        TextButton(onClick = { vm.onDriverPathChanged(s, "") },
             modifier = Modifier.padding(start = 8.dp)) { Text("Use default driver") }
     }
 }
