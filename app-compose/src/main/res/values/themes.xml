@@ -4,4 +4,9 @@
          (no XML Material Components dependency needed for a pure-Compose Activity);
          the in-app look comes from Ax360eTheme (Material 3, Compose). -->
     <style name="Theme.Ax360eCompose" parent="android:Theme.Material.Light.NoActionBar" />
+
+    <!-- SP1-C emulator host: fullscreen, no chrome (legacy used
+         Theme.NoTitleBar.Fullscreen). The Vulkan surface owns the whole screen. -->
+    <style name="Theme.Ax360eEmu"
+        parent="android:Theme.Material.NoActionBar.Fullscreen" />
 </resources>

@@ -33,5 +33,30 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <!-- SP1-C: the emulator host. Separate :emu process (libe.so is single-shot
+             per process; onDestroy -> System.exit(0) hard-kills it cleanly). singleTask
+             so a relaunch/pinned-shortcut routes to the existing task instead of
+             re-booting. Full configChanges so rotation/keyboard/etc. do NOT recreate the
+             Activity (a recreate would re-enter the single-shot boot). Fullscreen theme:
+             the Vulkan swapchain must own the whole window. -->
+        <activity
+            android:name="aenu.ax360e.compose.EmulatorHostActivity"
+            android:process=":emu"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:screenOrientation="sensorLandscape"
+            android:configChanges="layoutDirection|locale|orientation|uiMode|screenLayout|screenSize|smallestScreenSize|keyboard|keyboardHidden|navigation"
+            android:theme="@style/Theme.Ax360eEmu">
+            <!-- In-app launch: GameLibraryViewModel.buildLaunchIntent (AX360E + setPackage). -->
+            <intent-filter>
+                <action android:name="aenu.intent.action.AX360E" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+            <!-- Pinned-shortcut cold start: createShortcut sets action = ACTION_VIEW. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
     </application>
 </manifest>

@@ -31,6 +31,20 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 
 public class Utils {
+    // --- SP1-C: public accessors for the Compose :emu host (compose can't reach the
+    //     package-private Application.get_app_data_dir()). Same File as legacy uses. ---
+
+    /** Absolute path of the external app-data dir (== Application.get_app_data_dir()).
+     *  Used by the Compose host to build --storage_root. */
+    public static String get_storage_root_path() {
+        return Application.get_app_data_dir().getAbsolutePath();
+    }
+
+    /** Absolute path of the xe.log file under the app-data dir. Used for --log_file. */
+    public static String get_log_file_path() {
+        return Application.get_app_data_dir().getAbsolutePath() + "/xe.log";
+    }
+
     public static void enable_fullscreen(Window w){
         WindowCompat.setDecorFitsSystemWindows(w,false);
         WindowInsetsControllerCompat wic=WindowCompat.getInsetsController(w,w.getDecorView());
