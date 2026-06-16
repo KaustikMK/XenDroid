@@ -21,9 +21,10 @@ object SettingsSchema {
             b("Vulkan", "vulkan_async_skip_draws", "Async skip draws", false),
             b("Vulkan", "vulkan_extended_dynamic_state3_blend", "EDS3: blend", true),
             b("Vulkan", "vulkan_extended_dynamic_state3_topology", "EDS3: topology", true),
-            l("Vulkan", "vulkan_pipeline_creation_threads", "Pipeline creation threads", "4",
-                "0" to "Disabled (synchronous)", "1" to "1 thread", "2" to "2 threads",
-                "3" to "3 threads", "4" to "4 threads", "5" to "5 threads"),
+            // Numeric thread count (0 = synchronous, 1..5 = explicit) -> a slider, not a
+            // dropdown. Native cvar also accepts -1 (auto = 75% of cores), but the template
+            // ships 4 and a 0..5 slider is the intended UX.
+            i("Vulkan", "vulkan_pipeline_creation_threads", "Pipeline creation threads", 4, 0, 5),
             Action("Vulkan", "vulkan_lib_path", "Custom Vulkan driver", ""),
             b("Vulkan", "adrenotools_force_max_clocks", "Force max GPU clocks (adrenotools)", false),
         )),
