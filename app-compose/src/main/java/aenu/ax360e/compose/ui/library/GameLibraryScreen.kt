@@ -9,22 +9,19 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.material.icons.Icons
-// NOTE: the plan imported Icons.Default.Folder, but Folder ships only in
-// material-icons-extended (not on the configured classpath; only material-icons-core
-// is pulled transitively by material3). Using Add (available in core) for the
-// "set game folder" action to keep the dependency set the plan specified. Refresh is
-// in core. See the implementation report for this deviation.
-import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.MoreVert
-import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
@@ -51,6 +48,22 @@ fun GameLibraryScreen(
     // The long-press menu target (per-game settings, optionally shortcut).
     var pendingGame by remember { mutableStateOf<Game?>(null) }
     val titleIdState by viewModel.titleIdState.collectAsStateWithLifecycle()
+    val isRefreshing by viewModel.isRefreshing.collectAsStateWithLifecycle()
+
+    // Re-scan when the app returns to the foreground (picks up games added while it was
+    // backgrounded). The ViewModel's init does the first cold-start load, so the first
+    // ON_START is skipped to avoid doubling it.
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        var firstStart = true
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_START) {
+                if (firstStart) firstStart = false else viewModel.refresh()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
 
     Scaffold(
         topBar = {
@@ -60,17 +73,15 @@ fun GameLibraryScreen(
                     IconButton(onClick = onOpenSettings) {
                         Icon(Icons.Default.Settings, contentDescription = "Settings")
                     }
-                    IconButton(onClick = { pickDir.launch(null) }) {
-                        Icon(Icons.Default.Add, contentDescription = "Set game folder")
-                    }
-                    IconButton(onClick = { viewModel.refresh() }) {
-                        Icon(Icons.Default.Refresh, contentDescription = "Refresh")
-                    }
                     var menuOpen by remember { mutableStateOf(false) }
                     IconButton(onClick = { menuOpen = true }) {
                         Icon(Icons.Default.MoreVert, contentDescription = "More")
                     }
                     DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                        DropdownMenuItem(
+                            text = { Text("Set game folder") },
+                            onClick = { menuOpen = false; pickDir.launch(null) },
+                        )
                         DropdownMenuItem(
                             text = { Text("Key mapping") },
                             onClick = { menuOpen = false; onOpenKeymap() },
@@ -95,7 +106,12 @@ fun GameLibraryScreen(
             )
         }
     ) { padding ->
-        Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {
+        PullToRefreshBox(
+            isRefreshing = isRefreshing,
+            onRefresh = { viewModel.refresh() },
+            modifier = Modifier.fillMaxSize().padding(padding),
+        ) {
+        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             when (val s = state) {
                 LibraryUiState.NoVulkan ->
                     NoVulkanDialog(onQuit = { (context as? android.app.Activity)?.finish() })
@@ -121,6 +137,7 @@ fun GameLibraryScreen(
                         onLongPress = { pendingGame = it },
                     )
             }
+        }
         }
     }
 

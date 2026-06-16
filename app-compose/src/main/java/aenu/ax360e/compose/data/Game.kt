@@ -8,7 +8,8 @@ import kotlinx.serialization.Serializable
  *  - XEX folder: the default.xex CHILD uri (NOT the folder uri)
  *  - GOD: the container uri (echoed by native meta_info_from_god_game)
  * [iconCacheName] is the cacheDir filename of the extracted PNG blob, or null
- * (-> app_icon fallback). Only GOD games ever produce an icon.
+ * (-> app_icon fallback). GOD reads the icon from the container header; ISO and
+ * XEX folders extract it from default.xex's XDBF resource. ZAR has no icon.
  */
 @Serializable
 data class Game(

@@ -5,6 +5,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import aenu.ax360e.compose.core.GameMetadataSource
 import aenu.ax360e.compose.data.GameLibraryRepository
+import aenu.ax360e.compose.data.GameMetadataCache
 import aenu.ax360e.compose.data.IconCache
 import aenu.ax360e.compose.data.PreferencesStore
 import aenu.ax360e.compose.settings.ConfigStore
@@ -23,7 +24,10 @@ class AppContainer(context: Context) {
     private val keymapStore = aenu.ax360e.compose.data.KeymapStore(appContext)
     private val metadataSource = GameMetadataSource()
     val iconCache = IconCache(appContext.cacheDir)
-    val repository = GameLibraryRepository(appContext, prefs, metadataSource, iconCache)
+    // Per-game extraction-result cache, stored alongside game_icons/ in cacheDir so an
+    // OS cache-clear wipes the metadata cache AND the icon files together (stay consistent).
+    private val metadataCache = GameMetadataCache(appContext.cacheDir)
+    val repository = GameLibraryRepository(appContext, prefs, metadataSource, iconCache, metadataCache)
 
     // ConfigStore is a stateless factory and is safe to share; the SettingsRepository
     // (which owns a single-use ConfigHandle) is built FRESH per ViewModel so one

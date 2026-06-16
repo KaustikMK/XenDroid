@@ -45,4 +45,31 @@ class GameMetadataSource {
             null
         }
     }
+
+    /** Parsed boot-free XEX meta: title (may be "" -> caller uses filename fallback),
+     *  raw embedded PNG bytes (null/empty -> app_icon fallback), and the 8-char
+     *  uppercase-hex title id (null when unreadable / 00000000). */
+    data class XexMeta(val name: String, val iconPng: ByteArray?, val titleId: String?)
+
+    /** Boot-free combined name+icon(+titleId) read for ISO / XEX_FOLDER via a SINGLE native
+     *  XEX decompress + XDBF parse. uri = ISO container uri (ISO) or default.xex child uri
+     *  (XEX_FOLDER). Returns null for unsupported formats / unreadable files. Individual
+     *  fields may still be empty/null (e.g. icon present but title unreadable). Heavier than
+     *  readTitleId (full XEX decompress); MUST run off the main thread. */
+    fun readXexMeta(ctx: Context, uri: String, format: GameFormat): XexMeta? {
+        if (format != GameFormat.ISO && format != GameFormat.XEX_FOLDER) return null
+        val code = format.titleIdCode ?: return null
+        val emu = EmulatorRuntime.emulator ?: return null
+        return try {
+            val info: Emulator.GameInfo = emu.meta_from_xex(ctx, uri, code) ?: return null
+            XexMeta(
+                name = info.name ?: "",                       // null native field -> ""
+                iconPng = info.icon?.takeIf { it.isNotEmpty() },
+                titleId = info.titleId?.takeIf { it.isNotBlank() && it != "00000000" },
+            )
+        } catch (t: RuntimeException) {
+            Log.w("GameMetadataSource", "XEX meta extraction failed for $uri ($format)", t)
+            null
+        }
+    }
 }

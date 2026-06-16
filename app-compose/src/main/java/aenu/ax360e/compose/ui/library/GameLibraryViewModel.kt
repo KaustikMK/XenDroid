@@ -49,11 +49,19 @@ class GameLibraryViewModel(
     private val _titleId = MutableStateFlow<TitleIdState>(TitleIdState.Idle)
     val titleIdState: StateFlow<TitleIdState> = _titleId.asStateFlow()
 
+    /** True while a scan is running. Drives the swipe-down (pull-to-refresh) indicator
+     *  WITHOUT flashing the full-screen spinner over an already-loaded list. */
+    private val _isRefreshing = MutableStateFlow(false)
+    val isRefreshing: StateFlow<Boolean> = _isRefreshing.asStateFlow()
+
     init { refresh() }
 
     fun refresh() {
         if (!EmulatorRuntime.supportsVulkan) { _state.value = LibraryUiState.NoVulkan; return }
-        _state.value = LibraryUiState.Loading
+        // Keep an existing list visible during a pull-to-refresh (show only the pull
+        // indicator); the full-screen spinner is for the first/empty load.
+        if (_state.value !is LibraryUiState.Loaded) _state.value = LibraryUiState.Loading
+        _isRefreshing.value = true
         viewModelScope.launch {
             _state.value = runCatching {
                 // ensureLoaded() can sleep + System.loadLibrary on delay-load devices
@@ -65,6 +73,7 @@ class GameLibraryViewModel(
                     is GameLibraryRepository.ScanResult.Games -> LibraryUiState.Loaded(r.games)
                 }
             }.getOrElse { LibraryUiState.Error(it.message ?: "Failed to load library") }
+            _isRefreshing.value = false
         }
     }
 

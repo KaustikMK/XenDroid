@@ -98,4 +98,9 @@ class EmulatorSession {
 
     /** Instant fps = 1000/last-frame-ms (0 when no frame timed yet). NOT the average. */
     fun instantFps(): Double = if (booted) core.instant_fps() else 0.0
+
+    /** Effective Display|show_debug_overlay = the global value with any per-game overlay
+     *  xenia applied at boot. The overlay lands on the detached boot thread, so callers
+     *  must POLL this after boot (a one-shot read can fire before LoadGameConfig). */
+    fun showDebugOverlayEnabled(): Boolean = if (booted) core.show_debug_overlay_enabled() else false
 }

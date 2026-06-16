@@ -17,7 +17,9 @@ import aenu.ax360e.compose.core.EmulatorRuntime
 import aenu.ax360e.compose.core.EmulatorSession
 import aenu.ax360e.compose.data.PreferencesStore
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.firstOrNull
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import androidx.lifecycle.lifecycleScope
@@ -231,6 +233,17 @@ class EmulatorHostActivity : ComponentActivity(), SurfaceHolder.Callback {
                         )
                     }
                     val showFps by showFpsOverlay
+                    // The onCreate read of show_debug_overlay only saw the GLOBAL config;
+                    // xenia applies any per-game override on the detached boot thread, so
+                    // POLL the effective native cvar after boot. Without this, "global off
+                    // + per-game on" never shows the overlay.
+                    LaunchedEffect(booted) {
+                        if (!booted) return@LaunchedEffect
+                        while (isActive) {
+                            showFpsOverlay.value = session.showDebugOverlayEnabled()
+                            delay(1000)
+                        }
+                    }
                     FpsOverlay(
                         session = session,
                         visible = booted && showFps,

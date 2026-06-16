@@ -43,6 +43,10 @@ public class Emulator extends aenu.emulator.Emulator{
     // Instant fps = 1000/last_frame_time_ms (0 when no frame timed yet). Distinct
     // from the smoothed average fps embedded in debug_overlay_text().
     public native double instant_fps();
+    // Effective Display|show_debug_overlay (the live cvar, with any per-game config
+    // overlay applied by LoadGameConfig at boot). Poll post-boot: the per-game override
+    // lands on the detached boot thread, so this only reflects it after the game loads.
+    public native boolean show_debug_overlay_enabled();
     public static int nc_open_uri_fd(Context ctx,Uri uri) {
         try {
             ParcelFileDescriptor pfd_ = ctx.getContentResolver().openFileDescriptor(uri, "r");
@@ -62,6 +66,14 @@ public class Emulator extends aenu.emulator.Emulator{
     // XEX2 header parse. uri = ISO container uri or default.xex child uri. Returns
     // an 8-char uppercase-hex id, or null for unsupported/unreadable/00000000.
     public native String title_id_from_uri(Context ctx,String uri,int format) throws RuntimeException;
+
+    // Boot-free combined meta read for ISO (format 0) / XEX_FOLDER (format 1): decompresses
+    // default.xex ONCE into a transient guest address space and pulls the XDBF/SPA title NAME,
+    // title icon PNG, and title id in a single pass. uri = ISO container uri or default.xex
+    // child uri. Returns a GameInfo (its name/icon/titleId fields may individually be null when
+    // absent/unreadable), or null when nothing was readable. Heavier than title_id_from_uri
+    // (full XEX decompress); MUST run off the main thread.
+    public native GameInfo meta_from_xex(Context ctx,String uri,int format) throws RuntimeException;
 
 
     public static class GameInfo{
