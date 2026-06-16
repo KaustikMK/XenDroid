@@ -189,6 +189,15 @@ fun GamepadEditorScreen(controller: GamepadController, onDone: () -> Unit) {
             landscape = landscape, onSetLandscape = { landscape = it },
             snap = snap, onToggleSnap = { snap = !snap },
             hasSelection = selected != null,
+            // Resize the selected control via an absolute-scale slider (pinch still works too).
+            selectedScale = selected?.let { id -> base.firstOrNull { it.id == id }?.scale },
+            onScaleSelected = { s ->
+                selected?.let { id ->
+                    mutateControls { list ->
+                        list.map { if (it.id == id) it.withLayout(s = s.coerceIn(0.5f, 3f)) else it }
+                    }
+                }
+            },
             onReset = {
                 val def = defaultLayout(landscape).toDto()
                 working = if (landscape) working.copy(landscape = def) else working.copy(portrait = def)
@@ -216,6 +225,8 @@ private fun EditorChrome(
     snap: Boolean,
     onToggleSnap: () -> Unit,
     hasSelection: Boolean,
+    selectedScale: Float?,
+    onScaleSelected: (Float) -> Unit,
     onReset: () -> Unit,
     onHideShow: () -> Unit,
     showGlobals: Boolean,
@@ -262,6 +273,16 @@ private fun EditorChrome(
                 TextButton(onClick = onHideShow, enabled = hasSelection) { Text("Hide / Show") }
                 TextButton(onClick = onToggleGlobals) { Text("Globals") }
                 TextButton(onClick = onToggleCollapse) { Text("Collapse ▾") }
+            }
+            // Size of the selected control (only shown when one is selected). Absolute scale.
+            if (selectedScale != null) {
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                    Text("Size", modifier = Modifier.padding(end = 8.dp))
+                    Slider(value = selectedScale, valueRange = 0.5f..3f,
+                        onValueChange = onScaleSelected, modifier = Modifier.weight(1f))
+                    Text("${(selectedScale * 100).roundToInt()}%",
+                        modifier = Modifier.padding(start = 8.dp))
+                }
             }
             if (showGlobals) GlobalsEditor(globals, onMutateGlobals)
             Row(verticalAlignment = Alignment.CenterVertically,
