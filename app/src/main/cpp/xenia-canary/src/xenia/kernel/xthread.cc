@@ -518,6 +518,12 @@ X_STATUS XThread::Exit(int exit_code) {
   xe::Profiler::ThreadExit();
 
   running_ = false;
+  // ReleaseHandle() may drop the final reference and destroy this XThread.
+  // The host thread object must outlive the final exit below (Terminate
+  // locks its state mutex to wake joiners; a destroyed mutex aborts with
+  // FORTIFY - seen with Fable II's short-lived bank loader threads). Take
+  // ownership locally; intentionally leaked, Exit() never returns.
+  auto host_thread = std::move(thread_);
   ReleaseHandle();
 
   // NOTE: this does not return!
@@ -538,8 +544,14 @@ X_STATUS XThread::Terminate(int exit_code) {
 
   running_ = false;
   if (XThread::IsInThread(this)) {
+    // Same lifetime hazard as XThread::Exit: keep the host thread object
+    // alive across the final exit. Intentionally leaked.
+    auto host_thread = std::move(thread_);
     ReleaseHandle();
     xe::threading::Thread::Exit(exit_code);
+  } else if (!thread_) {
+    // Target already self-exited (host thread ownership moved out).
+    ReleaseHandle();
   } else {
     thread_->Terminate(exit_code);
     ReleaseHandle();
@@ -695,7 +707,10 @@ void XThread::RundownAPCs() {
   xboxkrnl::xeRundownApcs(thread_state_->context());
 }
 
-int32_t XThread::QueryPriority() { return thread_->priority(); }
+int32_t XThread::QueryPriority() {
+  // thread_ is moved out on self-exit; an exited thread has no priority.
+  return thread_ ? thread_->priority() : 0;
+}
 
 // Map Xenon's 0-31 priority range across the available host priority levels.
 // Priority 18 (0x12) is the Xenon real-time threshold — threads at or above
@@ -724,7 +739,7 @@ void XThread::SetPriority(int32_t increment) {
   priority_ = clamped;
   base_priority_ = clamped;
   quantum_start_ms_ = Clock::QueryHostUptimeMillis();
-  if (!cvars::ignore_thread_priorities) {
+  if (!cvars::ignore_thread_priorities && thread_) {
     thread_->set_priority(GuestPriorityToHost(clamped));
   }
 }
@@ -767,7 +782,9 @@ void XThread::CheckQuantumAndDecay() {
     if (is_guest_thread()) {
       guest_object<X_KTHREAD>()->priority = static_cast<uint8_t>(new_priority);
     }
-    thread_->set_priority(GuestPriorityToHost(new_priority));
+    if (thread_) {
+      thread_->set_priority(GuestPriorityToHost(new_priority));
+    }
   }
   quantum_start_ms_ = now;
 }
@@ -821,7 +838,9 @@ void XThread::BoostOnWake(int32_t increment) {
       if (is_guest_thread()) {
         guest_object<X_KTHREAD>()->priority = static_cast<uint8_t>(priority_);
       }
-      thread_->set_priority(GuestPriorityToHost(priority_));
+      if (thread_) {
+        thread_->set_priority(GuestPriorityToHost(priority_));
+      }
     }
   }
 
@@ -852,7 +871,7 @@ void XThread::SetActiveCpu(uint8_t cpu_index) {
   }
 
   if (xe::threading::logical_processor_count() >= 6) {
-    if (!cvars::ignore_thread_affinities) {
+    if (!cvars::ignore_thread_affinities && thread_) {
       thread_->set_affinity_mask(uint64_t(1) << cpu_index);
     }
   } else {
@@ -906,7 +925,7 @@ X_STATUS XThread::Resume(uint32_t* out_suspend_count) {
     *out_suspend_count = previous_suspend_count;
   }
 
-  if (thread_->Resume(&unused_host_suspend_count)) {
+  if (thread_ && thread_->Resume(&unused_host_suspend_count)) {
     return X_STATUS_SUCCESS;
   } else {
     return X_STATUS_UNSUCCESSFUL;
@@ -928,7 +947,7 @@ X_STATUS XThread::Resume(uint32_t* out_suspend_count) {
   }
 
   // Try to resume host thread if fully resumed (for non-self-suspended case).
-  if (should_resume_host) {
+  if (should_resume_host && thread_) {
     thread_->Resume(&unused_host_suspend_count);
   }
   return X_STATUS_SUCCESS;
@@ -956,7 +975,7 @@ X_STATUS XThread::Suspend(uint32_t* out_suspend_count) {
     return X_STATUS_SUCCESS;
   }
 
-  if (thread_->Suspend(&unused_host_suspend_count)) {
+  if (thread_ && thread_->Suspend(&unused_host_suspend_count)) {
     return X_STATUS_SUCCESS;
   } else {
     return X_STATUS_UNSUCCESSFUL;
