@@ -159,6 +159,13 @@ void NanoSleep(int64_t ns) {
   in_nt_increments = -in_nt_increments;
   NtDelayExecutionPointer.invoke(0, &in_nt_increments);
 }
+void PreciseSleep(std::chrono::nanoseconds duration) {
+  // NtDelayExecution already has 100ns resolution; the precision problem this
+  // function exists for (scheduler wakeup overshoot on Android) is handled in
+  // the posix implementation.
+  NanoSleep(duration.count());
+}
+
 void SyncMemory() { MemoryBarrier(); }
 
 void Sleep(std::chrono::microseconds duration) {

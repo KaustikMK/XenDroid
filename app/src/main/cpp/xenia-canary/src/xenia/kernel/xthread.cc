@@ -31,6 +31,14 @@ UPDATE_from_bool(ignore_thread_priorities, 2026, 4, 9, 12, true);
 DEFINE_bool(ignore_thread_affinities, true,
             "Ignores game-specified thread affinities.", "Kernel");
 
+DEFINE_bool(
+    precise_guest_delays, true,
+    "Serve KeDelayExecutionThread with a sub-millisecond-accurate host wait "
+    "instead of a plain sleep. Guest frame-pacing sleeps sit on the frame "
+    "critical path, and a plain host sleep overshoots by the scheduler "
+    "wakeup latency, inflating frame time directly.",
+    "Kernel");
+
 #if 0
 DEFINE_int64(stack_size_multiplier_hack, 1,
              "A hack for games with setjmp/longjmp issues.", "Kernel");
@@ -995,7 +1003,18 @@ X_STATUS XThread::Delay(uint32_t processor_mode, uint32_t alertable,
         return X_STATUS_USER_APC;
     }
   } else {
-    if (timeout_ms == 0) {
+    if (timeout_ticks < 0 && cvars::precise_guest_delays) {
+      // Keep the full 100ns resolution of the request: the millisecond
+      // conversion above truncates (a 1.9ms request becomes 1ms), and the
+      // plain sleep below overshoots - both errors land on the guest's
+      // frame-pacing loops.
+      uint64_t timeout_ns = static_cast<uint64_t>(-timeout_ticks) * 100;
+      if (!cvars::clock_no_scaling) {
+        timeout_ns = static_cast<uint64_t>(
+            static_cast<double>(timeout_ns) * Clock::guest_time_scalar());
+      }
+      xe::threading::PreciseSleep(std::chrono::nanoseconds(timeout_ns));
+    } else if (timeout_ms == 0) {
       if (priority_ <= xe::threading::ThreadPriority::kBelowNormal) {
         xe::threading::NanoSleep(100);
       } else {
