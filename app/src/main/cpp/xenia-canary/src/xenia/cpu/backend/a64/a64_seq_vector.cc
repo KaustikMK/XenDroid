@@ -911,6 +911,23 @@ struct PERMUTE_I32
         tbl_ctrl[idx * 4 + b] = base + src_dword * 4 + b;
       }
     }
+    // Fast paths: the two most common PPC permutes — vmrghw (merge-high-word)
+    // and vmrglw (merge-low-word) — produce controls that are exactly ZIP1/ZIP2
+    // of the two .4s sources. Recognize them straight off the byte control (no
+    // endian assumptions) and emit a single interleave instead of building a
+    // TBL control vector, two table-register copies, and a TBL.
+    static const uint8_t kZip1Ctrl[16] = {0,  1,  2,  3,  16, 17, 18, 19,
+                                          4,  5,  6,  7,  20, 21, 22, 23};
+    static const uint8_t kZip2Ctrl[16] = {8,  9,  10, 11, 24, 25, 26, 27,
+                                          12, 13, 14, 15, 28, 29, 30, 31};
+    if (std::memcmp(tbl_ctrl, kZip1Ctrl, 16) == 0) {
+      e.zip1(VReg(d).s4, VReg(s2).s4, VReg(s3).s4);
+      return;
+    }
+    if (std::memcmp(tbl_ctrl, kZip2Ctrl, 16) == 0) {
+      e.zip2(VReg(d).s4, VReg(s2).s4, VReg(s3).s4);
+      return;
+    }
     // Ensure src2 in v0, src3 in v1 (consecutive for TBL).
     if (s2 != 0) {
       e.orr(VReg(0).b16, VReg(s2).b16, VReg(s2).b16);
@@ -1047,6 +1064,16 @@ struct SWIZZLE
       } else if (w0 == 1 && w1 == 0 && w2 == 3 && w3 == 2) {
         // Swap pairs within 64-bit halves.
         e.rev64(VReg(d).s4, VReg(s).s4);
+      } else if (w0 == 1 && w1 == 2 && w2 == 3 && w3 == 0) {
+        // Dword rotate by one (.yzwx): EXT extracts src bytes [4..15,0..3],
+        // exactly what the TBL control below would produce.
+        e.ext(VReg(d).b16, VReg(s).b16, VReg(s).b16, 4);
+      } else if (w0 == 2 && w1 == 3 && w2 == 0 && w3 == 1) {
+        // Dword rotate by two (.zwxy).
+        e.ext(VReg(d).b16, VReg(s).b16, VReg(s).b16, 8);
+      } else if (w0 == 3 && w1 == 0 && w2 == 1 && w3 == 2) {
+        // Dword rotate by three (.wxyz).
+        e.ext(VReg(d).b16, VReg(s).b16, VReg(s).b16, 12);
       } else {
         // General case: TBL.
         uint8_t ctrl[16];

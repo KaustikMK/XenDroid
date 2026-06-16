@@ -547,3 +547,42 @@ void eor_imm(const WReg &dst, const WReg &src, uint32_t imm, const WReg &tmp) {
     eor(dst, src, tmp);
   }
 }
+
+// 64-bit (XReg) variants of the logical-immediate helpers above. Emit a single
+// and/orr/eor with an encoded bitmask immediate when the constant is encodable,
+// otherwise materialize it into tmp and use the register form.
+void and_imm(const XReg &dst, const XReg &src, uint64_t imm, const XReg &tmp) {
+  if (isValidLogicalImm(imm, 64)) {
+    and_(dst, src, imm);
+  } else {
+    if (src.getIdx() == tmp.getIdx()) {
+      throw Error(ERR_ILLEGAL_REG_IDX);
+    }
+    mov(tmp, imm);
+    and_(dst, src, tmp);
+  }
+}
+
+void orr_imm(const XReg &dst, const XReg &src, uint64_t imm, const XReg &tmp) {
+  if (isValidLogicalImm(imm, 64)) {
+    orr(dst, src, imm);
+  } else {
+    if (src.getIdx() == tmp.getIdx()) {
+      throw Error(ERR_ILLEGAL_REG_IDX);
+    }
+    mov(tmp, imm);
+    orr(dst, src, tmp);
+  }
+}
+
+void eor_imm(const XReg &dst, const XReg &src, uint64_t imm, const XReg &tmp) {
+  if (isValidLogicalImm(imm, 64)) {
+    eor(dst, src, imm);
+  } else {
+    if (src.getIdx() == tmp.getIdx()) {
+      throw Error(ERR_ILLEGAL_REG_IDX);
+    }
+    mov(tmp, imm);
+    eor(dst, src, tmp);
+  }
+}

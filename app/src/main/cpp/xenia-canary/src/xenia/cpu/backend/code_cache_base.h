@@ -141,7 +141,9 @@ class CodeCacheBase : public CodeCache {
         guest_high - guest_low, xe::memory::AllocationType::kCommit,
         xe::memory::PageAccess::kReadWrite);
     uint32_t* p = reinterpret_cast<uint32_t*>(indirection_table_base_);
-    for (uint32_t address = guest_low; address < guest_high; ++address) {
+    // Guest code addresses are 4-byte aligned and the table holds one slot per
+    // 4 guest bytes, so step by 4 — the previous ++address wrote each slot 4x.
+    for (uint32_t address = guest_low; address < guest_high; address += 4) {
       p[(address - kIndirectionTableBaseLow) / 4] = indirection_default_value_;
     }
   }

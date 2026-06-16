@@ -226,7 +226,17 @@ A64CodeCache::UnwindReservation PosixA64CodeCache::RequestUnwindReservation(
   assert_false(unwind_table_count_ >= kMaximumFunctionCount);
 #endif
   UnwindReservation unwind_reservation;
+#if XE_PLATFORM_AX360E
+  // On AX360E the DWARF .eh_frame lives in a separate bump buffer
+  // (eh_frame_table_); InitializeUnwindEntry/PlaceCode never write to or
+  // register the per-function tail in the code region (unlike the #else path,
+  // which anchors pcrel pointers there). Reserving a tail here only wastes code
+  // space and forces a redundant trap-fill + a second I-cache flush over a
+  // region that is never read or executed.
+  unwind_reservation.data_size = 0;
+#else
   unwind_reservation.data_size = xe::round_up(kMaxUnwindInfoSize, 16);
+#endif
   unwind_reservation.table_slot = unwind_table_count_++;
   unwind_reservation.entry_address = entry_address;
   return unwind_reservation;
