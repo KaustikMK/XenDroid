@@ -36,6 +36,28 @@ void KeDebugMonitorCallback(cpu::ppc::PPCContext* ppc_context,
 
   XELOGI("KeDebugMonitorCallback({}, {:08X})", static_cast<uint32_t>(id), arg);
 
+  switch (id) {
+    case DebugMonitorCommand::PIXCommandResult:
+    case DebugMonitorCommand::SetPIXCallback:
+    case DebugMonitorCommand::Unknown66:
+    case DebugMonitorCommand::Unknown89:
+    case DebugMonitorCommand::Unknown94:
+      break;
+    default:
+      // Unknown commands include the XDK stall reporter (id 82) that titles
+      // spam while stuck in GPU sync waits. The caller's nonvolatile
+      // registers identify the wait context (D3D device, target counter) -
+      // log them so a frozen title can be diagnosed from xe.log alone.
+      XELOGI(
+          "KeDebugMonitorCallback: unknown id {} r1={:08X} r5={:08X} "
+          "r6={:08X} r29={:08X} r30={:08X} r31={:08X} lr={:08X}",
+          static_cast<uint32_t>(id), uint32_t(ppc_context->r[1]),
+          uint32_t(ppc_context->r[5]), uint32_t(ppc_context->r[6]),
+          uint32_t(ppc_context->r[29]), uint32_t(ppc_context->r[30]),
+          uint32_t(ppc_context->r[31]), uint32_t(ppc_context->lr));
+      break;
+  }
+
   if (!cvars::kernel_pix) {
     SHIM_SET_RETURN_32(-1);
     return;

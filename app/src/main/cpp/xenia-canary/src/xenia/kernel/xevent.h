@@ -34,6 +34,11 @@ class XEvent : public XObject {
   void InitializeNative(void* native_ptr, X_DISPATCH_HEADER* header);
 
   int32_t Set(uint32_t priority_increment, bool wait);
+  // Diagnostics: who last signaled this event (guest thread handle + lr,
+  // guest uptime ms). Read by the long-wait reporter in XObject::Wait.
+  uint32_t last_set_thread() const { return last_set_thread_; }
+  uint32_t last_set_lr() const { return last_set_lr_; }
+  uint32_t last_set_uptime_ms() const { return last_set_uptime_ms_; }
   int32_t Pulse(uint32_t priority_increment, bool wait);
   int32_t Reset();
   void Query(uint32_t* out_type, uint32_t* out_state);
@@ -47,7 +52,12 @@ class XEvent : public XObject {
   xe::threading::WaitHandle* GetWaitHandle() override { return event_.get(); }
 
  private:
+  void RecordSetter();
+
   bool manual_reset_ = false;
+  uint32_t last_set_thread_ = 0;
+  uint32_t last_set_lr_ = 0;
+  uint32_t last_set_uptime_ms_ = 0;
   std::unique_ptr<xe::threading::Event> event_;
 };
 

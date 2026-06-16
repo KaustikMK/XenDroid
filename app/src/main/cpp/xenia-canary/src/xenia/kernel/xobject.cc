@@ -201,8 +201,45 @@ X_STATUS XObject::Wait(uint32_t wait_reason, uint32_t processor_mode,
                         TimeoutTicksToMs(*opt_timeout)))
                   : std::chrono::milliseconds::max();
 
-  auto result =
-      xe::threading::Wait(wait_handle, alertable ? true : false, timeout_ms);
+  xe::threading::WaitResult result;
+  if (timeout_ms == std::chrono::milliseconds::max()) {
+    // Infinite wait: poll in 10s slices and report long waits, so a title
+    // deadlock names the waiting thread and the awaited object in the log
+    // instead of parking silently forever.
+    uint32_t slices = 0;
+    do {
+      result = xe::threading::Wait(wait_handle, alertable ? true : false,
+                                   std::chrono::milliseconds(10000));
+      if (result == xe::threading::WaitResult::kTimeout) {
+        ++slices;
+        auto* current_thread = XThread::GetCurrentThread();
+        uint64_t guest_lr = 0, guest_r1 = 0;
+        if (current_thread && current_thread->thread_state()) {
+          auto* context = current_thread->thread_state()->context();
+          guest_lr = context->lr;
+          guest_r1 = context->r[1];
+        }
+        uint32_t setter_thread = 0, setter_lr = 0, setter_ms = 0;
+        if (type() == Type::Event) {
+          auto* event = static_cast<XEvent*>(this);
+          setter_thread = event->last_set_thread();
+          setter_lr = event->last_set_lr();
+          setter_ms = event->last_set_uptime_ms();
+        }
+        XELOGW(
+            "XObject::Wait: thread {:08X} waiting on type-{} object "
+            "handle {:08X} '{}' for {}s (guest lr={:08X} r1={:08X}) "
+            "[last set by {:08X} at lr={:08X}, t={}ms]",
+            current_thread ? current_thread->handle() : 0,
+            uint32_t(type()), handle(), name(), slices * 10,
+            uint32_t(guest_lr), uint32_t(guest_r1), setter_thread, setter_lr,
+            setter_ms);
+      }
+    } while (result == xe::threading::WaitResult::kTimeout);
+  } else {
+    result =
+        xe::threading::Wait(wait_handle, alertable ? true : false, timeout_ms);
+  }
 
   switch (result) {
     case xe::threading::WaitResult::kSuccess:
@@ -235,9 +272,47 @@ X_STATUS XObject::SignalAndWait(XObject* signal_object, XObject* wait_object,
                         TimeoutTicksToMs(*opt_timeout)))
                   : std::chrono::milliseconds::max();
 
-  auto result = xe::threading::SignalAndWait(
-      signal_object->GetWaitHandle(), wait_object->GetWaitHandle(),
-      alertable ? true : false, timeout_ms);
+  xe::threading::WaitResult result;
+  if (timeout_ms == std::chrono::milliseconds::max()) {
+    // Infinite: signal once, then wait in 10s slices with long-wait
+    // reporting (see XObject::Wait). The signal must not be repeated, so
+    // timed-out slices continue with a plain wait on the wait object.
+    result = xe::threading::SignalAndWait(signal_object->GetWaitHandle(),
+                                          wait_object->GetWaitHandle(),
+                                          alertable ? true : false,
+                                          std::chrono::milliseconds(10000));
+    uint32_t slices = 0;
+    while (result == xe::threading::WaitResult::kTimeout) {
+      ++slices;
+      auto* current_thread = XThread::GetCurrentThread();
+      uint64_t guest_lr = 0;
+      if (current_thread && current_thread->thread_state()) {
+        guest_lr = current_thread->thread_state()->context()->lr;
+      }
+      uint32_t setter_thread = 0, setter_lr = 0, setter_ms = 0;
+      if (wait_object->type() == Type::Event) {
+        auto* event = static_cast<XEvent*>(wait_object);
+        setter_thread = event->last_set_thread();
+        setter_lr = event->last_set_lr();
+        setter_ms = event->last_set_uptime_ms();
+      }
+      XELOGW(
+          "XObject::SignalAndWait: thread {:08X} signaled type-{} {:08X}, "
+          "waiting on type-{} {:08X} for {}s (guest lr={:08X}) "
+          "[wait obj last set by {:08X} at lr={:08X}, t={}ms]",
+          current_thread ? current_thread->handle() : 0,
+          uint32_t(signal_object->type()), signal_object->handle(),
+          uint32_t(wait_object->type()), wait_object->handle(), slices * 10,
+          uint32_t(guest_lr), setter_thread, setter_lr, setter_ms);
+      result = xe::threading::Wait(wait_object->GetWaitHandle(),
+                                   alertable ? true : false,
+                                   std::chrono::milliseconds(10000));
+    }
+  } else {
+    result = xe::threading::SignalAndWait(signal_object->GetWaitHandle(),
+                                          wait_object->GetWaitHandle(),
+                                          alertable ? true : false, timeout_ms);
+  }
 
   switch (result) {
     case xe::threading::WaitResult::kSuccess:
@@ -278,11 +353,43 @@ X_STATUS XObject::WaitMultiple(uint32_t count, XObject** objects,
                         TimeoutTicksToMs(*opt_timeout)))
                   : std::chrono::milliseconds::max();
 
+  // Infinite multi-waits are sliced into 10s host waits purely for long-wait
+  // reporting (a timed-out WaitAny/WaitAll consumes no objects, so re-issuing
+  // is semantically transparent to the guest).
+  const bool infinite = timeout_ms == std::chrono::milliseconds::max();
+  uint32_t report_slices = 0;
+  auto report_long_wait = [&]() {
+    ++report_slices;
+    auto* current_thread = XThread::GetCurrentThread();
+    uint64_t guest_lr = 0;
+    if (current_thread && current_thread->thread_state()) {
+      guest_lr = current_thread->thread_state()->context()->lr;
+    }
+    XELOGW(
+        "XObject::WaitMultiple: thread {:08X} waiting ({}) on {} objects "
+        "for {}s (guest lr={:08X}) first handles: {:08X} {:08X} {:08X}",
+        current_thread ? current_thread->handle() : 0,
+        wait_type ? "any" : "all", count, report_slices * 10,
+        uint32_t(guest_lr), count > 0 ? objects[0]->handle() : 0,
+        count > 1 ? objects[1]->handle() : 0,
+        count > 2 ? objects[2]->handle() : 0);
+  };
+  auto slice_timeout = [&]() {
+    return infinite ? std::chrono::milliseconds(10000) : timeout_ms;
+  };
+
   X_STATUS status;
   uint32_t boost_increment = 0;
   if (wait_type) {
-    auto result = xe::threading::WaitAny(wait_handles, count,
-                                         alertable ? true : false, timeout_ms);
+    std::pair<xe::threading::WaitResult, size_t> result;
+    do {
+      result = xe::threading::WaitAny(wait_handles, count,
+                                      alertable ? true : false,
+                                      slice_timeout());
+      if (infinite && result.first == xe::threading::WaitResult::kTimeout) {
+        report_long_wait();
+      }
+    } while (infinite && result.first == xe::threading::WaitResult::kTimeout);
     switch (result.first) {
       case xe::threading::WaitResult::kSuccess:
         objects[result.second]->WaitCallback();
@@ -305,8 +412,15 @@ X_STATUS XObject::WaitMultiple(uint32_t count, XObject** objects,
         break;
     }
   } else {
-    auto result = xe::threading::WaitAll(wait_handles, count,
-                                         alertable ? true : false, timeout_ms);
+    xe::threading::WaitResult result;
+    do {
+      result = xe::threading::WaitAll(wait_handles, count,
+                                      alertable ? true : false,
+                                      slice_timeout());
+      if (infinite && result == xe::threading::WaitResult::kTimeout) {
+        report_long_wait();
+      }
+    } while (infinite && result == xe::threading::WaitResult::kTimeout);
     switch (result) {
       case xe::threading::WaitResult::kSuccess:
         for (uint32_t i = 0; i < count; i++) {

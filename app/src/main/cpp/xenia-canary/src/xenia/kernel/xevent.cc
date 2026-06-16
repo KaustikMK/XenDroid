@@ -10,7 +10,9 @@
 #include "xenia/kernel/xevent.h"
 
 #include "xenia/base/byte_stream.h"
+#include "xenia/base/clock.h"
 #include "xenia/base/logging.h"
+#include "xenia/kernel/xthread.h"
 
 namespace xe {
 namespace kernel {
@@ -57,14 +59,28 @@ void XEvent::InitializeNative(void* native_ptr, X_DISPATCH_HEADER* header) {
   assert_not_null(event_);
 }
 
+void XEvent::RecordSetter() {
+  auto* thread = XThread::GetCurrentThread();
+  if (thread && thread->thread_state()) {
+    last_set_thread_ = thread->handle();
+    last_set_lr_ = uint32_t(thread->thread_state()->context()->lr);
+  } else {
+    last_set_thread_ = 0xFFFFFFFF;  // host-side setter
+    last_set_lr_ = 0;
+  }
+  last_set_uptime_ms_ = Clock::QueryGuestUptimeMillis();
+}
+
 int32_t XEvent::Set(uint32_t priority_increment, bool wait) {
   set_priority_increment(priority_increment);
+  RecordSetter();
   event_->Set();
   return 1;
 }
 
 int32_t XEvent::Pulse(uint32_t priority_increment, bool wait) {
   set_priority_increment(priority_increment);
+  RecordSetter();
   event_->Pulse();
   return 1;
 }
