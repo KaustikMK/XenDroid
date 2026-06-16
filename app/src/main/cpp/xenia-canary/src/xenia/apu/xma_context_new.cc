@@ -392,8 +392,6 @@ void XmaContextNew::Decode(XMA_CONTEXT_DATA* data) {
 
   uint8_t* current_input_buffer = GetCurrentInputBuffer(data);
 
-  input_buffer_.fill(0);
-
   // Detect if we're about to decode the loop end frame (before
   // UpdateLoopStatus may reset the offset).
   bool is_loop_end_frame = false;
@@ -480,6 +478,12 @@ void XmaContextNew::Decode(XMA_CONTEXT_DATA* data) {
   kPacketInfo packet_info = GetPacketInfo(packet, relative_offset);
   const uint32_t packet_to_skip = skip_count + 1;
   const uint32_t next_packet_index = packet_index + packet_to_skip;
+
+  // Zero the scratch buffer only once we're actually going to assemble a
+  // frame in it — the early-out paths above (invalid packet index, full
+  // packet skip) run at the Work() polling rate and were paying this 4 KiB
+  // fill for nothing (~2% of total CPU).
+  input_buffer_.fill(0);
 
   // Frame header split across packet boundary — combine packets to read
   // the full 15-bit header and resolve the real frame size.
