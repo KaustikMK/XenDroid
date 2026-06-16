@@ -10,6 +10,7 @@
 #ifndef XENIA_CPU_BACKEND_A64_A64_SEQ_UTIL_H_
 #define XENIA_CPU_BACKEND_A64_A64_SEQ_UTIL_H_
 
+#include "xenia/base/cvar.h"
 #include "xenia/base/memory.h"
 #include "xenia/base/vec128.h"
 #include "xenia/cpu/backend/a64/a64_backend.h"
@@ -18,6 +19,8 @@
 #include "xenia/cpu/backend/a64/a64_stack_layout.h"
 
 #include "xbyak_aarch64.h"
+
+DECLARE_bool(a64_vmx_nan_fixup);
 
 #if XE_COMPILER_MSVC
 #include <intrin.h>
@@ -552,7 +555,11 @@ inline void EmitVmxFpBinOp_V128(A64Emitter& e, int dest_idx, const T1& src1,
     }
 
     // PPC NaN propagation fixup (fast-path skip when no NaN).
-    FixupVmxNan_V128(e);
+    // When disabled, NEON's IEEE default NaN propagation is kept as-is,
+    // matching the x64 backend (which emits no fixup on these ops).
+    if (cvars::a64_vmx_nan_fixup) {
+      FixupVmxNan_V128(e);
+    }
 
     // Flush output denormals. FPCR.FZ guarantees output flushing per the
     // ARM spec, so skip when FZ is known to also handle inputs (implying

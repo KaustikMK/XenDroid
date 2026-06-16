@@ -397,5 +397,8 @@ a64_extension_mask = -1                           	# Allow the detection and uti
                                                   	#     2 = F16C
                                                   	#    -1 = Detect and utilize all possible processor features
 
+a64_vmx_nan_fixup = true                          	# Emulate PPC NaN propagation on VMX float ops: the first NaN operand (by position) is returned, quieted; generated NaNs become the PPC default NaN (0xFFC00000).
+                                                  	# When false, the IEEE/NEON default NaN behavior is used instead, which matches the x64 backend and is faster; rare titles that hash or compare raw float bits may behave differently.
+
 enable_host_guest_stack_synchronization = false   	# Records entries for guest/host stack mappings at function starts and checks for reentry at return sites. Has slight performance impact, but fixes crashes in games that use setjmp/longjmp.
 max_stackpoints = 65536                           	# Max number of host->guest stack mappings we can record.

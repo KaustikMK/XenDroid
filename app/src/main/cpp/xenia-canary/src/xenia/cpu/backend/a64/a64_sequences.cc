@@ -4028,20 +4028,29 @@ struct MUL_ADD_V128
       // Flush s1/s2 → v0/v1, save to stack slots 0/1.
       int s1, s2;
       PrepareVmxFpSources(e, i.src1, i.src2, s1, s2);
-      e.str(QReg(0), Xbyak_aarch64::ptr(e.sp, static_cast<int32_t>(
-                                                  StackLayout::GUEST_SCRATCH)));
-      e.str(QReg(1),
-            Xbyak_aarch64::ptr(
-                e.sp, static_cast<int32_t>(StackLayout::GUEST_SCRATCH) + 16));
+      if (cvars::a64_vmx_nan_fixup) {
+        // These stack copies feed only the NaN fixup's slow-path lane reads.
+        e.str(QReg(0),
+              Xbyak_aarch64::ptr(
+                  e.sp, static_cast<int32_t>(StackLayout::GUEST_SCRATCH)));
+        e.str(QReg(1),
+              Xbyak_aarch64::ptr(
+                  e.sp, static_cast<int32_t>(StackLayout::GUEST_SCRATCH) + 16));
+      }
 
       // Restore flushed s3, compute fmla into v2 via copy.
+      // (The stack[32] spill/reload is kept in both cvar states: it also
+      // preserves flushed s3 across PrepareVmxFpSources, which clobbers
+      // v2/v3 when software denormal flushing is in use.)
       e.ldr(QReg(2),
             Xbyak_aarch64::ptr(
                 e.sp, static_cast<int32_t>(StackLayout::GUEST_SCRATCH) + 32));
       e.fmla(VReg(2).s4, VReg(s1).s4, VReg(s2).s4);
 
       // PPC NaN fixup (sources on stack at offsets 0/16/32).
-      FixupVmxNan_V128_Fma(e);
+      if (cvars::a64_vmx_nan_fixup) {
+        FixupVmxNan_V128_Fma(e);
+      }
 
       // Flush output denormals.
       if (!e.IsFeatureEnabled(xe::arm64::kA64FZFlushesInputs)) {
@@ -4118,13 +4127,20 @@ struct MUL_SUB_V128
       // Flush s1/s2 → v0/v1, save for NaN fixup.
       int s1, s2;
       PrepareVmxFpSources(e, i.src1, i.src2, s1, s2);
-      e.str(QReg(0), Xbyak_aarch64::ptr(e.sp, static_cast<int32_t>(
-                                                  StackLayout::GUEST_SCRATCH)));
-      e.str(QReg(1),
-            Xbyak_aarch64::ptr(
-                e.sp, static_cast<int32_t>(StackLayout::GUEST_SCRATCH) + 16));
+      if (cvars::a64_vmx_nan_fixup) {
+        // These stack copies feed only the NaN fixup's slow-path lane reads.
+        e.str(QReg(0),
+              Xbyak_aarch64::ptr(
+                  e.sp, static_cast<int32_t>(StackLayout::GUEST_SCRATCH)));
+        e.str(QReg(1),
+              Xbyak_aarch64::ptr(
+                  e.sp, static_cast<int32_t>(StackLayout::GUEST_SCRATCH) + 16));
+      }
 
       // Reload flushed s3, negate into v2, fmla: v2 = -s3 + s1*s2 = s1*s2 - s3.
+      // (The stack[32] spill/reload is kept in both cvar states: it also
+      // preserves flushed s3 across PrepareVmxFpSources, which clobbers
+      // v2/v3 when software denormal flushing is in use.)
       e.ldr(QReg(2),
             Xbyak_aarch64::ptr(
                 e.sp, static_cast<int32_t>(StackLayout::GUEST_SCRATCH) + 32));
@@ -4132,7 +4148,9 @@ struct MUL_SUB_V128
       e.fmla(VReg(2).s4, VReg(s1).s4, VReg(s2).s4);
 
       // PPC NaN fixup (sources on stack at offsets 0/16/32).
-      FixupVmxNan_V128_Fma(e);
+      if (cvars::a64_vmx_nan_fixup) {
+        FixupVmxNan_V128_Fma(e);
+      }
 
       // Flush output denormals.
       if (!e.IsFeatureEnabled(xe::arm64::kA64FZFlushesInputs)) {

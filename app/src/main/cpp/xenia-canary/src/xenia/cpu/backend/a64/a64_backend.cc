@@ -45,6 +45,15 @@ DEFINE_bool(a64_enable_host_guest_stack_synchronization, true,
             "impact, but fixes crashes in games that use setjmp/longjmp.",
             "a64");
 
+DEFINE_bool(a64_vmx_nan_fixup, true,
+            "Emulate PPC NaN propagation on VMX float ops: the first NaN "
+            "operand (by position) is returned, quieted; generated NaNs "
+            "become the PPC default NaN (0xFFC00000). When disabled, the "
+            "IEEE/NEON default NaN behavior is used instead, which matches "
+            "the x64 backend and is faster; rare titles that hash or compare "
+            "raw float bits may behave differently.",
+            "a64");
+
 namespace xe {
 namespace cpu {
 namespace backend {
