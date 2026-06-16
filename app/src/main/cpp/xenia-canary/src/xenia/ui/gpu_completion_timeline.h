@@ -54,6 +54,15 @@ class GPUCompletionTimeline {
 
   bool AwaitSubmissionAndUpdateCompleted(const uint64_t awaited_submission) {
     assert_true(awaited_submission < upcoming_submission_);
+    // Don't touch the driver at all when the awaited submission is already
+    // known to be completed. Status queries of still-pending fences are not
+    // guaranteed to be cheap: Turnip on the kgsl kernel interface blocks in
+    // vkGetFenceStatus until the fence retires, which turned this
+    // book-keeping poll into a full CPU-GPU serialization point (one
+    // GPU-frame-length stall per frame from the frame-in-flight throttle).
+    if (GetCompletedSubmissionFromLastUpdate() >= awaited_submission) {
+      return true;
+    }
     if (UpdateAndGetCompletedSubmission() < awaited_submission) {
       AwaitSubmissionImpl(awaited_submission);
     }

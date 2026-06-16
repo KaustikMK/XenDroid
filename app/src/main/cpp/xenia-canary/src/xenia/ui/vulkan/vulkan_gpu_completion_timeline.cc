@@ -50,8 +50,19 @@ VulkanGPUCompletionTimeline::~VulkanGPUCompletionTimeline() {
 std::optional<VulkanGPUCompletionTimeline::FenceAcquisition>
 VulkanGPUCompletionTimeline::AcquireFenceForSubmission(
     VkResult* const result_out_opt) {
-  // Reuse fences if completion was not awaited or updated explicitly.
-  UpdateAndGetCompletedSubmission();
+  // Prefer reusing fences already reclaimed by awaits without polling the
+  // driver: the status query of a still-pending fence blocks until it retires
+  // on Turnip/kgsl (vkGetFenceStatus is not non-blocking there), which would
+  // serialize the CPU with the GPU on every submit. Only poll when fences
+  // would otherwise accumulate (users like the presenter's guest output
+  // refresher never await in steady state) - by the time this many
+  // submissions are pending, the oldest one has long retired, so the poll
+  // reclaims it without a meaningful wait.
+  constexpr size_t kMaxPendingBeforeReclaimPoll = 8;
+  if (free_fences_.empty() &&
+      pending_submission_fences_.size() >= kMaxPendingBeforeReclaimPoll) {
+    UpdateCompletedSubmission();
+  }
 
   VkFence fence = VK_NULL_HANDLE;
 
