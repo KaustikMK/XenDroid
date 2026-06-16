@@ -11,6 +11,8 @@
 
 #include "xenia/kernel/kernel_state.h"
 
+#include <mutex>
+
 #include "xenia/base/byte_stream.h"
 #include "xenia/base/logging.h"
 #include "xenia/emulator.h"
@@ -1257,13 +1259,34 @@ void KernelState::UpdateKeTimestampBundle() {
 
   // Every 20 ticks (~20ms), decay priority on running guest threads.
   // This simulates the Xenon decrementer-driven quantum expiration.
+  // Also advance each running thread's per-thread millisecond tick
+  // (X_KTHREAD::ms_tick): the XDK D3D runtime measures its blocking waits'
+  // watchdog timeouts (e.g. the 5-second GPU-hang recovery) and spin-wait
+  // patience windows as deltas of this field, so without it those
+  // deadlock-breakers never fire. 20ms granularity is ample for the
+  // 5000-tick timeouts the guests use; only deltas matter.
   if (++quantum_timer_counter_ >= 20) {
     quantum_timer_counter_ = 0;
     auto global_lock = global_critical_region_.Acquire();
+    uint32_t ticked = 0;
+    uint32_t sample_object = 0;
     for (auto& [id, thread] : threads_by_id_) {
       if (thread->is_running()) {
         thread->CheckQuantumAndDecay();
+        if (auto* kthread = thread->guest_object<X_KTHREAD>()) {
+          kthread->ms_tick = uptime_ms;
+          ++ticked;
+          if (!sample_object) {
+            sample_object = thread->guest_object();
+          }
+        }
       }
+    }
+    // Diagnostic heartbeat while validating the ms_tick emulation.
+    if (++tick_log_counter_ >= 250) {
+      tick_log_counter_ = 0;
+      XELOGI("KernelState: ms_tick={} written to {} threads (sample @{:08X})",
+             uptime_ms, ticked, sample_object);
     }
   }
 }
@@ -1377,6 +1400,16 @@ void KernelState::EmulateCPInterruptDPC(uint32_t interrupt_callback,
   if (!interrupt_callback) {
     return;
   }
+
+  // On real hardware graphics interrupts are delivered serialized at raised
+  // IRQL; here vblank (frame limiter thread) and CP interrupts (command
+  // processor thread) would otherwise run the guest ISR CONCURRENTLY, which
+  // D3D's interrupt bookkeeping is not written for (its ring-segment retire
+  // state can corrupt, after which a stray segment interrupt finds the
+  // 0x0BADF00D 'no callback' sentinel and the title's sync state is dead -
+  // observed as the Ninja Gaiden 2 ring-space deadlock).
+  static std::mutex emulate_cp_interrupt_mutex;
+  std::lock_guard<std::mutex> interrupt_lock(emulate_cp_interrupt_mutex);
 
   auto thread = kernel::XThread::GetCurrentThread();
   assert_not_null(thread);
