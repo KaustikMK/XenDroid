@@ -1387,6 +1387,15 @@ void SpirvShaderTranslator::StartVertexOrTessEvalShaderBeforeMain() {
   builder_->addMemberDecoration(
       type_struct_per_vertex, kOutputPerVertexMemberPosition,
       spv::DecorationBuiltIn, static_cast<int>(spv::BuiltIn::Position));
+  // Decorate the Position member itself as Invariant (member-level, matching
+  // the glslang reference) so the identical vertex shader module produces a
+  // bit-exact gl_Position across pipeline variants - notably the depth
+  // pre-pass, which reuses this VS and swaps only the fragment stage. On tile
+  // GPUs (Adreno/Turnip) a variable-level Invariant on the Block does not
+  // reliably propagate to the built-in member.
+  builder_->addMemberDecoration(type_struct_per_vertex,
+                                kOutputPerVertexMemberPosition,
+                                spv::DecorationInvariant);
 
   // Decorate clip/cull arrays only if allocated.
   if (clip_distance_count > 0) {
@@ -1409,7 +1418,7 @@ void SpirvShaderTranslator::StartVertexOrTessEvalShaderBeforeMain() {
   builder_->addDecoration(type_struct_per_vertex, spv::DecorationBlock);
   output_per_vertex_ = builder_->createVariable(
       spv::NoPrecision, spv::StorageClassOutput, type_struct_per_vertex, "");
-  builder_->addDecoration(output_per_vertex_, spv::DecorationInvariant);
+  // Invariant is applied to the Position member above (member-level).
   main_interface_.push_back(output_per_vertex_);
 }
 

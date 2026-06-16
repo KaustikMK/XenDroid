@@ -1698,6 +1698,10 @@ VkShaderModule VulkanPipelineCache::GetGeometryShader(GeometryShaderKey key) {
   builder.addMemberDecoration(
       type_struct_out_gl_per_vertex, member_out_gl_per_vertex_position,
       spv::DecorationBuiltIn, static_cast<int>(spv::BuiltIn::Position));
+  // Member-level Invariant (matching glslang) - see spirv_shader_translator.cc.
+  builder.addMemberDecoration(type_struct_out_gl_per_vertex,
+                              member_out_gl_per_vertex_position,
+                              spv::DecorationInvariant);
   if (clip_distance_count) {
     builder.addMemberName(type_struct_out_gl_per_vertex,
                           member_out_gl_per_vertex_clip_distance,
@@ -1710,7 +1714,7 @@ VkShaderModule VulkanPipelineCache::GetGeometryShader(GeometryShaderKey key) {
   spv::Id out_gl_per_vertex =
       builder.createVariable(spv::NoPrecision, spv::StorageClassOutput,
                              type_struct_out_gl_per_vertex, "");
-  builder.addDecoration(out_gl_per_vertex, spv::DecorationInvariant);
+  // Invariant is applied to the Position member above (member-level).
   main_interface.push_back(out_gl_per_vertex);
 
   // Begin the main function.
