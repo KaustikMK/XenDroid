@@ -1,40 +1,31 @@
 
-# For more information about using CMake with Android Studio, read the
-# documentation: https://d.android.com/studio/projects/add-native-code.html.
-# For more examples on how to use CMake, see https://github.com/android/ndk-samples.
+# Native build for ax360e (arm64-v8a only). See ../../../BUILD.md for the
+# toolchain requirements (CMake version is pinned via cmake.dir in
+# local.properties and selected by the Gradle externalNativeBuild block).
+cmake_minimum_required(VERSION 3.30.3)
 
-# Sets the minimum CMake version required for this project.
-cmake_minimum_required(VERSION 3.22.1)
-# Declares the project name. The project name can be accessed via ${ PROJECT_NAME},
-# Since this is the top level CMakeLists.txt, the project name is also accessible
-# with ${CMAKE_PROJECT_NAME} (both CMake variables are in-sync within the top level
-# build script scope).
-project("ax360e")
+project(ax360e LANGUAGES C CXX ASM)
 
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+
+# Global compile options applied to every target in this build.
 add_compile_options(-march=armv8-a)
 add_compile_options(-stdlib=libc++)
-add_compile_options(-fPIC)
+add_compile_options(-fno-omit-frame-pointer)
+add_compile_options(-funwind-tables)
 
+# 16 KB max page size: required for Android 15+ on arm64.
 add_link_options(-Wl,-z,max-page-size=16384)
 
 add_library(hardware_ProcessorInfo SHARED hardware_ProcessorInfo.cpp)
 target_link_libraries(hardware_ProcessorInfo PRIVATE vulkan)
 
-add_compile_options(-fno-omit-frame-pointer)
-add_compile_options(-funwind-tables)
-set(CMAKE_POSITION_INDEPENDENT_CODE ON)
-
-set(CMAKE_CXX_STANDARD 20)
-
-project(ax360e LANGUAGES C CXX ASM)
-
 add_library(emu SHARED)
 set_target_properties(emu PROPERTIES OUTPUT_NAME "e")
 
+# Hide the static dependencies' symbols; only the JNI entry points are exported.
 target_link_options(emu PRIVATE -Wl,--exclude-libs,ALL)
-
-#target_compile_options(emu PRIVATE -flto)
-#target_link_options(emu PRIVATE -flto)
 
 target_sources(emu
         PRIVATE
@@ -73,11 +64,7 @@ target_sources(emu
         vkapi.cpp
         vkutil.cpp
 )
-#xe_a64_code_cache_posix.cpp
-#emulator.cpp
-#emulator_ax360e.cpp
-# python xenia-build premake --target_os=android --devenv=cmake
-# Generated CMake files are in xenia/build/
+
 add_subdirectory(xenia-canary EXCLUDE_FROM_ALL)
 
 add_subdirectory(libadrenotools EXCLUDE_FROM_ALL)
@@ -130,5 +117,3 @@ target_link_libraries(emu
         xenia-patcher
         adrenotools
 )
-
-#xenia-patcher
