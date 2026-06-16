@@ -9,6 +9,8 @@
 
 #include "xenia/kernel/xboxkrnl/xboxkrnl_video.h"
 
+#include <atomic>
+
 #include "xenia/base/logging.h"
 #include "xenia/emulator.h"
 #include "xenia/gpu/graphics_system.h"
@@ -328,6 +330,9 @@ void VdSetGraphicsInterruptCallback_entry(function_t callback,
   // callback takes 2 params
   // r3 = bool 0/1 - 0 is normal interrupt, 1 is some acquire/lock mumble
   // r4 = user_data (r4 of VdSetGraphicsInterruptCallback)
+  XELOGI("VdSetGraphicsInterruptCallback: callback={:08X} user_data={:08X}",
+         uint32_t(callback.value()),
+         uint32_t(user_data.guest_address()));
   auto graphics_system = kernel_state()->emulator()->graphics_system();
   graphics_system->SetInterruptCallback(callback, user_data);
 }
@@ -350,18 +355,36 @@ void VdEnableRingBufferRPtrWriteBack_entry(lpvoid_t ptr,
 }
 DECLARE_XBOXKRNL_EXPORT1(VdEnableRingBufferRPtrWriteBack, kVideo, kImplemented);
 
+// The kernel rotates system command buffers and has the GPU write back an
+// incrementing identifier when each one completes (the completion rides with
+// the swap). D3D learns the pending identifier from VdGetSystemCommandBuffer
+// and polls the registered identifier address for it; with both ends stubbed,
+// a title that gates ring-space reclamation on the identifier (Ninja Gaiden 2
+// does, around scene transitions) deadlocks with the command processor idle.
+// The identifier series is entirely kernel-owned, so emulating the contract
+// needs no knowledge of the buffer contents.
+static std::atomic<uint32_t> vd_system_command_buffer_identifier_{0};
+static std::atomic<uint32_t> vd_system_command_buffer_id_address_{0};
+
 void VdGetSystemCommandBuffer_entry(lpunknown_t p0_ptr, lpunknown_t p1_ptr) {
+  uint32_t identifier = ++vd_system_command_buffer_identifier_;
+  XELOGI("VdGetSystemCommandBuffer: p0={:08X} p1={:08X} identifier={:08X}",
+         uint32_t(p0_ptr.guest_address()), uint32_t(p1_ptr.guest_address()),
+         identifier);
   p0_ptr.Zero(0x94);
   xe::store_and_swap<uint32_t>(p0_ptr, 0xBEEF0000);
-  xe::store_and_swap<uint32_t>(p1_ptr, 0xBEEF0001);
+  xe::store_and_swap<uint32_t>(p1_ptr, identifier);
 }
-DECLARE_XBOXKRNL_EXPORT1(VdGetSystemCommandBuffer, kVideo, kStub);
+DECLARE_XBOXKRNL_EXPORT1(VdGetSystemCommandBuffer, kVideo, kImplemented);
 
 void VdSetSystemCommandBufferGpuIdentifierAddress_entry(lpunknown_t unk) {
   // r3 = 0x2B10(d3d?) + 8
+  XELOGI("VdSetSystemCommandBufferGpuIdentifierAddress: address={:08X}",
+         uint32_t(unk.guest_address()));
+  vd_system_command_buffer_id_address_ = uint32_t(unk.guest_address());
 }
 DECLARE_XBOXKRNL_EXPORT1(VdSetSystemCommandBufferGpuIdentifierAddress, kVideo,
-                         kStub);
+                         kImplemented);
 
 // VdVerifyMEInitCommand
 // r3
@@ -541,6 +564,27 @@ void VdSwap_entry(
 
   dwords[offset++] = *width;
   dwords[offset++] = *height;
+
+  // System command buffer completion: the real kernel block makes the GPU
+  // write the rotating identifier back when the swap's system command buffer
+  // work completes. Emit that store in ring order so D3D's identifier-gated
+  // waits (ring-space reclamation) can make progress.
+  uint32_t syscmd_id_address = vd_system_command_buffer_id_address_.load();
+  if (syscmd_id_address) {
+    uint32_t syscmd_identifier = vd_system_command_buffer_identifier_.load();
+    static std::atomic<uint32_t> log_budget{20};
+    if (log_budget.load() > 0 && log_budget-- > 0) {
+      XELOGI(
+          "VdSwap: writing system command buffer identifier {:08X} to {:08X} "
+          "(unk2={:08X} unk3={:08X} unk4={:08X})",
+          syscmd_identifier, syscmd_id_address, uint32_t(unk2.guest_address()),
+          uint32_t(unk3.guest_address()), uint32_t(unk4.guest_address()));
+    }
+    dwords[offset++] = xenos::MakePacketType3(xenos::PM4_MEM_WRITE, 2);
+    dwords[offset++] = (syscmd_id_address & 0x1FFFFFFF) |
+                       uint32_t(xenos::Endian::k8in32);
+    dwords[offset++] = syscmd_identifier;
+  }
 
   // Fill the rest of the buffer with NOP packets.
   for (uint32_t i = offset; i < 64; i++) {
