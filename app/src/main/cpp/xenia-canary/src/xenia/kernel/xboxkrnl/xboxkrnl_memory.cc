@@ -8,6 +8,8 @@
  */
 
 #include "xenia/kernel/xboxkrnl/xboxkrnl_memory.h"
+
+#include <atomic>
 #include "xenia/base/logging.h"
 #include "xenia/kernel/kernel_state.h"
 #include "xenia/kernel/util/shim_utils.h"
@@ -476,8 +478,19 @@ uint32_t xeMmAllocatePhysicalMemoryEx(uint32_t flags, uint32_t region_size,
                         adjusted_alignment, allocation_type, protect, top_down,
                         &base_address)) {
     // Failed - assume no memory available.
-    XELOGW("MmAllocatePhysicalMemoryEx: Allocation failed: {:08X} Size: {:08X}",
-           base_address, adjusted_size);
+    XELOGW(
+        "MmAllocatePhysicalMemoryEx: Allocation failed: {:08X} Size: {:08X} "
+        "align: {:08X} page_size: {:08X} range: {:08X}-{:08X} protect: {:08X}",
+        base_address, adjusted_size, adjusted_alignment, page_size,
+        heap_min_addr, heap_max_addr, uint32_t(protect_bits));
+    // Titles treat physical allocation failure as fatal (their RIP trap is a
+    // no-op here, so they crash on the null instead). Dump the heaps once so
+    // the failure is diagnosable: what consumed or fragmented the space.
+    static std::atomic<bool> dumped{false};
+    bool expected = false;
+    if (dumped.compare_exchange_strong(expected, true)) {
+      kernel_memory()->DumpMap();
+    }
     return 0;
   }
   XELOGD("MmAllocatePhysicalMemoryEx = {:08X} Size: {:08X}", base_address,

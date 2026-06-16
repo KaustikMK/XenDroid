@@ -1915,11 +1915,18 @@ bool PhysicalHeap::AllocRange(uint32_t low_address, uint32_t high_address,
   // Shouldn't be possible for it to be allocated already.
   const uint32_t address =
       heap_base_ + parent_address - GetPhysicalAddress(heap_base_);
-  if ((address + host_address_offset_) % alignment != 0) {
+  // The MmAllocatePhysicalMemoryEx alignment contract is on the PHYSICAL
+  // address (which the parent allocation already satisfied). The guest
+  // virtual address in the 0xE0000000 view is intentionally skewed -0x1000
+  // from its physical backing, so checking virtual/host alignment here
+  // wrongly rejects every E0 allocation with alignment > 4KB (Fable II's
+  // 32KB-aligned streaming pools -> null -> guest crash at boot).
+  if (GetPhysicalAddress(address) % alignment != 0) {
     XELOGE(
-        "PhysicalHeap::AllocRange translated address {:08X} misaligned "
-        "(alignment {:08X}, physical base offset {:08X})",
-        address, alignment, GetPhysicalAddress(heap_base_));
+        "PhysicalHeap::AllocRange physical address {:08X} (guest {:08X}) "
+        "misaligned (alignment {:08X}, physical base offset {:08X})",
+        GetPhysicalAddress(address), address, alignment,
+        GetPhysicalAddress(heap_base_));
     parent_heap_->Release(parent_address);
     return false;
   }
