@@ -1688,6 +1688,10 @@ X_STATUS Emulator::CompleteLaunch(const std::filesystem::path& path,
     // Load the per-game configuration file and make sure updates are handled
     // by the callbacks.
     config::LoadGameConfig(title_id);
+    // The GPU caches parsed enums (occlusion_query / readback_resolve) that
+    // the file-load path doesn't refresh - drop them so per-game overrides
+    // take effect.
+    gpu::InvalidateConfigModeCaches();
     assert_true(game_config_load_callback_loop_next_index_ == SIZE_MAX);
     game_config_load_callback_loop_next_index_ = 0;
     while (game_config_load_callback_loop_next_index_ <

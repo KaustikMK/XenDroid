@@ -57,6 +57,10 @@ ReadbackResolveMode GetReadbackResolveMode();
 void SetReadbackResolveMode(const std::string& mode);
 ZPDMode GetZPDMode();
 void SetZPDMode(const std::string& mode);
+// Reset the parsed-mode caches so the next Get*Mode re-reads the cvars.
+// Must be called after a per-game config load, which writes the raw cvar
+// strings without going through the Set*Mode setters.
+void InvalidateConfigModeCaches();
 
 // Shared pool capacity for D3D12 and Vulkan.
 constexpr uint32_t kZPDQueryPoolCapacity = 8192;

@@ -182,6 +182,17 @@ void SetZPDMode(const std::string& mode) {
   zpd_mode_cache.store(int(ParseZPDMode(mode)), std::memory_order_relaxed);
 }
 
+void InvalidateConfigModeCaches() {
+  // Per-game config load (config::ReadGameConfig) writes the raw cvar strings
+  // directly via IConfigVar::LoadConfigValue and does NOT go through the
+  // Set*Mode setters, so the parsed-enum caches would otherwise keep the
+  // values parsed from the global config and silently ignore every per-game
+  // occlusion_query / readback_resolve override. Reset to -1 so the next
+  // Get*Mode re-parses the now-updated cvar.
+  readback_resolve_mode_cache.store(-1, std::memory_order_relaxed);
+  zpd_mode_cache.store(-1, std::memory_order_relaxed);
+}
+
 using namespace xe::gpu::xenos;
 
 CommandProcessor::CommandProcessor(GraphicsSystem* graphics_system,
