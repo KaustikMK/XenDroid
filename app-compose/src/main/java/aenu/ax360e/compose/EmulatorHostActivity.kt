@@ -24,6 +24,26 @@ import androidx.lifecycle.lifecycleScope
 import android.net.Uri
 import android.content.Intent
 import android.widget.Toast
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.preference.PreferenceManager
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.ComposeView
+import androidx.compose.ui.viewinterop.AndroidView
+import aenu.ax360e.compose.gamepad.GamepadConfigDto
+import aenu.ax360e.compose.gamepad.GamepadController
+import aenu.ax360e.compose.gamepad.GamepadOverlay
+import aenu.ax360e.compose.gamepad.Kc
+import aenu.ax360e.compose.gamepad.rememberAutoHide
 
 /**
  * The :emu emulator host (separate process; see manifest). Reads game_uri from the
@@ -57,6 +77,11 @@ class EmulatorHostActivity : ComponentActivity(), SurfaceHolder.Callback {
     private val session = EmulatorSession()
     private var surfaceView: SurfaceView? = null
     private var started = false          // surface-callback boot guard (mirrors legacy)
+
+    // SP4 on-screen touch gamepad.
+    private val gamepad by lazy { GamepadController(applicationContext) }
+    private var hapticsEnabled = false
+    private val bootedState = mutableStateOf(false)   // gates the overlay (post-boot only)
 
     // User hardware-key bindings (Android keycode -> game KEY_CODE), loaded from
     // KeymapStore in onCreate; falls back to GameButtons.DEFAULT_LOOKUP until loaded.
@@ -148,8 +173,58 @@ class EmulatorHostActivity : ComponentActivity(), SurfaceHolder.Callback {
             setOnGenericMotionListener { _, ev -> onGenericMotion(ev) }
         }
         surfaceView = sv
-        setContentView(sv)
+        val compose = ComposeView(this).apply {
+            setContent {
+                val cfg by gamepad.config.collectAsState(initial = GamepadConfigDto())
+                val landscape = resources.configuration.orientation ==
+                    android.content.res.Configuration.ORIENTATION_LANDSCAPE
+                // Recompose-trigger for boot gate: poll booted via a state hoisted in the host.
+                val booted by bootedState
+                val controls = remember(cfg, landscape) { gamepad.controlsFor(cfg, landscape) }
+                val (visible, poke) = rememberAutoHide(cfg.globals.autoHideSeconds)
+                val alpha by animateFloatAsState(
+                    if (visible) cfg.globals.opacity else 0f, tween(500), label = "padAlpha")
+
+                // Apply haptics pref each composition (cheap; reads cached field).
+                LaunchedEffect(cfg.globals.hapticsEnabled) {
+                    configureHaptics(cfg.globals.hapticsEnabled)
+                }
+                Box(Modifier.fillMaxSize()) {
+                    AndroidView(factory = { sv }, modifier = Modifier.fillMaxSize())
+                    // Stay MOUNTED whenever enabled (alpha drives only the DRAW): the
+                    // pointerInput must keep receiving touches so the auto-hide wake tap
+                    // fires, and so a held control is never unmounted mid-press (stuck).
+                    if (booted && cfg.globals.enabled) {
+                        GamepadOverlay(
+                            controls = controls,
+                            opacity = alpha,
+                            onUserInteraction = poke,
+                            onKeyEvent = { kc, pressed, v ->
+                                if (pressed && v == Kc.VALUE_UNUSED) maybeVibrate()
+                                session.keyEvent(kc, pressed, v)
+                            },
+                            modifier = Modifier.fillMaxSize(),
+                        )
+                    }
+                }
+            }
+        }
+        setContentView(compose)
         sv.requestFocus()
+    }
+
+    /** Honor the SAME legacy enable_vibrator pref AND the new globals flag (new wins when
+     *  set, else fall back to legacy so existing users keep their setting). */
+    private fun configureHaptics(globalsFlag: Boolean) {
+        val legacy = PreferenceManager.getDefaultSharedPreferences(this)
+            .getBoolean("enable_vibrator", false)
+        hapticsEnabled = globalsFlag || legacy
+        if (hapticsEnabled && vibrator == null)
+            vibrator = getSystemService(VIBRATOR_SERVICE) as Vibrator
+    }
+    private fun maybeVibrate() {
+        if (!hapticsEnabled) return
+        vibrator?.vibrate(VibrationEffect.createOneShot(25, VibrationEffect.DEFAULT_AMPLITUDE))
     }
 
     // ---- SurfaceHolder.Callback: the load-bearing surface->boot ordering ----
@@ -160,6 +235,7 @@ class EmulatorHostActivity : ComponentActivity(), SurfaceHolder.Callback {
             session.attachSurface(holder.surface)
             try {
                 session.bootOnce()
+                bootedState.value = true                  // reveal the SP4 overlay post-boot
             } catch (t: RuntimeException) {
                 Log.e(TAG, "boot failed", t)
                 finish()                                  // fatal; single-shot core

@@ -37,6 +37,7 @@ fun GameLibraryScreen(
     onOpenSettings: () -> Unit,
     onOpenKeymap: () -> Unit,
     onOpenAbout: () -> Unit,
+    onOpenTouchControls: () -> Unit,
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val context = LocalContext.current
@@ -70,6 +71,10 @@ fun GameLibraryScreen(
                         DropdownMenuItem(
                             text = { Text("Key mapping") },
                             onClick = { menuOpen = false; onOpenKeymap() },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Touch controls") },
+                            onClick = { menuOpen = false; onOpenTouchControls() },
                         )
                         DropdownMenuItem(
                             text = { Text("Open user data") },
