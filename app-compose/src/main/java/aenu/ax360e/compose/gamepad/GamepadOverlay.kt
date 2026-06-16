@@ -64,6 +64,8 @@ fun GamepadOverlay(
     modifier: Modifier = Modifier,
     onUserInteraction: () -> Unit = {},   // resets auto-hide timer
     editMode: Boolean = false,
+    gridStepsX: Int = 0,                  // editor: snap-grid cell count per axis (0 = no grid).
+    gridStepsY: Int = 0,                  // x/y differ so the cells are square on a non-1:1 screen.
     selectedId: ControlId? = null,
     onSelect: (ControlId?) -> Unit = {},
     onTranslate: (ControlId, dxFrac: Float, dyFrac: Float) -> Unit = { _, _, _ -> },
@@ -176,6 +178,20 @@ fun GamepadOverlay(
         // Skipping draws here leaves the window transparent -> the present is punched
         // straight through to the game layer, no per-frame blend.
         if (opacity <= 0.01f) return@Canvas
+        // Editor snap grid: faint lines so "Snap" visibly aligns controls to a grid. The caller
+        // passes per-axis cell counts (computed from the actual screen size) so the cells are
+        // SQUARE rather than stretched. Drawn behind the controls; edit mode only.
+        if (editMode && gridStepsX > 0 && gridStepsY > 0 && sizePx.width > 0 && sizePx.height > 0) {
+            val grid = Color.White.copy(alpha = 0.16f)
+            for (i in 1 until gridStepsX) {
+                val x = sizePx.width.toFloat() * i / gridStepsX
+                drawLine(grid, Offset(x, 0f), Offset(x, sizePx.height.toFloat()), strokeWidth = 1f)
+            }
+            for (j in 1 until gridStepsY) {
+                val y = sizePx.height.toFloat() * j / gridStepsY
+                drawLine(grid, Offset(0f, y), Offset(sizePx.width.toFloat(), y), strokeWidth = 1f)
+            }
+        }
         // Reverse lookup: claimed control id -> active pointer position (for stick knob).
         val activePos: (ControlId) -> Offset? = { id ->
             claims.entries.lastOrNull { it.value == id }?.key?.let { pointerPos[it] }
