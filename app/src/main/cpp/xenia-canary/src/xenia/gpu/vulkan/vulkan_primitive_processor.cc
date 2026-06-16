@@ -12,10 +12,24 @@
 #include <cstdint>
 
 #include "xenia/base/assert.h"
+#include "xenia/base/cvar.h"
 #include "xenia/base/logging.h"
 #include "xenia/gpu/vulkan/deferred_command_buffer.h"
 #include "xenia/gpu/vulkan/vulkan_command_processor.h"
 #include "xenia/ui/vulkan/vulkan_util.h"
+
+DEFINE_bool(
+    vulkan_avoid_geometry_shaders, true,
+    "Route guest primitives that would otherwise need a geometry shader through "
+    "cheaper host paths on tile-based GPUs (Adreno/Turnip), where the "
+    "geometry-shader stage serializes the binning pass. Applies to point "
+    "sprites (expanded in the vertex shader as a triangle strip) and quad lists "
+    "(expanded on the CPU to a triangle list). Rectangle lists always stay on "
+    "the geometry shader. Read once at GPU "
+    "initialization, so a change takes effect on emulator restart. Disable for "
+    "byte-identical pre-optimization (geometry-shader) behavior and A/B "
+    "debugging.",
+    "Vulkan");
 
 namespace xe {
 namespace gpu {
@@ -28,10 +42,37 @@ bool VulkanPrimitiveProcessor::Initialize() {
       command_processor_.GetVulkanDevice();
   const ui::vulkan::VulkanDevice::Properties& device_properties =
       vulkan_device->properties();
+  // Tier 3 #7: avoid the geometry-shader stage for guest point sprites and quad
+  // lists on tile-based GPUs (Adreno/Turnip), where the GS serializes the
+  // binning pass. When vulkan_avoid_geometry_shaders is set:
+  //   - point sprites take the kPointListAsTriangleStrip VS expansion (pass
+  //     false for point_sprites_supported_without_vs_expansion);
+  //   - quad lists take CPU index expansion to a triangle LIST (pass false for
+  //     quad_lists_supported -> convert_quad_lists_to_triangle_lists_).
+  // The CPU quad path splits the q0-q2 diagonal as a triangle list, while the
+  // GS splits q1-q3 as a 0,1,3,2 strip; both carry an unresolved "find correct
+  // order" TODO (neither is verified against real Xbox 360 hardware). For
+  // planar convex quads (UI/sprites, the common case) the two are pixel- and
+  // winding-identical (all triangles stay CCW), so culling is unchanged; they
+  // diverge only on non-planar/concave quads. The kill-switch restores the GS
+  // path if a title regresses.
+  // Rectangle lists ALWAYS stay on the GS (their VS path is the unfinished TODO
+  // at spirv_shader_translator.cc:1317; the draw gate would reject
+  // kRectangleListAsTriangleStrip). The flag is consumed once here
+  // (InitializeCommon sizes the builtin index buffer from it), so a change
+  // takes effect on emulator restart.
   if (!InitializeCommon(
+          // full_32bit_vertex_indices_supported, triangle_fans_supported,
           device_properties.fullDrawIndexUint32, device_properties.triangleFans,
-          false, device_properties.geometryShader,
-          device_properties.geometryShader, device_properties.geometryShader)) {
+          // line_loops_supported, quad_lists_supported (gated -> CPU tri-list):
+          false,
+          device_properties.geometryShader &&
+              !cvars::vulkan_avoid_geometry_shaders,
+          // point_sprites_supported_without_vs_expansion (gated -> VS path):
+          device_properties.geometryShader &&
+              !cvars::vulkan_avoid_geometry_shaders,
+          // rectangle_lists_supported_without_vs_expansion (always GS):
+          device_properties.geometryShader)) {
     Shutdown();
     return false;
   }
