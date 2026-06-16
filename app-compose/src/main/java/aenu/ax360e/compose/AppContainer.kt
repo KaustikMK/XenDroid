@@ -18,6 +18,7 @@ class AppContainer(context: Context) {
     private val appContext = context.applicationContext
 
     private val prefs = PreferencesStore(appContext)
+    private val keymapStore = aenu.ax360e.compose.data.KeymapStore(appContext)
     private val metadataSource = GameMetadataSource()
     val iconCache = IconCache(appContext.cacheDir)
     val repository = GameLibraryRepository(appContext, prefs, metadataSource, iconCache)
@@ -44,6 +45,17 @@ class AppContainer(context: Context) {
             override fun <T : ViewModel> create(modelClass: Class<T>): T {
                 require(modelClass == SettingsViewModel::class.java) { "Unknown ViewModel ${modelClass.name}" }
                 return SettingsViewModel(SettingsRepository(configStore)) as T
+            }
+        }
+
+    fun keymapViewModelFactory(): ViewModelProvider.Factory =
+        object : ViewModelProvider.Factory {
+            @Suppress("UNCHECKED_CAST")
+            override fun <T : ViewModel> create(modelClass: Class<T>): T {
+                require(modelClass == aenu.ax360e.compose.ui.keymap.KeymapViewModel::class.java) {
+                    "Unknown ViewModel ${modelClass.name}"
+                }
+                return aenu.ax360e.compose.ui.keymap.KeymapViewModel(keymapStore) as T
             }
         }
 }

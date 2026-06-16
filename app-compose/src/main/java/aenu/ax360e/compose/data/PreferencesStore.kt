@@ -7,7 +7,7 @@ import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 
-private val Context.dataStore by preferencesDataStore(name = "ax360e_prefs")
+internal val Context.dataStore by preferencesDataStore(name = "ax360e_prefs")
 
 /** Persists the SAF tree uri (replaces legacy PREF_GAME_DIR="game_dir" in
  *  default SharedPreferences). Key name kept identical for parity/clarity. */

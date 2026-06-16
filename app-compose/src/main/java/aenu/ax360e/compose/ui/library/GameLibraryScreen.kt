@@ -15,6 +15,7 @@ import androidx.compose.material.icons.Icons
 // "set game folder" action to keep the dependency set the plan specified. Refresh is
 // in core. See the implementation report for this deviation.
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
@@ -34,6 +35,8 @@ import aenu.ax360e.compose.data.Game
 fun GameLibraryScreen(
     viewModel: GameLibraryViewModel,
     onOpenSettings: () -> Unit,
+    onOpenKeymap: () -> Unit,
+    onOpenAbout: () -> Unit,
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val context = LocalContext.current
@@ -58,6 +61,27 @@ fun GameLibraryScreen(
                     }
                     IconButton(onClick = { viewModel.refresh() }) {
                         Icon(Icons.Default.Refresh, contentDescription = "Refresh")
+                    }
+                    var menuOpen by remember { mutableStateOf(false) }
+                    IconButton(onClick = { menuOpen = true }) {
+                        Icon(Icons.Default.MoreVert, contentDescription = "More")
+                    }
+                    DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                        DropdownMenuItem(
+                            text = { Text("Key mapping") },
+                            onClick = { menuOpen = false; onOpenKeymap() },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Open user data") },
+                            onClick = {
+                                menuOpen = false
+                                aenu.ax360e.compose.ui.userdata.openUserData(context)
+                            },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("About") },
+                            onClick = { menuOpen = false; onOpenAbout() },
+                        )
                     }
                 }
             )

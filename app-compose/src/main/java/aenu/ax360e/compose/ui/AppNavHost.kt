@@ -1,11 +1,6 @@
 package aenu.ax360e.compose.ui
 
-import androidx.compose.foundation.layout.*
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -19,8 +14,9 @@ import aenu.ax360e.compose.ui.settings.SettingsScreen
 object Routes {
     const val LIBRARY = "library"
     const val SETTINGS = "settings"
-    const val KEYMAP = "keymap"       // SP1 later
-    const val ABOUT = "about"         // SP1 later
+    const val KEYMAP = "keymap"
+    const val ABOUT = "about"
+    const val USERDATA = "userdata"   // action, not a destination (see GameLibraryScreen)
 }
 
 @Composable
@@ -33,20 +29,21 @@ fun AppNavHost(container: AppContainer) {
             GameLibraryScreen(
                 viewModel = vm,
                 onOpenSettings = { nav.navigate(Routes.SETTINGS) },
+                onOpenKeymap = { nav.navigate(Routes.KEYMAP) },
+                onOpenAbout = { nav.navigate(Routes.ABOUT) },
             )
         }
         composable(Routes.SETTINGS) {
             val vm: SettingsViewModel = viewModel(factory = container.settingsViewModelFactory())
             SettingsScreen(vm = vm, onBack = { nav.popBackStack() })
         }
-        composable(Routes.KEYMAP) { Placeholder("Key mapping — SP1 later") }
-        composable(Routes.ABOUT) { Placeholder("About — SP1 later") }
-    }
-}
-
-@Composable
-private fun Placeholder(text: String) {
-    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        Text(text, style = MaterialTheme.typography.bodyLarge)
+        composable(Routes.KEYMAP) {
+            val vm: aenu.ax360e.compose.ui.keymap.KeymapViewModel =
+                viewModel(factory = container.keymapViewModelFactory())
+            aenu.ax360e.compose.ui.keymap.KeymapScreen(vm = vm, onBack = { nav.popBackStack() })
+        }
+        composable(Routes.ABOUT) {
+            aenu.ax360e.compose.ui.about.AboutScreen(onBack = { nav.popBackStack() })
+        }
     }
 }

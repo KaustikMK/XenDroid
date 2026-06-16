@@ -52,29 +52,17 @@ class EmulatorHostActivity : ComponentActivity(), SurfaceHolder.Callback {
         private const val KC_RTHUMB_LEFT = 20; private const val KC_RTHUMB_UP = 21
         private const val KC_RTHUMB_RIGHT = 22; private const val KC_RTHUMB_DOWN = 23
         private const val KEY_VALUE_UNUSED = -1
-
-        // Android KeyEvent.KEYCODE_* -> KEY_CODE (KeyMapConfig.DEFAULT_KEYMAPPERS).
-        private val KEY_MAP: Map<Int, Int> = mapOf(
-            KeyEvent.KEYCODE_DPAD_LEFT to KC_DPAD_LEFT,
-            KeyEvent.KEYCODE_DPAD_UP to KC_DPAD_UP,
-            KeyEvent.KEYCODE_DPAD_RIGHT to KC_DPAD_RIGHT,
-            KeyEvent.KEYCODE_DPAD_DOWN to KC_DPAD_DOWN,
-            KeyEvent.KEYCODE_BUTTON_A to KC_A,           // 96
-            KeyEvent.KEYCODE_BUTTON_B to KC_B,           // 97
-            KeyEvent.KEYCODE_BUTTON_X to KC_X,           // 99
-            KeyEvent.KEYCODE_BUTTON_Y to KC_Y,           // 100
-            KeyEvent.KEYCODE_BUTTON_SELECT to KC_BACK,   // 109
-            KeyEvent.KEYCODE_BUTTON_START to KC_START,   // 108
-            KeyEvent.KEYCODE_BUTTON_L1 to KC_SHOULDER_L, // 102
-            KeyEvent.KEYCODE_BUTTON_R1 to KC_SHOULDER_R, // 103
-            KeyEvent.KEYCODE_BUTTON_L2 to KC_TRIGGER_L,  // 104
-            KeyEvent.KEYCODE_BUTTON_R2 to KC_TRIGGER_R,  // 105
-        )
     }
 
     private val session = EmulatorSession()
     private var surfaceView: SurfaceView? = null
     private var started = false          // surface-callback boot guard (mirrors legacy)
+
+    // User hardware-key bindings (Android keycode -> game KEY_CODE), loaded from
+    // KeymapStore in onCreate; falls back to GameButtons.DEFAULT_LOOKUP until loaded.
+    @Volatile private var keyMap: Map<Int, Int> = aenu.ax360e.compose.data.GameButtons.DEFAULT_LOOKUP
+    @Volatile private var vibrateEnabled: Boolean = false
+    private var vibrator: android.os.Vibrator? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -99,10 +87,18 @@ class EmulatorHostActivity : ComponentActivity(), SurfaceHolder.Callback {
         // delay-load devices and (b) read the persisted tree uri from DataStore. The
         // actual native setup_* calls are marshaled back to the main thread.
         lifecycleScope.launch {
-            val treeUri = withContext(Dispatchers.IO) {
+            val store = aenu.ax360e.compose.data.KeymapStore(applicationContext)
+            val (loadedMap, loadedVibrate, treeUri) = withContext(Dispatchers.IO) {
                 EmulatorRuntime.ensureLoaded()            // idempotent; lazy on Adreno 5xx/6xx
-                readGameDirTreeUri()
+                Triple(
+                    store.androidToGameKey.firstOrNull()
+                        ?: aenu.ax360e.compose.data.GameButtons.DEFAULT_LOOKUP,
+                    store.vibrateEnabled.firstOrNull() ?: false,
+                    readGameDirTreeUri(),
+                )
             }
+            keyMap = loadedMap
+            vibrateEnabled = loadedVibrate
             if (treeUri == null) {
                 Toast.makeText(this@EmulatorHostActivity,
                     "Game folder not set; open the library first", Toast.LENGTH_LONG).show()
@@ -201,16 +197,17 @@ class EmulatorHostActivity : ComponentActivity(), SurfaceHolder.Callback {
     // ---- Hardware input -> session.keyEvent ----
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
-        val gameKey = KEY_MAP[keyCode] ?: return super.onKeyDown(keyCode, event)
+        val gameKey = keyMap[keyCode] ?: return super.onKeyDown(keyCode, event)
         if (event.repeatCount == 0) {
             session.keyEvent(gameKey, true, KEY_VALUE_UNUSED)
+            vibrate()
             return true
         }
         return super.onKeyDown(keyCode, event)            // ignore auto-repeats
     }
 
     override fun onKeyUp(keyCode: Int, event: KeyEvent): Boolean {
-        val gameKey = KEY_MAP[keyCode] ?: return super.onKeyUp(keyCode, event)
+        val gameKey = keyMap[keyCode] ?: return super.onKeyUp(keyCode, event)
         session.keyEvent(gameKey, false, KEY_VALUE_UNUSED)
         return true
     }
@@ -280,6 +277,17 @@ class EmulatorHostActivity : ComponentActivity(), SurfaceHolder.Callback {
     private fun dpad(pressCode: Int, releaseCode: Int) {
         session.keyEvent(pressCode, true, KEY_VALUE_UNUSED)
         session.keyEvent(releaseCode, false, KEY_VALUE_UNUSED)
+    }
+
+    private fun vibrate() {
+        if (!vibrateEnabled) return
+        val v = vibrator ?: (getSystemService(android.content.Context.VIBRATOR_SERVICE)
+            as? android.os.Vibrator)?.also { vibrator = it } ?: return
+        @Suppress("DEPRECATION")
+        v.vibrate(
+            android.os.VibrationEffect.createOneShot(25L,
+                android.os.VibrationEffect.DEFAULT_AMPLITUDE)
+        )
     }
 
     /** Legacy isDpadDevice: TRUE when the device is NOT a SOURCE_DPAD (i.e. treat as
