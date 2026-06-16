@@ -583,6 +583,7 @@ class VulkanCommandProcessor final : public CommandProcessor {
     // GPU-side wall time (top-of-pipe to bottom-of-pipe timestamps) of
     // completed submissions, and the idle gaps between consecutive ones.
     uint64_t gpu_exec_ns = 0;
+    uint64_t gpu_exec_max_ns = 0;
     uint64_t gpu_gap_ns = 0;
     uint64_t gpu_samples = 0;
     uint64_t last_report_ns = 0;
@@ -601,6 +602,9 @@ class VulkanCommandProcessor final : public CommandProcessor {
   // status polls - vkGetQueryPoolResults would have the same hazard).
   static constexpr uint32_t kFrameTimestampSlots = 32;
   VkQueryPool frame_timestamp_pool_ = VK_NULL_HANDLE;
+  // Draws recorded into the currently open submission, for
+  // vulkan_mid_frame_submission_draws.
+  uint32_t draws_since_submission_ = 0;
   VkBuffer frame_timestamp_buffer_ = VK_NULL_HANDLE;
   VkDeviceMemory frame_timestamp_buffer_memory_ = VK_NULL_HANDLE;
   VkDeviceSize frame_timestamp_buffer_size_ = 0;

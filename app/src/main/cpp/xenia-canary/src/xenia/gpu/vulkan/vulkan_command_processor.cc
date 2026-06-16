@@ -41,6 +41,16 @@
 DECLARE_bool(clear_memory_page_state);
 DECLARE_bool(log_gpu_frame_time_breakdown);
 
+DEFINE_int32(
+    vulkan_mid_frame_submission_draws, 0,
+    "If greater than 0, end and submit the current command buffer after this "
+    "many draws instead of only at the swap, so the GPU overlaps the frame's "
+    "rendering with the building of the rest of its command stream. 0 keeps "
+    "one submission per frame. Splitting closes the current render pass, so "
+    "values that are too small hurt tiled GPUs; try roughly half the title's "
+    "per-frame draw count.",
+    "GPU");
+
 DEFINE_bool(
     vulkan_cache_texture_descriptors, true,
     "Skip re-writing and re-binding the texture/sampler descriptor sets on "
@@ -1787,7 +1797,8 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
           "VkFrameSync: {} frames | per frame: awaits={:.1f} await={:.1f}ms "
           "submissions={:.1f} memexport_awaits={:.1f} readback_awaits={:.1f} "
           "| submit->fence avg={:.1f}ms max={:.1f}ms | blocking={:.1f} "
-          "delta avg={:.2f} | gpu exec avg={:.1f}ms gap avg={:.1f}ms",
+          "delta avg={:.2f} | gpu exec avg={:.1f}ms max={:.1f}ms "
+          "gap avg={:.1f}ms",
           s.frames, s.awaits / f, s.await_ns / f / 1e6, s.submissions / f,
           s.memexport_awaits / f, s.readback_awaits / f,
           s.sub_completions
@@ -1800,6 +1811,7 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
           s.gpu_samples
               ? s.gpu_exec_ns / static_cast<double>(s.gpu_samples) / 1e6
               : 0.0,
+          s.gpu_exec_max_ns / 1e6,
           s.gpu_samples
               ? s.gpu_gap_ns / static_cast<double>(s.gpu_samples) / 1e6
               : 0.0);
@@ -3453,6 +3465,20 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
     }
   }
 
+  // Optionally split the frame into multiple submissions so the GPU starts
+  // rendering while the rest of the frame's command stream is still being
+  // built, instead of receiving the whole frame at swap time and idling
+  // until then (measured 12.5ms of GPU idle per 39ms frame in Forza).
+  // Skipped while asynchronous pipeline creation is pending so this never
+  // introduces a stall that wouldn't have happened at the swap.
+  if (cvars::vulkan_mid_frame_submission_draws > 0 && submission_open_ &&
+      ++draws_since_submission_ >=
+          uint32_t(cvars::vulkan_mid_frame_submission_draws) &&
+      CanEndSubmissionImmediately()) {
+    EndRenderPass();
+    EndSubmission(false);
+  }
+
   return true;
 }
 
@@ -4225,8 +4251,10 @@ void VulkanCommandProcessor::CheckSubmissionCompletionAndDeviceLoss(
         const double period_ns =
             double(GetVulkanDevice()->properties().timestampPeriod);
         if (ts_bottom > ts_top) {
-          vk_frame_sync_stats_.gpu_exec_ns +=
-              uint64_t((ts_bottom - ts_top) * period_ns);
+          const uint64_t exec_ns = uint64_t((ts_bottom - ts_top) * period_ns);
+          vk_frame_sync_stats_.gpu_exec_ns += exec_ns;
+          vk_frame_sync_stats_.gpu_exec_max_ns =
+              std::max(vk_frame_sync_stats_.gpu_exec_max_ns, exec_ns);
           vk_frame_sync_stats_.gpu_samples++;
         }
         if (frame_timestamp_prev_end_ && ts_top > frame_timestamp_prev_end_) {
@@ -4742,6 +4770,7 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
     command_buffers_writable_.pop_back();
 
     submission_open_ = false;
+    draws_since_submission_ = 0;
     vk_frame_sync_stats_.submissions++;
     if (cvars::log_gpu_frame_time_breakdown) {
       vk_submit_times_.push_back(
