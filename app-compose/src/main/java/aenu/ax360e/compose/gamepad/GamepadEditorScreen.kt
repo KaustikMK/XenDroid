@@ -94,6 +94,12 @@ fun GamepadEditorScreen(controller: GamepadController, onDone: () -> Unit) {
 
     val view = LocalView.current
     val activity = remember(view) { view.context.findActivity() }
+    // Snapshot the orientation BEFORE the editor forces it (remember{} runs during composition,
+    // before the effects below), so on exit we RESTORE it rather than hard-locking landscape --
+    // otherwise the library would stay landscape even when the device is held in portrait.
+    val enterOrientation = remember {
+        activity?.requestedOrientation ?: ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+    }
 
     // The Landscape/Portrait toggle FORCES the screen orientation, so each layout previews the way
     // it appears in-game. (MainActivity is sensorLandscape-locked, so without this the portrait
@@ -117,7 +123,7 @@ fun GamepadEditorScreen(controller: GamepadController, onDone: () -> Unit) {
             it.hide(WindowInsetsCompat.Type.systemBars())
         }
         onDispose {
-            activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+            activity?.requestedOrientation = enterOrientation
             insets?.let {
                 it.show(WindowInsetsCompat.Type.systemBars())
                 if (prevBehavior != null) it.systemBarsBehavior = prevBehavior
