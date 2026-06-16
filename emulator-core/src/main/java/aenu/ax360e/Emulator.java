@@ -37,6 +37,12 @@ public class Emulator extends aenu.emulator.Emulator{
     // Debug overlay text (FPS / frame time / compile count), or null when the
     // "Display|show_debug_overlay" setting is off. Polled from EmulatorActivity.
     public native String debug_overlay_text();
+    // Last presented guest-frame interval, in ms (raw present-to-present delta,
+    // NOT averaged). 0 before the first present / right after a pause.
+    public native double last_frame_time_ms();
+    // Instant fps = 1000/last_frame_time_ms (0 when no frame timed yet). Distinct
+    // from the smoothed average fps embedded in debug_overlay_text().
+    public native double instant_fps();
     public static int nc_open_uri_fd(Context ctx,Uri uri) {
         try {
             ParcelFileDescriptor pfd_ = ctx.getContentResolver().openFileDescriptor(uri, "r");

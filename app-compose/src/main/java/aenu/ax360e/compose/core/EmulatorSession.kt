@@ -90,4 +90,12 @@ class EmulatorSession {
         if (!booted) return
         core.key_event(keyCode, pressed, value)
     }
+
+    // ---- Debug stats (UI-thread polled; reads native lock-free atomics) ----
+
+    /** Last presented guest-frame interval in ms (0 before first present / after pause). */
+    fun lastFrameTimeMs(): Double = if (booted) core.last_frame_time_ms() else 0.0
+
+    /** Instant fps = 1000/last-frame-ms (0 when no frame timed yet). NOT the average. */
+    fun instantFps(): Double = if (booted) core.instant_fps() else 0.0
 }

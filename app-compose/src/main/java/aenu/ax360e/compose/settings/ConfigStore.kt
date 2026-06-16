@@ -25,6 +25,17 @@ class ConfigStore(private val appContext: Context) {
         }
     }
 
+    /** Open the live config READ-ONLY from a text snapshot. Unlike [openLive], the
+     *  returned handle is a STRING handle — closing it via [ConfigHandle.closeString]
+     *  frees the native table WITHOUT writing back to disk (close_config_file, the
+     *  only disk-write path, would needlessly re-serialize on every read). Use this
+     *  for pure reads; use [openLive] when you intend to persist edits. */
+    fun openLiveSnapshot(): ConfigHandle {
+        val file = globalConfigFile()
+        ensureLiveFileExists(file)
+        return ConfigHandle.openString(file.readText())
+    }
+
     /** Read-only baseline parsed from the bundled asset template, for modified-from-default diffing. */
     fun openTemplateBaseline(): ConfigHandle =
         ConfigHandle.openString(defaultTemplateText())

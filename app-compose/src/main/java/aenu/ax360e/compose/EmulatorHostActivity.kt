@@ -82,6 +82,7 @@ class EmulatorHostActivity : ComponentActivity(), SurfaceHolder.Callback {
     private val gamepad by lazy { GamepadController(applicationContext) }
     private var hapticsEnabled = false
     private val bootedState = mutableStateOf(false)   // gates the overlay (post-boot only)
+    private val showFpsOverlay = mutableStateOf(false) // Display|show_debug_overlay (native TOML config)
 
     // User hardware-key bindings (Android keycode -> game KEY_CODE), loaded from
     // KeymapStore in onCreate; falls back to GameButtons.DEFAULT_LOOKUP until loaded.
@@ -124,6 +125,10 @@ class EmulatorHostActivity : ComponentActivity(), SurfaceHolder.Callback {
             }
             keyMap = loadedMap
             vibrateEnabled = loadedVibrate
+            // FPS overlay gate: SP2 settings live in the native TOML Config (NOT
+            // SharedPreferences). Read the Display|show_debug_overlay boolean off-main
+            // via ConfigStore so the existing settings toggle drives overlay visibility.
+            showFpsOverlay.value = withContext(Dispatchers.IO) { readShowDebugOverlay() }
             if (treeUri == null) {
                 Toast.makeText(this@EmulatorHostActivity,
                     "Game folder not set; open the library first", Toast.LENGTH_LONG).show()
@@ -151,6 +156,19 @@ class EmulatorHostActivity : ComponentActivity(), SurfaceHolder.Callback {
         val s = PreferencesStore(applicationContext).gameDirUri.firstOrNull() ?: return null
         return Uri.parse(s)
     }
+
+    /** Reads Display|show_debug_overlay from the live native TOML config (SP2 store, not
+     *  SharedPreferences). Uses a read-only string snapshot so closing the single-use
+     *  handle frees the native table WITHOUT re-serializing the file to disk (a plain
+     *  read must not mutate the config). Best-effort: any failure defaults the gate off. */
+    private fun readShowDebugOverlay(): Boolean = runCatching {
+        val handle = aenu.ax360e.compose.settings.ConfigStore(applicationContext).openLiveSnapshot()
+        try {
+            handle.getBool("Display", "show_debug_overlay", false)
+        } finally {
+            handle.closeString()
+        }
+    }.getOrDefault(false)
 
     /** The exact legacy PRE-surface order (EmulatorActivity.on_create:83-93). */
     private fun prepareNative(gameUri: String, tree: DocumentFile) {
@@ -206,6 +224,12 @@ class EmulatorHostActivity : ComponentActivity(), SurfaceHolder.Callback {
                             modifier = Modifier.fillMaxSize(),
                         )
                     }
+                    val showFps by showFpsOverlay
+                    FpsOverlay(
+                        session = session,
+                        visible = booted && showFps,
+                        modifier = Modifier.fillMaxSize(),
+                    )
                 }
             }
         }
@@ -263,6 +287,26 @@ class EmulatorHostActivity : ComponentActivity(), SurfaceHolder.Callback {
     override fun onPause() {
         super.onPause()
         session.flushGpuCaches()                          // best-effort; never throws
+    }
+
+    override fun onStop() {
+        super.onStop()
+        // Freeze guest CPU + GPU command worker + audio (audio goes silent) when the
+        // activity is stopped (screen sleep / home / app switch). Direct, blocking,
+        // main-thread call (Emulator::Pause does its own fences). Gated on booted so a
+        // stop during the boot splash is a no-op, matching the keyEvent !booted guard.
+        // Ordering: onPause(flushGpuCaches) -> onStop(pause) -> surfaceDestroyed(detach);
+        // pausing BEFORE the swapchain teardown means no guest/GPU frames race the drain.
+        if (session.booted) session.pause()
+    }
+
+    override fun onStart() {
+        super.onStart()
+        // Mirror of onStop. resumeIfPaused() (not bare resume) stays idempotent: the
+        // swapchain-recreate path already calls resumeIfPaused() in surfaceCreated
+        // (line 246), so this second call is a no-op there; onStart additionally covers
+        // the pure screen-sleep case where the surface was NOT destroyed.
+        if (session.booted) session.resumeIfPaused()
     }
 
     override fun onDestroy() {

@@ -753,6 +753,7 @@ namespace ae{
         }
     }
     bool is_running(){
+        if(!g_windowed_app_ref || !g_windowed_app_ref->emu) return false;
         return !g_windowed_app_ref->emu->is_paused();
     }
     void flush_gpu_caches(){
@@ -767,19 +768,23 @@ namespace ae{
         (void)gs;
     }
     bool is_paused(){
+        if(!g_windowed_app_ref || !g_windowed_app_ref->emu) return false;
         return g_windowed_app_ref->emu->is_paused();
     }
     void pause(){
-        //g_windowed_app_ref->emu->Pause();
-        /*g_windowed_app_ref->app_context().CallInUIThread([]{
+        // DIRECT call on the calling (Android main) thread. Emulator::Pause() is
+        // idempotent and blocks internally on the audio pause_fence_ + the GPU-worker
+        // fence; the only requirement is the caller is not the audio worker, the GPU
+        // worker, or a guest XThread -- the main thread satisfies all three. Do NOT
+        // marshal via CallInUIThread (that is the SP0 surface path; redundant + would
+        // stall the paint pump). g_windowed_app_ref->emu is null until the detached
+        // boot thread populates it, so guard exactly like is_paused()/is_running().
+        if(g_windowed_app_ref && g_windowed_app_ref->emu)
             g_windowed_app_ref->emu->Pause();
-        });*/
     }
     void resume(){
-        //g_windowed_app_ref->emu->Resume();
-        /*g_windowed_app_ref->app_context().CallInUIThread([]{
+        if(g_windowed_app_ref && g_windowed_app_ref->emu)
             g_windowed_app_ref->emu->Resume();
-        });*/
     }
     void quit(){
     }

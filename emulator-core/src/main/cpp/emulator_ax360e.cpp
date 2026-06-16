@@ -711,6 +711,26 @@ static jstring j_debug_overlay_text(JNIEnv* env, jobject thiz) {
     return env->NewStringUTF(buf);
 }
 
+// Last presented guest-frame interval in ms (the raw present-to-present delta,
+// NOT the 120-frame average). 0 before the first present / right after a pause.
+// Backed by the same lock-free atomic RecordGuestPresent() publishes; safe from
+// any thread. Independent of the show_debug_overlay cvar (the Compose overlay
+// owns its own visibility), unlike debug_overlay_text().
+static jdouble j_last_frame_time_ms(JNIEnv* env, jobject thiz) {
+    float instant_ms = 0.f, avg_ms = 0.f, fps = 0.f;
+    xe::GetFrameStats(instant_ms, avg_ms, fps);
+    return (jdouble)instant_ms;
+}
+
+// INSTANT fps = 1000/last-frame-ms (derived from frame_instant_ms), distinct from
+// the smoothed average fps that debug_overlay_text() / frame_fps report. Returns 0
+// when no valid frame has been timed yet (instant_ms <= 0).
+static jdouble j_instant_fps(JNIEnv* env, jobject thiz) {
+    float instant_ms = 0.f, avg_ms = 0.f, fps = 0.f;
+    xe::GetFrameStats(instant_ms, avg_ms, fps);
+    return instant_ms > 0.f ? (jdouble)(1000.0 / (double)instant_ms) : (jdouble)0.0;
+}
+
 int register_ax360e_Emulator(JNIEnv* env){
 
     g_class_DocumentFile=env->FindClass("androidx/documentfile/provider/DocumentFile");
@@ -731,6 +751,8 @@ int register_ax360e_Emulator(JNIEnv* env){
             {"simple_device_info", "()Ljava/lang/String;", (void *) j_simple_device_info}
             ,{"generate_config_xml", "(Ljava/lang/String;)Ljava/lang/String;", (void *) generate_config_xml}
             ,{"debug_overlay_text", "()Ljava/lang/String;", (void *) j_debug_overlay_text}
+            ,{"instant_fps", "()D", (void *) j_instant_fps}
+            ,{"last_frame_time_ms", "()D", (void *) j_last_frame_time_ms}
     };
     return env->RegisterNatives(g_class_Emulator,methods, sizeof(methods)/sizeof(methods[0]));
 }
