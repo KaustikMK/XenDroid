@@ -9,6 +9,8 @@
 
 #include "xenia/kernel/xevent.h"
 
+#include <atomic>
+
 #include "xenia/base/byte_stream.h"
 #include "xenia/base/clock.h"
 #include "xenia/base/logging.h"
@@ -33,6 +35,7 @@ void XEvent::Initialize(bool manual_reset, bool initial_state) {
     event_ = xe::threading::Event::CreateAutoResetEvent(initial_state);
   }
   assert_not_null(event_);
+  RecordCreator();
 }
 
 void XEvent::InitializeNative(void* native_ptr, X_DISPATCH_HEADER* header) {
@@ -57,6 +60,18 @@ void XEvent::InitializeNative(void* native_ptr, X_DISPATCH_HEADER* header) {
     event_ = xe::threading::Event::CreateAutoResetEvent(initial_state);
   }
   assert_not_null(event_);
+  RecordCreator();
+}
+
+void XEvent::RecordCreator() {
+  auto* thread = XThread::GetCurrentThread();
+  if (thread && thread->thread_state()) {
+    creator_thread_ = thread->handle();
+    creator_lr_ = uint32_t(thread->thread_state()->context()->lr);
+  } else {
+    creator_thread_ = 0xFFFFFFFF;  // host-side creator
+    creator_lr_ = 0;
+  }
 }
 
 void XEvent::RecordSetter() {
@@ -69,6 +84,18 @@ void XEvent::RecordSetter() {
     last_set_lr_ = 0;
   }
   last_set_uptime_ms_ = Clock::QueryGuestUptimeMillis();
+
+  // Boot-window signal trace: which events get set, by whom, and where each
+  // was created. Lets a never-signaled event be matched against signaled
+  // "cousins" from the same creation site to name the missing signaler code
+  // path. Budgeted so steady-state titles aren't flooded.
+  static std::atomic<int> trace_budget{6000};
+  if (trace_budget.fetch_sub(1) > 0) {
+    XELOGI("XEvent signal: handle={:08X} by={:08X} lr={:08X} (creator={:08X} "
+           "lr={:08X})",
+           handle(), last_set_thread_, last_set_lr_, creator_thread_,
+           creator_lr_);
+  }
 }
 
 int32_t XEvent::Set(uint32_t priority_increment, bool wait) {

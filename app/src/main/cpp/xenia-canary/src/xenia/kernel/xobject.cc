@@ -9,7 +9,13 @@
 
 #include "xenia/kernel/xobject.h"
 
+#include <atomic>
+#include <fstream>
+
 #include "xenia/base/byte_stream.h"
+#include "xenia/base/filesystem.h"
+#include "xenia/base/memory.h"
+#include "xenia/emulator.h"
 #include "xenia/kernel/kernel_state.h"
 #include "xenia/kernel/util/shim_utils.h"
 #include "xenia/kernel/xboxkrnl/xboxkrnl_private.h"
@@ -188,6 +194,96 @@ uint32_t XObject::TimeoutTicksToMs(int64_t timeout_ticks) {
   }
 }
 
+namespace {
+
+// Renders the guest PPC back-chain from r1 as a list of saved return
+// addresses, so a long-wait report names the blocked thread's full guest call
+// path. Frame layout validated live on retail titles: [sp] = caller sp (big
+// endian), the frame's saved LR sits at caller_sp - 8.
+std::string GuestBacktrace(Memory* memory, uint32_t r1) {
+  auto read_u32 = [memory](uint32_t addr, uint32_t* out) {
+    if (addr < 0x1000 || (addr & 3)) {
+      return false;
+    }
+    auto* heap = memory->LookupHeap(addr);
+    uint32_t protect = 0;
+    if (!heap || !heap->QueryProtect(addr, &protect) ||
+        !(protect & kMemoryProtectRead)) {
+      return false;
+    }
+    *out = xe::load_and_swap<uint32_t>(memory->TranslateVirtual(addr));
+    return true;
+  };
+  std::string trace;
+  uint32_t sp = r1;
+  for (int i = 0; i < 12; ++i) {
+    uint32_t caller_sp = 0;
+    if (!read_u32(sp, &caller_sp) || caller_sp <= sp ||
+        caller_sp - sp > 0x10000) {
+      break;
+    }
+    uint32_t lr = 0;
+    if (read_u32(caller_sp - 8, &lr) && lr >= 0x80000000 && lr < 0xA0000000 &&
+        !(lr & 3)) {
+      trace += fmt::format(" {:08X}", lr);
+    }
+    sp = caller_sp;
+  }
+  return trace.empty() ? std::string(" <unwalkable>") : trace;
+}
+
+// One-shot forensic dump for title deadlocks: when an infinite wait crosses
+// a minute, write the guest regions needed for offline reversing (object
+// heap, device heap, stacks, title code+data) to storage. Unreadable pages
+// are written as zeros so file offset == guest offset within each range.
+void DumpGuestForensics(KernelState* kernel_state) {
+  static std::atomic<bool> dumped{false};
+  bool expected = false;
+  if (!dumped.compare_exchange_strong(expected, true)) {
+    return;
+  }
+  struct Range {
+    uint32_t base;
+    uint32_t size;
+  };
+  static constexpr Range kRanges[] = {
+      {0x30000000, 0x00400000},  // guest object heap (KTHREADs, dispatch hdrs)
+      {0x40000000, 0x00200000},  // 64K-page virtual heap (engine devices)
+      {0x70000000, 0x00400000},  // thread stacks
+      {0x82000000, 0x02000000},  // title code + data
+  };
+  auto path = kernel_state->emulator()->storage_root() / "deadlock_dump.bin";
+  std::ofstream f(path, std::ios::binary | std::ios::trunc);
+  if (!f.is_open()) {
+    XELOGE("DumpGuestForensics: cannot open {}", xe::path_to_utf8(path));
+    return;
+  }
+  auto* memory = kernel_state->memory();
+  char zeros[4096] = {};
+  for (const auto& range : kRanges) {
+    for (uint32_t page = range.base; page < range.base + range.size;
+         page += 4096) {
+      auto* heap = memory->LookupHeap(page);
+      bool readable = false;
+      if (heap) {
+        auto access = heap->QueryRangeAccess(page, page + 4095);
+        readable = access != xe::memory::PageAccess::kNoAccess;
+      }
+      if (readable) {
+        f.write(memory->TranslateVirtual<const char*>(page), 4096);
+      } else {
+        f.write(zeros, 4096);
+      }
+    }
+  }
+  XELOGW(
+      "DumpGuestForensics: wrote {} (ranges 30000000+400000 40000000+200000 "
+      "70000000+400000 82000000+2000000)",
+      xe::path_to_utf8(path));
+}
+
+}  // namespace
+
 X_STATUS XObject::Wait(uint32_t wait_reason, uint32_t processor_mode,
                        uint32_t alertable, uint64_t* opt_timeout) {
   auto wait_handle = GetWaitHandle();
@@ -220,20 +316,28 @@ X_STATUS XObject::Wait(uint32_t wait_reason, uint32_t processor_mode,
           guest_r1 = context->r[1];
         }
         uint32_t setter_thread = 0, setter_lr = 0, setter_ms = 0;
+        uint32_t creator_thread = 0, creator_lr = 0;
         if (type() == Type::Event) {
           auto* event = static_cast<XEvent*>(this);
           setter_thread = event->last_set_thread();
           setter_lr = event->last_set_lr();
           setter_ms = event->last_set_uptime_ms();
+          creator_thread = event->creator_thread();
+          creator_lr = event->creator_lr();
         }
         XELOGW(
             "XObject::Wait: thread {:08X} waiting on type-{} object "
             "handle {:08X} '{}' for {}s (guest lr={:08X} r1={:08X}) "
-            "[last set by {:08X} at lr={:08X}, t={}ms]",
+            "[last set by {:08X} at lr={:08X}, t={}ms] "
+            "[created by {:08X} at lr={:08X}] stack:{}",
             current_thread ? current_thread->handle() : 0,
             uint32_t(type()), handle(), name(), slices * 10,
             uint32_t(guest_lr), uint32_t(guest_r1), setter_thread, setter_lr,
-            setter_ms);
+            setter_ms, creator_thread, creator_lr,
+            GuestBacktrace(memory(), uint32_t(guest_r1)));
+        if (slices == 6) {
+          DumpGuestForensics(kernel_state());
+        }
       }
     } while (result == xe::threading::WaitResult::kTimeout);
   } else {
@@ -272,6 +376,12 @@ X_STATUS XObject::SignalAndWait(XObject* signal_object, XObject* wait_object,
                         TimeoutTicksToMs(*opt_timeout)))
                   : std::chrono::milliseconds::max();
 
+  if (signal_object->type() == Type::Event) {
+    // SignalAndWait signals the host handle directly, bypassing XEvent::Set -
+    // keep the setter diagnostics accurate for this path too.
+    static_cast<XEvent*>(signal_object)->RecordSetter();
+  }
+
   xe::threading::WaitResult result;
   if (timeout_ms == std::chrono::milliseconds::max()) {
     // Infinite: signal once, then wait in 10s slices with long-wait
@@ -285,9 +395,10 @@ X_STATUS XObject::SignalAndWait(XObject* signal_object, XObject* wait_object,
     while (result == xe::threading::WaitResult::kTimeout) {
       ++slices;
       auto* current_thread = XThread::GetCurrentThread();
-      uint64_t guest_lr = 0;
+      uint64_t guest_lr = 0, guest_r1 = 0;
       if (current_thread && current_thread->thread_state()) {
         guest_lr = current_thread->thread_state()->context()->lr;
+        guest_r1 = current_thread->thread_state()->context()->r[1];
       }
       uint32_t setter_thread = 0, setter_lr = 0, setter_ms = 0;
       if (wait_object->type() == Type::Event) {
@@ -299,11 +410,12 @@ X_STATUS XObject::SignalAndWait(XObject* signal_object, XObject* wait_object,
       XELOGW(
           "XObject::SignalAndWait: thread {:08X} signaled type-{} {:08X}, "
           "waiting on type-{} {:08X} for {}s (guest lr={:08X}) "
-          "[wait obj last set by {:08X} at lr={:08X}, t={}ms]",
+          "[wait obj last set by {:08X} at lr={:08X}, t={}ms] stack:{}",
           current_thread ? current_thread->handle() : 0,
           uint32_t(signal_object->type()), signal_object->handle(),
           uint32_t(wait_object->type()), wait_object->handle(), slices * 10,
-          uint32_t(guest_lr), setter_thread, setter_lr, setter_ms);
+          uint32_t(guest_lr), setter_thread, setter_lr, setter_ms,
+          GuestBacktrace(wait_object->memory(), uint32_t(guest_r1)));
       result = xe::threading::Wait(wait_object->GetWaitHandle(),
                                    alertable ? true : false,
                                    std::chrono::milliseconds(10000));
@@ -361,18 +473,22 @@ X_STATUS XObject::WaitMultiple(uint32_t count, XObject** objects,
   auto report_long_wait = [&]() {
     ++report_slices;
     auto* current_thread = XThread::GetCurrentThread();
-    uint64_t guest_lr = 0;
+    uint64_t guest_lr = 0, guest_r1 = 0;
     if (current_thread && current_thread->thread_state()) {
       guest_lr = current_thread->thread_state()->context()->lr;
+      guest_r1 = current_thread->thread_state()->context()->r[1];
     }
     XELOGW(
         "XObject::WaitMultiple: thread {:08X} waiting ({}) on {} objects "
-        "for {}s (guest lr={:08X}) first handles: {:08X} {:08X} {:08X}",
+        "for {}s (guest lr={:08X}) first handles: {:08X} {:08X} {:08X} "
+        "stack:{}",
         current_thread ? current_thread->handle() : 0,
         wait_type ? "any" : "all", count, report_slices * 10,
         uint32_t(guest_lr), count > 0 ? objects[0]->handle() : 0,
         count > 1 ? objects[1]->handle() : 0,
-        count > 2 ? objects[2]->handle() : 0);
+        count > 2 ? objects[2]->handle() : 0,
+        count > 0 ? GuestBacktrace(objects[0]->memory(), uint32_t(guest_r1))
+                  : std::string());
   };
   auto slice_timeout = [&]() {
     return infinite ? std::chrono::milliseconds(10000) : timeout_ms;

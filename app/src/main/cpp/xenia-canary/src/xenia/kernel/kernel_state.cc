@@ -1287,6 +1287,24 @@ void KernelState::UpdateKeTimestampBundle() {
       tick_log_counter_ = 0;
       XELOGI("KernelState: ms_tick={} written to {} threads (sample @{:08X})",
              uptime_ms, ticked, sample_object);
+      // Thread PC census every ~30s: each thread's last guest lr/r1 names
+      // where it sits when the wait reporters are silent (timed-wait retry
+      // loops, host threads wedged inside guest callbacks). Racy reads -
+      // diagnostic only.
+      static uint32_t pc_census_counter = 0;
+      if (++pc_census_counter >= 6) {
+        pc_census_counter = 0;
+        for (auto& [census_id, census_thread] : threads_by_id_) {
+          if (!census_thread || !census_thread->thread_state()) {
+            continue;
+          }
+          auto* ctx = census_thread->thread_state()->context();
+          XELOGI("  pc-census {:08X} {} lr={:08X} r1={:08X}",
+                 census_thread->handle(),
+                 census_thread->is_guest_thread() ? "guest" : "host ",
+                 uint32_t(ctx->lr), uint32_t(ctx->r[1]));
+        }
+      }
     }
   }
 }

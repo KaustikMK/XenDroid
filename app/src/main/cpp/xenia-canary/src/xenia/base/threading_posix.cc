@@ -7,11 +7,13 @@
  ******************************************************************************
  */
 
+#include <atomic>
 #include <set>
 
 #include "xenia/base/threading.h"
 
 #include "xenia/base/assert.h"
+#include "xenia/base/logging.h"
 #include "xenia/base/chrono_steady_cast.h"
 #include "xenia/base/platform.h"
 #include "xenia/base/threading_timer_queue.h"
@@ -509,6 +511,18 @@ class PosixCondition<Semaphore> final : public PosixConditionBase {
     auto lock = std::unique_lock(mutex_);
     // Validate that releasing would not exceed the maximum count
     if (count_ + release_count > maximum_count_) {
+      // Diagnostic: a semaphore pinned at max with diverged tickets means a
+      // single-waiter took a ticket and never completed its bookkeeping -
+      // multi-wait pollers then never see signaled() and starve.
+      static std::atomic<uint32_t> fail_log_budget{32};
+      if (next_ticket_ != serve_ticket_ &&
+          fail_log_budget.fetch_sub(1) > 0) {
+        XELOGW(
+            "Semaphore {:p} release failed AND tickets diverged: count={} "
+            "max={} next={} serve={} abandoned={}",
+            (void*)this, count_, maximum_count_, next_ticket_, serve_ticket_,
+            abandoned_tickets_.size());
+      }
       return false;
     }
     if (out_previous_count) {
@@ -538,7 +552,18 @@ class PosixCondition<Semaphore> final : public PosixConditionBase {
     if (predicate()) {
       executed = true;
     } else if (timeout == std::chrono::milliseconds::max()) {
-      cond_.wait(lock, predicate);
+      // Sliced for diagnostics: a single waiter parked >10s on a semaphore
+      // logs itself (these are host-only objects; guest-visible semaphores
+      // report through XObject::Wait instead).
+      uint32_t slices = 0;
+      while (!cond_.wait_for(lock, std::chrono::seconds(10), predicate)) {
+        ++slices;
+        XELOGW(
+            "Semaphore {:p} single-waiter ticket={} parked {}s (count={} "
+            "serve={} next={})",
+            (void*)this, ticket, slices * 10, count_, serve_ticket_,
+            next_ticket_);
+      }
       executed = true;
     } else {
       executed = cond_.wait_for(lock, timeout, predicate);
