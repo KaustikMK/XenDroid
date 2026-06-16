@@ -54,6 +54,13 @@ DEFINE_bool(
     "the OS debug output.",
     "Vulkan");
 
+DEFINE_bool(
+    vulkan_renderdoc_capture, false,
+    "Request the VK_LAYER_RENDERDOC_Capture layer at instance creation for "
+    "frame capturing. Requires the RenderDoc layer library to be bundled in "
+    "the APK; attach from qrenderdoc with 'Attach to Running Instance'.",
+    "Vulkan");
+
 namespace xe {
 namespace ui {
 namespace vulkan {
@@ -286,6 +293,15 @@ std::unique_ptr<VulkanInstance> VulkanInstance::Create(
   // Name pointers from `requested_layers` will be used in the enabled layer
   // vector.
   std::unordered_map<std::string, bool*> requested_layers;
+  bool layer_renderdoc_capture = false;
+  if (cvars::vulkan_renderdoc_capture) {
+    // The layer library (libVkLayer_GLES_RenderDoc.so) must be present in the
+    // APK's native library directory - the Android loader only searches there
+    // for app-bundled layers. Once active, attach from qrenderdoc via
+    // File > Attach to Running Instance.
+    requested_layers.emplace("VK_LAYER_RENDERDOC_Capture",
+                             &layer_renderdoc_capture);
+  }
   bool layer_khronos_validation = false;
   if (try_enable_validation) {
     requested_layers.emplace("VK_LAYER_KHRONOS_validation",

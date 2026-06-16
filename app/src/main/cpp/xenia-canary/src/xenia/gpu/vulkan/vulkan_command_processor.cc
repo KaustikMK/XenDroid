@@ -75,15 +75,27 @@ DEFINE_bool(
     "Vulkan");
 
 DEFINE_bool(
-    vulkan_dynamic_constant_buffers, true,
+    vulkan_allow_reverse_z, true,
+    "Pass viewports with minDepth > maxDepth (reverse depth ranges, used by "
+    "many games for inverse-Z) directly to the driver. Vulkan allows this, "
+    "but some drivers mishandle it (the Direct3D 12 backend always "
+    "normalizes, citing drivers where it works and drivers where it "
+    "doesn't). Disable to normalize the range and compensate in the NDC "
+    "transform like the D3D12 backend does.",
+    "Vulkan");
+
+DEFINE_bool(
+    vulkan_dynamic_constant_buffers, false,
     "Bind the guest constant buffers as VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC "
     "so only the per-draw dynamic offsets vary; the constants descriptor set is "
     "re-allocated and re-written only when an upload-pool page rolls over. "
-    "Disable to force the per-draw descriptor-set write + bind "
-    "(pre-optimization behavior) for A/B debugging. Has no effect on devices "
-    "that report maxDescriptorSetUniformBuffersDynamic < 7 (the guest "
-    "constant-buffer count, SpirvShaderTranslator::kConstantBufferCount, which "
-    "grew from 5 to 7 upstream with the clip-plane and tessellation buffers).",
+    "DEFAULT OFF: on Qualcomm proprietary Vulkan drivers (Adreno 650/740/830 "
+    "tested, 2026-06) shaders read ZEROS through the dynamic-offset uniform "
+    "descriptors, breaking all rendering (black output / garbage), proven by "
+    "RenderDoc pixel-history bisection; Mesa/Turnip reads them correctly. "
+    "Safe to enable on Turnip for a small command-processor win. Has no "
+    "effect on devices that report maxDescriptorSetUniformBuffersDynamic < 7 "
+    "(the guest constant-buffer count).",
     "Vulkan");
 
 namespace xe {
@@ -3092,8 +3104,9 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
                 texture_cache_->draw_resolution_scale_x_divisor(),
                 texture_cache_->draw_resolution_scale_y_divisor(), false,
                 device_properties.maxViewportDimensions[0],
-                device_properties.maxViewportDimensions[1], true,
-                normalized_depth_control, false, host_render_targets_used,
+                device_properties.maxViewportDimensions[1],
+                cvars::vulkan_allow_reverse_z, normalized_depth_control, false,
+                host_render_targets_used,
                 pixel_shader && pixel_shader->writes_depth());
   gviargs.SetupRegisterValues(regs);
 

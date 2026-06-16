@@ -10,6 +10,7 @@
 #include "xenia/ui/vulkan/vulkan_device.h"
 
 #include "xenia/base/assert.h"
+#include "xenia/base/cvar.h"
 #include "xenia/base/logging.h"
 #include "xenia/base/platform.h"
 
@@ -18,6 +19,15 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+
+DEFINE_int32(
+    vulkan_clamp_storage_buffer_range, 0,
+    "If > 0, clamp the reported maxStorageBufferRange to this many bytes. "
+    "Drivers reporting very large limits get a single 512 MB storage buffer "
+    "binding for shared memory emulation; clamping to 134217728 (128 MB) "
+    "forces the split 4-binding path (what Turnip uses) for debugging "
+    "driver-specific large-binding misbehavior.",
+    "Vulkan");
 
 namespace xe {
 namespace ui {
@@ -583,6 +593,13 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
   XE_UI_VULKAN_LIMIT(maxImageDimensionCube)
   XE_UI_VULKAN_LIMIT(maxImageArrayLayers)
   XE_UI_VULKAN_LIMIT(maxStorageBufferRange)
+  if (cvars::vulkan_clamp_storage_buffer_range > 0) {
+    device->properties_.maxStorageBufferRange =
+        std::min(device->properties_.maxStorageBufferRange,
+                 uint32_t(cvars::vulkan_clamp_storage_buffer_range));
+    XELOGI("* maxStorageBufferRange clamped to {} by configuration",
+           device->properties_.maxStorageBufferRange);
+  }
   XE_UI_VULKAN_LIMIT(maxSamplerAllocationCount)
   XE_UI_VULKAN_LIMIT(maxPerStageDescriptorSamplers)
   XE_UI_VULKAN_LIMIT(maxPerStageDescriptorStorageBuffers)

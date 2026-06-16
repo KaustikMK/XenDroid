@@ -1882,6 +1882,25 @@ RenderTargetCache::RenderTarget* VulkanRenderTargetCache::CreateRenderTarget(
            key.is_depth ? "depth" : "color", key.resource_format);
     return nullptr;
   }
+  // Declare the full set of view formats for mutable-format images (the
+  // UNORM/SFLOAT attachment format is aliased with a UINT view for ownership
+  // transfers and EDRAM dumps). Without this, drivers must assume any
+  // compatible format may alias the image and can't make safe compression
+  // decisions - on UBWC-compressing mobile drivers, sampling the aliased view
+  // of a compressed render target without the list returns zeros or garbage
+  // (the texture cache already does this for its reinterpreted formats).
+  VkFormat image_view_formats[] = {image_create_info.format, transfer_format};
+  VkImageFormatListCreateInfo image_format_list_create_info;
+  if ((image_create_info.flags & VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT) &&
+      vulkan_device->extensions().ext_1_2_KHR_image_format_list) {
+    image_format_list_create_info.sType =
+        VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO;
+    image_format_list_create_info.pNext = nullptr;
+    image_format_list_create_info.viewFormatCount =
+        uint32_t(xe::countof(image_view_formats));
+    image_format_list_create_info.pViewFormats = image_view_formats;
+    image_create_info.pNext = &image_format_list_create_info;
+  }
   VkImage image;
   VkDeviceMemory memory;
   if (!ui::vulkan::util::CreateDedicatedAllocationImage(
