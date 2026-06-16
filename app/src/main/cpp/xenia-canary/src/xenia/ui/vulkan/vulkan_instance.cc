@@ -38,11 +38,13 @@ DEFINE_bool(
         "Custom Driver Force Max Clocks",
         "Vulkan");
 DEFINE_string(
-        turnip_debug, "sysmem",
+        turnip_debug, "",
         "TU_DEBUG flags passed to the Turnip (Mesa freedreno) Vulkan driver, "
         "comma-separated. 'sysmem' forces sysmem (untiled) rendering, which "
-        "avoids a class of Adreno GPU hangs (device-loss). Empty leaves "
-        "TU_DEBUG unset.",
+        "masks a class of tiled-rendering (GMEM) artifacts and Adreno GPU "
+        "hangs - but only on Turnip; proprietary drivers ignore it, so the "
+        "underlying command-stream bugs must be fixed rather than hidden. "
+        "Empty leaves TU_DEBUG unset.",
         "Vulkan");
 #endif
 

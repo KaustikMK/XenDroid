@@ -32,6 +32,14 @@
 
 DECLARE_bool(rt_cache_ownership_claim_memo);
 
+DEFINE_bool(
+    vulkan_depth_unorm24, true,
+    "Use the native D24_UNORM_S8_UINT format for guest 24-bit depth when the "
+    "driver supports it. Disable to force the float32 depth emulation path "
+    "(what drivers without unorm24 support, like Adreno proprietary, always "
+    "use) for debugging.",
+    "Vulkan");
+
 DEFINE_string(
     render_target_path_vulkan, "",
     "Render target emulation path to use on Vulkan.\n"
@@ -261,8 +269,15 @@ bool VulkanRenderTargetCache::Initialize(uint32_t shared_memory_binding_count) {
   ifn.vkGetPhysicalDeviceFormatProperties(
       physical_device, VK_FORMAT_D24_UNORM_S8_UINT, &depth_unorm24_properties);
   depth_unorm24_vulkan_format_supported_ =
+      cvars::vulkan_depth_unorm24 &&
       (depth_unorm24_properties.optimalTilingFeatures &
        kUsedDepthFormatFeatures) == kUsedDepthFormatFeatures;
+  XELOGGPU(
+      "VulkanRenderTargetCache: D24_UNORM_S8_UINT {} - guest 24-bit depth "
+      "will use the {} path",
+      depth_unorm24_vulkan_format_supported_ ? "supported" : "unavailable",
+      depth_unorm24_vulkan_format_supported_ ? "native unorm24"
+                                             : "float32 emulation");
 
   // 2x MSAA support.
   // TODO(Triang3l): Handle sampledImageIntegerSampleCounts 4 not supported in
