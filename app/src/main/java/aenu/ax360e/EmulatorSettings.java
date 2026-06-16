@@ -251,6 +251,9 @@ public class EmulatorSettings extends AppCompatActivity {
                     "Vulkan|vulkan_allow_present_mode_immediate",
                     "Vulkan|vulkan_allow_present_mode_mailbox",
                     "Vulkan|vulkan_allow_present_mode_fifo_relaxed",
+                    "Vulkan|vulkan_async_skip_draws",
+                    "Vulkan|vulkan_extended_dynamic_state3_blend",
+                    "Vulkan|vulkan_extended_dynamic_state3_topology",
                     "Video|widescreen",
                     "Video|use_50Hz_mode",
                     "Video|interlaced",
@@ -352,6 +355,7 @@ public class EmulatorSettings extends AppCompatActivity {
                     "APU|apu_max_queued_frames",
             };
             final String[] STRING_ARR_KEYS={
+                    "Vulkan|vulkan_pipeline_creation_threads",
                     "Video|video_standard",
                     "Video|internal_display_resolution",
                     "Video|avpack",

@@ -28,6 +28,9 @@
             app:entries="@array/es_arr_vulkan_pipeline_creation_threads"
             app:key="Vulkan|vulkan_pipeline_creation_threads"
             app:summary="@string/es_hint_vulkan_vulkan_pipeline_creation_threads" />
+        <aenu.preference.CheckBoxPreference app:title="@string/es_vulkan_vulkan_async_skip_draws"
+            app:key="Vulkan|vulkan_async_skip_draws"
+            app:summary="@string/es_hint_vulkan_vulkan_async_skip_draws" />
 
         <aenu.preference.CheckBoxPreference app:title="@string/es_vulkan_vulkan_extended_dynamic_state3_blend"
             app:key="Vulkan|vulkan_extended_dynamic_state3_blend"

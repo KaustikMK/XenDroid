@@ -11,6 +11,7 @@
 #define XENIA_GPU_VULKAN_VULKAN_COMMAND_PROCESSOR_H_
 
 #include <array>
+#include <atomic>
 #include <climits>
 #include <cstdint>
 #include <deque>
@@ -811,9 +812,13 @@ class VulkanCommandProcessor final : public CommandProcessor {
   // Currently bound graphics pipeline, either from the pipeline cache (with
   // potentially deferred creation - current_external_graphics_pipeline_ is
   // VK_NULL_HANDLE in this case) or a non-Xenos one
-  // (current_guest_graphics_pipeline_ is VK_NULL_HANDLE in this case).
-  // TODO(Triang3l): Change to a deferred compilation handle.
-  VkPipeline current_guest_graphics_pipeline_;
+  // (current_guest_graphics_pipeline_ is nullptr in this case).
+  // current_guest_graphics_pipeline_ is a STABLE pointer to the pipeline
+  // cache's atomic VkPipeline slot, not a handle value - with asynchronous
+  // creation the handle may still be VK_NULL_HANDLE at record time, so the
+  // bind de-dup compares slot pointers and the deferred command buffer
+  // resolves the handle at replay.
+  const std::atomic<VkPipeline>* current_guest_graphics_pipeline_;
   VkPipeline current_external_graphics_pipeline_;
   VkPipeline current_external_compute_pipeline_;
 

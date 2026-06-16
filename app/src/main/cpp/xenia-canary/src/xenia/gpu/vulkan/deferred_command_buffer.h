@@ -10,6 +10,7 @@
 #ifndef XENIA_GPU_VULKAN_DEFERRED_COMMAND_BUFFER_H_
 #define XENIA_GPU_VULKAN_DEFERRED_COMMAND_BUFFER_H_
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -105,6 +106,22 @@ class DeferredCommandBuffer {
                          VkPipeline pipeline) {
     auto& args = *reinterpret_cast<ArgsVkBindPipeline*>(
         WriteCommand(Command::kVkBindPipeline, sizeof(ArgsVkBindPipeline)));
+    args.pipeline_bind_point = pipeline_bind_point;
+    args.pipeline = pipeline;
+  }
+
+  // Deferred-creation variant: records a STABLE pointer to a pipeline cache
+  // slot (a pipelines_ map node's Pipeline::pipeline field) instead of a
+  // handle value, dereferenced at Execute() time. The slot may still be
+  // VK_NULL_HANDLE at replay if asynchronous creation hasn't finished (or
+  // failed); in that case the bind is skipped and all graphics draws until the
+  // next successful graphics pipeline bind are dropped. Used only for guest
+  // graphics pipelines; the external / compute bind paths keep using the
+  // by-value CmdVkBindPipeline.
+  void CmdVkBindPipelineDeferred(VkPipelineBindPoint pipeline_bind_point,
+                                 const std::atomic<VkPipeline>* pipeline) {
+    auto& args = *reinterpret_cast<ArgsVkBindPipelineDeferred*>(WriteCommand(
+        Command::kVkBindPipelineDeferred, sizeof(ArgsVkBindPipelineDeferred)));
     args.pipeline_bind_point = pipeline_bind_point;
     args.pipeline = pipeline;
   }
@@ -442,6 +459,7 @@ class DeferredCommandBuffer {
     kVkBindDescriptorSets,
     kVkBindIndexBuffer,
     kVkBindPipeline,
+    kVkBindPipelineDeferred,
     kVkBindVertexBuffers,
     kVkBeginQuery,
     kVkEndQuery,
@@ -504,6 +522,12 @@ class DeferredCommandBuffer {
   struct ArgsVkBindPipeline {
     VkPipelineBindPoint pipeline_bind_point;
     VkPipeline pipeline;
+  };
+
+  struct ArgsVkBindPipelineDeferred {
+    VkPipelineBindPoint pipeline_bind_point;
+    // Stable pointer to a pipeline slot; loaded (acquire) at Execute() time.
+    const std::atomic<VkPipeline>* pipeline;
   };
 
   struct ArgsVkBindVertexBuffers {

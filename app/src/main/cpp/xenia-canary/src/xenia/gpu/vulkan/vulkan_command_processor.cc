@@ -2589,7 +2589,7 @@ void VulkanCommandProcessor::BindExternalGraphicsPipeline(
   deferred_command_buffer_.CmdVkBindPipeline(VK_PIPELINE_BIND_POINT_GRAPHICS,
                                              pipeline);
   current_external_graphics_pipeline_ = pipeline;
-  current_guest_graphics_pipeline_ = VK_NULL_HANDLE;
+  current_guest_graphics_pipeline_ = nullptr;
   current_guest_graphics_pipeline_layout_ = VK_NULL_HANDLE;
 }
 
@@ -2968,22 +2968,6 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
     return false;
   }
 
-  VkPipeline current_pipeline =
-      pipeline->pipeline.load(std::memory_order_acquire);
-  if (current_pipeline == VK_NULL_HANDLE) {
-    // Pipeline is not ready yet - wait for it to be created.
-    pipeline_cache_->EndSubmission();
-    current_pipeline = pipeline->pipeline.load(std::memory_order_acquire);
-    if (current_pipeline == VK_NULL_HANDLE) {
-      // Still not ready - something is wrong.
-      return false;
-    }
-  }
-  // If async mode is active, this may be a placeholder pipeline. The real
-  // pipeline will be swapped in by the creation thread when ready.
-  // We re-load the handle to pick up any swap that may have happened.
-  current_pipeline = pipeline->pipeline.load(std::memory_order_acquire);
-
   // Update the textures before most other work in the submission because
   // samplers depend on this (and in case of sampler overflow in a submission,
   // submissions must be split) - may perform dispatches and copying.
@@ -2997,13 +2981,16 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
   // Update the graphics pipeline, and if the new graphics pipeline has a
   // different layout, invalidate incompatible descriptor sets before updating
   // current_guest_graphics_pipeline_layout_.
-  // The pipeline may be not ready yet if created asynchronously.
-  // EndSubmission must be called before submitting the command buffer to
-  // await its creation.
-  if (current_guest_graphics_pipeline_ != current_pipeline) {
-    deferred_command_buffer_.CmdVkBindPipeline(VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                               current_pipeline);
-    current_guest_graphics_pipeline_ = current_pipeline;
+  // With asynchronous creation the handle may still be VK_NULL_HANDLE here -
+  // a deferred bind of the stable slot pointer is recorded instead of
+  // stalling. The pipeline cache's EndSubmission at the submission boundary
+  // either waits for creation to complete (default) or lets the replay drop
+  // the draws of still-unready pipelines (vulkan_async_skip_draws). The
+  // de-dup compares slot POINTERS, not handle values.
+  if (current_guest_graphics_pipeline_ != &pipeline->pipeline) {
+    deferred_command_buffer_.CmdVkBindPipelineDeferred(
+        VK_PIPELINE_BIND_POINT_GRAPHICS, &pipeline->pipeline);
+    current_guest_graphics_pipeline_ = &pipeline->pipeline;
     current_external_graphics_pipeline_ = VK_NULL_HANDLE;
   }
   auto pipeline_layout =
@@ -4246,7 +4233,7 @@ bool VulkanCommandProcessor::BeginSubmission(bool is_guest_command) {
     dynamic_stencil_reference_back_update_needed_ = true;
     current_render_pass_ = VK_NULL_HANDLE;
     current_framebuffer_ = nullptr;
-    current_guest_graphics_pipeline_ = VK_NULL_HANDLE;
+    current_guest_graphics_pipeline_ = nullptr;
     current_external_graphics_pipeline_ = VK_NULL_HANDLE;
     current_external_compute_pipeline_ = VK_NULL_HANDLE;
     current_guest_graphics_pipeline_layout_ = nullptr;
@@ -4531,6 +4518,14 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
       XELOGE("Failed to begin a Vulkan command buffer");
       return false;
     }
+    // Submission boundary for asynchronously created pipelines: by default
+    // this waits until every pipeline referenced by the recorded deferred
+    // binds has finished creation, so no draw is lost. With
+    // vulkan_async_skip_draws (or during the startup storage preload) it
+    // doesn't block, and deferred binds that still resolve to VK_NULL_HANDLE
+    // at replay drop their draws. Also persists the driver pipeline cache
+    // (throttled) and flushes the shader/pipeline storage files.
+    pipeline_cache_->EndSubmission();
     deferred_command_buffer_.Execute(command_buffer.buffer);
 
     // Record ZPD resolves before submitting.
@@ -4581,16 +4576,6 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
     // Block if strict mode has a pending result waiting on the guest sentinel.
     PumpQueryResolves();
     PumpPendingRetire();
-
-    // Persist the driver pipeline cache periodically. This is the only
-    // reliable once-per-submission hook: VulkanPipelineCache::EndSubmission,
-    // despite its name, is a creation-queue drain that only runs when a draw
-    // stalls on an unready pipeline, so a save placed only there never
-    // happens in steady state - leaving the cache file unwritten and the
-    // driver recompiling every shader on every launch.
-    if (pipeline_cache_) {
-      pipeline_cache_->MaybeSaveVkPipelineCache();
-    }
   }
 
   if (is_closing_frame) {

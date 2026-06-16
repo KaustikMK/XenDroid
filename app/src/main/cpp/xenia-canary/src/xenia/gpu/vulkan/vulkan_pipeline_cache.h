@@ -60,15 +60,15 @@ class VulkanPipelineCache {
   };
 
   struct Pipeline {
+    // VK_NULL_HANDLE while asynchronous creation is pending (or after it
+    // failed). The slot address is STABLE for the cache's lifetime
+    // (unordered_map nodes never relocate, and entries are never erased while
+    // running), so the deferred command buffer records &pipeline and loads it
+    // at replay.
     std::atomic<VkPipeline> pipeline{VK_NULL_HANDLE};
     // The layouts are owned by the VulkanCommandProcessor, and must not be
     // destroyed by it while the pipeline cache is active.
     const PipelineLayoutProvider* pipeline_layout;
-
-    // Placeholder pipeline support for reduced stutter.
-    // When true, the current pipeline uses a placeholder pixel shader and
-    // the real pipeline is being compiled in the background.
-    std::atomic<bool> is_placeholder{false};
 
     Pipeline(const PipelineLayoutProvider* pipeline_layout_provider)
         : pipeline_layout(pipeline_layout_provider) {}
@@ -76,16 +76,12 @@ class VulkanPipelineCache {
     // Copy constructor needed for unordered_map
     Pipeline(const Pipeline& other)
         : pipeline(other.pipeline.load(std::memory_order_acquire)),
-          pipeline_layout(other.pipeline_layout),
-          is_placeholder(other.is_placeholder.load(std::memory_order_acquire)) {
-    }
+          pipeline_layout(other.pipeline_layout) {}
 
     // Move constructor
     Pipeline(Pipeline&& other) noexcept
         : pipeline(other.pipeline.load(std::memory_order_acquire)),
-          pipeline_layout(other.pipeline_layout),
-          is_placeholder(other.is_placeholder.load(std::memory_order_acquire)) {
-    }
+          pipeline_layout(other.pipeline_layout) {}
 
     // Deleted copy assignment to prevent accidental copying
     Pipeline& operator=(const Pipeline&) = delete;
@@ -111,13 +107,17 @@ class VulkanPipelineCache {
       std::function<void()> completion_callback = nullptr);
   void ShutdownShaderStorage();
 
+  // Submission-boundary hook; the command processor calls this on the GPU
+  // thread right before replaying the deferred command buffer. Persists the
+  // VkPipelineCache blob (throttled) and storage files, then waits until all
+  // queued pipeline creations complete so every deferred pipeline bind in the
+  // stream resolves to a created handle - unless vulkan_async_skip_draws is
+  // enabled or the startup storage preload is running, in which case it
+  // doesn't block and unready pipelines have their draws dropped at replay.
   void EndSubmission();
-  // Throttled persist of the VkPipelineCache blob; call once per actual
-  // submission from the command processor. Cheap no-op unless new pipelines
-  // were created and the save interval elapsed. Must not live only inside
-  // EndSubmission() - despite the name, that is a creation-queue drain that
-  // only runs when a draw stalls on an unready pipeline, so in steady state
-  // it never executes and the cache would never reach disk.
+  // Throttled persist of the VkPipelineCache blob. Cheap no-op unless new
+  // pipelines were created and the save interval elapsed. Called from
+  // EndSubmission().
   void MaybeSaveVkPipelineCache();
   bool IsCreatingPipelines();
   // Waits for any pipeline creation needed by the current draw path to finish
@@ -387,18 +387,8 @@ class VulkanPipelineCache {
   // Can be called from creation threads - all needed data must be fully set up
   // at the point of the call: shaders must be translated, pipeline layout and
   // render pass objects must be available.
-  // If fragment_shader_override is not VK_NULL_HANDLE, it is used instead of
-  // the pixel shader from creation_arguments (for placeholder pipelines).
   bool EnsurePipelineCreated(
-      const PipelineCreationArguments& creation_arguments,
-      VkShaderModule fragment_shader_override = VK_NULL_HANDLE);
-
-  // Creates a placeholder pipeline using the placeholder pixel shader.
-  // Used for pipeline hot-swap to reduce stutter.
-  bool EnsurePipelineCreatedWithPlaceholder(
-      const PipelineCreationArguments& creation_arguments) {
-    return EnsurePipelineCreated(creation_arguments, placeholder_pixel_shader_);
-  }
+      const PipelineCreationArguments& creation_arguments);
 
   VulkanCommandProcessor& command_processor_;
   const RegisterFile& register_file_;
@@ -439,10 +429,6 @@ class VulkanPipelineCache {
   // Empty depth-only pixel shader for writing to depth buffer using fragment
   // shader interlock when no Xenos pixel shader provided.
   VkShaderModule depth_only_fragment_shader_ = VK_NULL_HANDLE;
-
-  // Placeholder pixel shader for pipeline hot-swap to reduce stutter.
-  // Outputs transparent black while the real shader compiles in background.
-  VkShaderModule placeholder_pixel_shader_ = VK_NULL_HANDLE;
 
   // Tessellation shaders.
   // Vertex shaders for tessellation - pass indices/factors to TCS.

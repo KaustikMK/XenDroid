@@ -53,6 +53,12 @@ void DeferredCommandBuffer::Execute(VkCommandBuffer command_buffer) {
       command_processor_.GetVulkanDevice()->functions();
   const uintmax_t* stream = command_stream_.data();
   size_t stream_remaining = command_stream_size_;
+  // True while the last guest graphics pipeline bind in the stream resolved to
+  // a slot whose asynchronous creation hasn't finished (or failed) - binding
+  // VK_NULL_HANDLE is undefined behavior, and drawing with the previously
+  // bound pipeline would use mismatched state, so draws are dropped until the
+  // next successful graphics pipeline bind.
+  bool guest_graphics_pipeline_unready = false;
   while (stream_remaining) {
     const CommandHeader& header =
         *reinterpret_cast<const CommandHeader*>(stream);
@@ -115,6 +121,25 @@ void DeferredCommandBuffer::Execute(VkCommandBuffer command_buffer) {
         auto& args = *reinterpret_cast<const ArgsVkBindPipeline*>(stream);
         dfn.vkCmdBindPipeline(command_buffer, args.pipeline_bind_point,
                               args.pipeline);
+        if (args.pipeline_bind_point == VK_PIPELINE_BIND_POINT_GRAPHICS) {
+          guest_graphics_pipeline_unready = false;
+        }
+      } break;
+
+      case Command::kVkBindPipelineDeferred: {
+        auto& args =
+            *reinterpret_cast<const ArgsVkBindPipelineDeferred*>(stream);
+        VkPipeline pipeline = args.pipeline->load(std::memory_order_acquire);
+        if (pipeline != VK_NULL_HANDLE) {
+          dfn.vkCmdBindPipeline(command_buffer, args.pipeline_bind_point,
+                                pipeline);
+          guest_graphics_pipeline_unready = false;
+        } else {
+          // Asynchronous creation hasn't completed (vulkan_async_skip_draws
+          // replay without the submission-boundary wait) or failed entirely -
+          // drop the draws recorded for this pipeline.
+          guest_graphics_pipeline_unready = true;
+        }
       } break;
 
       case Command::kVkBindVertexBuffers: {
@@ -224,12 +249,18 @@ void DeferredCommandBuffer::Execute(VkCommandBuffer command_buffer) {
       } break;
 
       case Command::kVkDraw: {
+        if (guest_graphics_pipeline_unready) {
+          break;
+        }
         auto& args = *reinterpret_cast<const ArgsVkDraw*>(stream);
         dfn.vkCmdDraw(command_buffer, args.vertex_count, args.instance_count,
                       args.first_vertex, args.first_instance);
       } break;
 
       case Command::kVkDrawIndexed: {
+        if (guest_graphics_pipeline_unready) {
+          break;
+        }
         auto& args = *reinterpret_cast<const ArgsVkDrawIndexed*>(stream);
         dfn.vkCmdDrawIndexed(command_buffer, args.index_count,
                              args.instance_count, args.first_index,
