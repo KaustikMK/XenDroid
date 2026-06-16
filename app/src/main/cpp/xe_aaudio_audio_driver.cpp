@@ -8,6 +8,7 @@
  */
 #include "xe_aaudio_audio_driver.h"
 
+#include <atomic>
 #include <cstring>
 
 #include "xenia/apu/apu_flags.h"
@@ -104,9 +105,35 @@ aaudio_data_callback_result_t AAudioAudioDriver::AudioCallback(
 
   std::unique_lock<std::mutex> guard(driver->frames_mutex_);
 
+  // Starvation diagnostics: whether the device callback runs at all and
+  // whether it finds guest frames to consume (a consume is the only thing
+  // that releases the worker semaphore - see the tick-starvation note in
+  // SubmitFrame).
+  static std::atomic<uint32_t> cb_count{0}, cb_empty{0};
+  uint32_t cb_n = cb_count.fetch_add(1);
   if (driver->frames_queued_.empty()) {
+    uint32_t empty_n = cb_empty.fetch_add(1);
+    if (cb_n < 4 || (cb_n & 0x3FF) == 0) {
+      XELOGI("AAudioCB #{} queue empty (empty so far: {})", cb_n, empty_n + 1);
+    }
     std::memset(output_buffer, 0, samples_count * sizeof(float));
+    // Real hardware ticks the render driver client every 5.33ms whether or
+    // not it submitted - consume-driven credits leak one tick of runway per
+    // underrun burst and eventually starve the title's audio engine for good
+    // (Fable II boot). Grant the credit on empty bursts too; a failed
+    // release just means the guest already holds full runway.
+    bool released = driver->semaphore_->Release(1, nullptr);
+    if (!released && ((cb_n & 0x3FF) == 0)) {
+      XELOGI(
+          "AAudioCB #{} release FAILED (count at max, worker not consuming) "
+          "driver={:p} semaphore={:p}",
+          cb_n, (void*)driver, (void*)driver->semaphore_);
+    }
   } else {
+    if (cb_n < 4 || (cb_n & 0x3FF) == 0) {
+      XELOGI("AAudioCB #{} consuming (depth {}, empty so far: {})", cb_n,
+             driver->frames_queued_.size(), cb_empty.load());
+    }
     auto buffer = driver->frames_queued_.front();
     driver->frames_queued_.pop();
 
@@ -134,6 +161,15 @@ void AAudioAudioDriver::AudioErrorCallback(
 }
 
 void AAudioAudioDriver::SubmitFrame(float* samples) {
+  // Note: the worker tick is credit-driven (one semaphore release per
+  // consumed frame) - a title whose render client skips submissions gets no
+  // further ticks once the prime credits drain. Counting submissions here
+  // tells the two starvation modes apart.
+  static std::atomic<uint32_t> submit_count{0};
+  uint32_t submit_n = submit_count.fetch_add(1);
+  if (submit_n < 8 || (submit_n & 0x1FF) == 0) {
+    XELOGI("AAudio SubmitFrame #{}", submit_n);
+  }
     const auto input_frame = samples;
   float* output_frame;
 

@@ -9,6 +9,8 @@
 
 #include "xenia/apu/audio_system.h"
 
+#include <atomic>
+
 #include "xenia/apu/apu_flags.h"
 #include "xenia/apu/audio_driver.h"
 #include "xenia/apu/xma_decoder.h"
@@ -108,6 +110,15 @@ void AudioSystem::WorkerThreadMain() {
     // (signaling a sample has finished playing)
     auto result =
         xe::threading::WaitAny(wait_handles_, xe::countof(wait_handles_), true);
+    // Wake-by-wake trace: the audio tick chain dying with a signaled
+    // semaphore means the worker is wedged between waits - this names the
+    // last completed phase.
+    static std::atomic<uint32_t> wake_count{0};
+    uint32_t wake_n = wake_count.fetch_add(1);
+    if (wake_n < 96 || (wake_n & 0xFF) == 0) {
+      XELOGI("AudioWorker wake #{} result={} index={}", wake_n,
+             int(result.first), result.second);
+    }
     if (result.first == xe::threading::WaitResult::kFailed) {
       // TODO: Assert?
       continue;
@@ -116,9 +127,12 @@ void AudioSystem::WorkerThreadMain() {
     if (result.first == threading::WaitResult::kSuccess &&
         result.second == kMaximumClientCount) {
       // Shutdown event signaled.
+      XELOGI("AudioWorker wake #{}: shutdown-event arm, paused_={} running={}",
+             wake_n, paused_, worker_running_.load());
       if (paused_) {
         pause_fence_.Signal();
         threading::Wait(resume_event_.get(), false);
+        XELOGI("AudioWorker wake #{}: resumed from pause", wake_n);
       }
 
       continue;
@@ -133,12 +147,25 @@ void AudioSystem::WorkerThreadMain() {
       uint32_t client_callback = clients_[index].callback;
       uint32_t client_callback_arg = clients_[index].wrapped_callback_arg;
       global_lock.unlock();
+      if (wake_n < 96 || (wake_n & 0xFF) == 0) {
+        XELOGI("AudioWorker exec #{} callback={:08X}", wake_n,
+               client_callback);
+      }
 
       if (client_callback) {
         SCOPE_profile_cpu_i("apu", "xe::apu::AudioSystem->client_callback");
         uint64_t args[] = {client_callback_arg};
         processor_->Execute(worker_thread_->thread_state(), client_callback,
                             args, xe::countof(args));
+      } else {
+        // A consumed credit with no callback means the client unregistered
+        // (or was never set) while its semaphore still gets released.
+        static std::atomic<uint32_t> empty_wakes{0};
+        uint32_t n = empty_wakes.fetch_add(1);
+        if (n < 4 || (n & 0x3FF) == 0) {
+          XELOGI("AudioSystem: wake #{} for client {} with NO callback", n,
+                 index);
+        }
       }
 
       pumped = true;
@@ -153,6 +180,8 @@ void AudioSystem::WorkerThreadMain() {
       xe::threading::Sleep(std::chrono::milliseconds(500));
     }
   }
+  XELOGW("AudioWorker: loop EXITED (worker_running_={})",
+         worker_running_.load());
   worker_running_ = false;
 
   // TODO(benvanik): call module API to kill?
@@ -207,6 +236,8 @@ X_STATUS AudioSystem::RegisterClient(uint32_t callback, uint32_t callback_arg,
   assert_true(index >= 0);
 
   auto client_semaphore = client_semaphores_[index].get();
+  XELOGI("AudioSystem::RegisterClient: index={} semaphore={:p}", index,
+         (void*)client_semaphore);
   auto ret = client_semaphore->Release(queued_frames_, nullptr);
   assert_true(ret);
 
@@ -263,6 +294,7 @@ void AudioSystem::SubmitFrame(size_t index, float* samples) {
 
 void AudioSystem::UnregisterClient(size_t index) {
   SCOPE_profile_cpu_f("apu");
+  XELOGI("AudioSystem::UnregisterClient: client {}", index);
 
   auto global_lock = global_critical_region_.Acquire();
   assert_true(index < kMaximumClientCount);
