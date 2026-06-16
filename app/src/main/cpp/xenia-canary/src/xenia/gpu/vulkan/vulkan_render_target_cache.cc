@@ -30,6 +30,8 @@
 #include "xenia/gpu/xenos.h"
 #include "xenia/ui/vulkan/vulkan_util.h"
 
+DECLARE_bool(rt_cache_ownership_claim_memo);
+
 DEFINE_string(
     render_target_path_vulkan, "",
     "Render target emulation path to use on Vulkan.\n"
@@ -1408,9 +1410,25 @@ bool VulkanRenderTargetCache::Update(
       RenderTarget* const* depth_and_color_render_targets =
           last_update_accumulated_render_targets();
 
-      PerformTransfersAndResolveClears(1 + xenos::kMaxColorRenderTargets,
-                                       depth_and_color_render_targets,
-                                       last_update_transfers());
+      // With no transfers accumulated by this update (the common steady-state
+      // case), the pass would just iterate and do nothing - skip the call.
+      bool any_transfers = false;
+      if (cvars::rt_cache_ownership_claim_memo) {
+        const std::vector<Transfer>* transfers = last_update_transfers();
+        for (uint32_t i = 0; i < 1 + xenos::kMaxColorRenderTargets; ++i) {
+          if (!transfers[i].empty()) {
+            any_transfers = true;
+            break;
+          }
+        }
+      } else {
+        any_transfers = true;
+      }
+      if (any_transfers) {
+        PerformTransfersAndResolveClears(1 + xenos::kMaxColorRenderTargets,
+                                         depth_and_color_render_targets,
+                                         last_update_transfers());
+      }
 
       if (depth_and_color_render_targets[0]) {
         render_pass_key.depth_and_color_used |= 1 << 0;

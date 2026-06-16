@@ -30,6 +30,14 @@
 
 DECLARE_bool(tiled_shared_memory);
 
+DEFINE_bool(
+    vulkan_fast_sampler_filterability, true,
+    "Derive host linear-filterability for samplers directly from the fetch "
+    "constant instead of building the full texture binding info (texture key "
+    "+ host format pair) per sampler per draw. Results are identical; disable "
+    "for A/B debugging of texture filtering issues.",
+    "Vulkan");
+
 namespace xe {
 namespace gpu {
 namespace vulkan {
@@ -437,6 +445,7 @@ VulkanTextureCache::~VulkanTextureCache() {
        samplers_) {
     dfn.vkDestroySampler(device, sampler_pair.second.sampler, nullptr);
   }
+  ++sampler_destroy_generation_;
   samplers_.clear();
   COUNT_profile_set("gpu/texture_cache/vulkan/samplers", 0);
   sampler_used_last_ = nullptr;
@@ -687,22 +696,72 @@ VulkanTextureCache::SamplerParameters VulkanTextureCache::GetSamplerParameters(
           ? fetch.mip_filter
           : binding.mip_filter;
   parameters.mip_linear = mip_filter == xenos::TextureFilter::kLinear;
+
+  // Single subresource derivation per call - feeds both the filterability
+  // check and the mip range below. Outputs don't depend on which out-params
+  // are requested, so this matches both of the calls it replaces (the
+  // explicit mip-range one and the one inside BindingInfoFromFetchConstant).
+  uint32_t subres_width_minus_1, subres_base_page, subres_mip_page;
+  uint32_t mip_min_level, mip_max_level;
+  texture_util::GetSubresourcesFromFetchConstant(
+      fetch, &subres_width_minus_1, nullptr, nullptr, &subres_base_page,
+      &subres_mip_page, &mip_min_level, &mip_max_level);
+
   if (parameters.mag_linear || parameters.min_linear || parameters.mip_linear) {
     // Check if the texture is actually filterable on the host.
-    bool linear_filterable = true;
-    TextureKey texture_key;
-    uint8_t texture_swizzled_signs;
-    BindingInfoFromFetchConstant(fetch, texture_key, &texture_swizzled_signs);
-    if (texture_key.is_valid) {
-      const HostFormatPair& host_format_pair = GetHostFormatPair(texture_key);
-      if ((texture_util::IsAnySignNotSigned(texture_swizzled_signs) &&
-           !host_format_pair.format_unsigned.linear_filterable) ||
-          (texture_util::IsAnySignSigned(texture_swizzled_signs) &&
-           !host_format_pair.format_signed.linear_filterable)) {
-        linear_filterable = false;
+    bool linear_filterable;
+    if (cvars::vulkan_fast_sampler_filterability) {
+      // Mirrors the validation in TextureCache::BindingInfoFromFetchConstant
+      // and the host format selection in GetHostFormatPair without building
+      // the full TextureKey - filterability depends only on the fetch
+      // constant's validity, the base format, the width parity (for the
+      // packed 4:2:2 formats) and the swizzled signs. The diagnostic logging
+      // of the full path is intentionally skipped here; flip the cvar off to
+      // get it back.
+      linear_filterable = false;
+      bool fetch_type_valid =
+          fetch.type == xenos::FetchConstantType::kTexture ||
+          (fetch.type == xenos::FetchConstantType::kInvalidTexture &&
+           cvars::gpu_allow_invalid_fetch_constants);
+      if (fetch_type_valid &&
+          (subres_base_page != 0 || subres_mip_page != 0) &&
+          !(fetch.dimension == xenos::DataDimension::k1D &&
+            (subres_width_minus_1 >= xenos::kTexture2DCubeMaxWidthHeight ||
+             fetch.tiled || fetch.packed_mips))) {
+        xenos::TextureFormat format = GetBaseFormat(fetch.format);
+        bool width_odd = ((subres_width_minus_1 + 1) & 1) != 0;
+        const HostFormatPair& host_format_pair =
+            (format == xenos::TextureFormat::k_Cr_Y1_Cb_Y0_REP && width_odd)
+                ? kHostFormatGBGRUnaligned
+                : ((format == xenos::TextureFormat::k_Y1_Cr_Y0_Cb_REP &&
+                    width_odd)
+                       ? kHostFormatBGRGUnaligned
+                       : host_formats_[uint32_t(format)]);
+        uint8_t texture_swizzled_signs = texture_util::SwizzleSigns(fetch);
+        linear_filterable =
+            !((texture_util::IsAnySignNotSigned(texture_swizzled_signs) &&
+               !host_format_pair.format_unsigned.linear_filterable) ||
+              (texture_util::IsAnySignSigned(texture_swizzled_signs) &&
+               !host_format_pair.format_signed.linear_filterable));
       }
     } else {
-      linear_filterable = false;
+      linear_filterable = true;
+      TextureKey texture_key;
+      uint8_t texture_swizzled_signs;
+      BindingInfoFromFetchConstant(fetch, texture_key,
+                                   &texture_swizzled_signs);
+      if (texture_key.is_valid) {
+        const HostFormatPair& host_format_pair =
+            GetHostFormatPair(texture_key);
+        if ((texture_util::IsAnySignNotSigned(texture_swizzled_signs) &&
+             !host_format_pair.format_unsigned.linear_filterable) ||
+            (texture_util::IsAnySignSigned(texture_swizzled_signs) &&
+             !host_format_pair.format_signed.linear_filterable)) {
+          linear_filterable = false;
+        }
+      } else {
+        linear_filterable = false;
+      }
     }
     if (!linear_filterable) {
       parameters.mag_linear = 0;
@@ -716,10 +775,6 @@ VulkanTextureCache::SamplerParameters VulkanTextureCache::GetSamplerParameters(
           : binding.aniso_filter;
   parameters.mip_base_map = mip_filter == xenos::TextureFilter::kBaseMap;
 
-  uint32_t mip_min_level, mip_max_level;
-  texture_util::GetSubresourcesFromFetchConstant(
-      fetch, nullptr, nullptr, nullptr, nullptr, nullptr, &mip_min_level,
-      &mip_max_level);
   parameters.mip_min_level = mip_min_level;
   bool has_mips = mip_max_level > mip_min_level;
   // Apply anisotropic override, but only for mipmapped textures
@@ -788,7 +843,15 @@ VkSampler VulkanTextureCache::UseSampler(SamplerParameters parameters,
       return VK_NULL_HANDLE;
     }
     auto it_reuse = samplers_.find(sampler_used_first_->first);
+    // The command processor's cross-draw sampler cache relies on this
+    // invariant: a sampler whose last usage is in the still-open current
+    // submission can never reach this point, because the completed submission
+    // index is always behind the open one (the eviction predicate above
+    // requires last_usage_submission <= completed).
+    assert_true(sampler_used_first_->second.last_usage_submission <
+                command_processor_.GetCurrentSubmission());
     dfn.vkDestroySampler(device, sampler_used_first_->second.sampler, nullptr);
+    ++sampler_destroy_generation_;
     if (sampler_used_first_->second.used_next) {
       sampler_used_first_->second.used_next->second.used_previous =
           sampler_used_first_->second.used_previous;

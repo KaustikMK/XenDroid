@@ -9,13 +9,22 @@
 
 #include "xenia/gpu/vulkan/deferred_command_buffer.h"
 
+#include <algorithm>
 #include <cstring>
 
 #include "xenia/base/assert.h"
+#include "xenia/base/cvar.h"
 #include "xenia/base/math.h"
 #include "xenia/base/profiling.h"
 #include "xenia/gpu/gpu_flags.h"
 #include "xenia/gpu/vulkan/vulkan_command_processor.h"
+
+DEFINE_bool(vulkan_deferred_cmd_size_cursor, true,
+            "Track the deferred command buffer's recorded length with a size "
+            "cursor over a geometrically grown buffer instead of resizing the "
+            "vector per recorded command (vector::resize zero-fill was ~2% of "
+            "the GPU command processor thread).",
+            "Vulkan");
 
 namespace xe {
 namespace gpu {
@@ -23,11 +32,17 @@ namespace vulkan {
 
 DeferredCommandBuffer::DeferredCommandBuffer(
     const VulkanCommandProcessor& command_processor, size_t initial_size)
-    : command_processor_(command_processor) {
+    : command_processor_(command_processor),
+      use_size_cursor_(cvars::vulkan_deferred_cmd_size_cursor) {
   command_stream_.reserve(initial_size / sizeof(uintmax_t));
 }
 
-void DeferredCommandBuffer::Reset() { command_stream_.clear(); }
+void DeferredCommandBuffer::Reset() {
+  command_stream_size_ = 0;
+  if (!use_size_cursor_) {
+    command_stream_.clear();
+  }
+}
 
 void DeferredCommandBuffer::Execute(VkCommandBuffer command_buffer) {
 #if XE_GPU_FINE_GRAINED_DRAW_SCOPES
@@ -37,7 +52,7 @@ void DeferredCommandBuffer::Execute(VkCommandBuffer command_buffer) {
   const ui::vulkan::VulkanDevice::Functions& dfn =
       command_processor_.GetVulkanDevice()->functions();
   const uintmax_t* stream = command_stream_.data();
-  size_t stream_remaining = command_stream_.size();
+  size_t stream_remaining = command_stream_size_;
   while (stream_remaining) {
     const CommandHeader& header =
         *reinterpret_cast<const CommandHeader*>(stream);
@@ -389,9 +404,20 @@ void* DeferredCommandBuffer::WriteCommand(Command command,
                                           size_t arguments_size_bytes) {
   size_t arguments_size_elements =
       (arguments_size_bytes + sizeof(uintmax_t) - 1) / sizeof(uintmax_t);
-  size_t offset = command_stream_.size();
-  command_stream_.resize(offset + kCommandHeaderSizeElements +
-                         arguments_size_elements);
+  size_t offset = command_stream_size_;
+  size_t new_size = offset + kCommandHeaderSizeElements + arguments_size_elements;
+  if (use_size_cursor_) {
+    // Grow geometrically and keep the arena allocated across Reset() — the
+    // bytes past the cursor are dead, so resize()'s zero-fill per command is
+    // pure waste. std::max ordering matters: size() * 2 is 0 right after
+    // construction (the constructor only reserves).
+    if (new_size > command_stream_.size()) {
+      command_stream_.resize(std::max(new_size, command_stream_.size() * 2));
+    }
+  } else {
+    command_stream_.resize(new_size);
+  }
+  command_stream_size_ = new_size;
   CommandHeader& header =
       *reinterpret_cast<CommandHeader*>(command_stream_.data() + offset);
   header.command = command;

@@ -271,6 +271,27 @@ class VulkanCommandProcessor final : public CommandProcessor {
   XE_FORCEINLINE
   virtual void WriteRegistersFromMem(uint32_t start_index, uint32_t* base,
                                      uint32_t num_registers) override;
+  void WriteRegisterRangeFromRing(xe::RingBuffer* ring, uint32_t base,
+                                  uint32_t num_registers) override;
+
+  // Range-segmented register write fast path (port of the D3D12 backend's
+  // WriteRegisterRangeFromMem machinery, cvar vulkan_fast_register_ranges):
+  // ranges with no side effects are bulk copy_and_swap'ed into the register
+  // file, the constant families get range-level dirty handling instead of the
+  // per-register virtual WriteRegister cascade.
+  void WriteShaderConstantsFromMem(uint32_t start_index, uint32_t* base,
+                                   uint32_t num_registers);
+  void WriteBoolLoopFromMem(uint32_t start_index, uint32_t* base,
+                            uint32_t num_registers);
+  void WriteFetchFromMem(uint32_t start_index, uint32_t* base,
+                         uint32_t num_registers);
+  void WritePossiblySpecialRegistersFromMem(uint32_t start_index,
+                                            uint32_t* base,
+                                            uint32_t num_registers);
+  XE_NOINLINE
+  void WriteRegisterRangeFromRing_WraparoundCase(xe::RingBuffer* ring,
+                                                 uint32_t base,
+                                                 uint32_t num_registers);
 
   void OnGammaRamp256EntryTableValueWritten() override;
   void OnGammaRampPWLValueWritten() override;
@@ -763,6 +784,24 @@ class VulkanCommandProcessor final : public CommandProcessor {
       current_samplers_vertex_;
   std::vector<std::pair<VulkanTextureCache::SamplerParameters, VkSampler>>
       current_samplers_pixel_;
+  // Cross-draw sampler cache state (cvar vulkan_cache_sampler_parameters).
+  // A stage's current_samplers_* contents are reusable for the next draw if:
+  // the same shader provides the binding list (pointers are stable - shaders
+  // are only destroyed at pipeline cache shutdown), no sampler was destroyed
+  // since (destroy generation), and per fetch slot, the fetch constant wasn't
+  // written since the parameters were derived (per-stage dirty masks, bit set
+  // = up to date, maintained in WriteRegister and committed after a draw's
+  // sampler pass). The per-stage submission stamp tracks when UseSampler was
+  // last called for every entry - it must run at least once per submission so
+  // the texture cache's LRU eviction (which only frees samplers whose last
+  // usage submission has fully completed) can never destroy a cached handle.
+  uint32_t current_samplers_fetch_up_to_date_vertex_ = 0;
+  uint32_t current_samplers_fetch_up_to_date_pixel_ = 0;
+  const VulkanShader* current_samplers_shader_vertex_ = nullptr;
+  const VulkanShader* current_samplers_shader_pixel_ = nullptr;
+  uint64_t current_samplers_submission_vertex_ = 0;
+  uint64_t current_samplers_submission_pixel_ = 0;
+  uint64_t current_samplers_destroy_generation_ = ~uint64_t(0);
 
   // Cache render pass currently started in the command buffer with the
   // framebuffer.

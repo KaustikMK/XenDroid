@@ -671,6 +671,14 @@ class DeferredCommandBuffer {
 
   // uintmax_t to ensure uint64_t and pointer alignment of all structures.
   std::vector<uintmax_t> command_stream_;
+  // Logical end of the recorded stream. With the size-cursor optimization the
+  // vector is grown geometrically and never shrunk, so its size() is the
+  // capacity of the arena, not the recorded length — vector::resize()'s
+  // zero-fill on every WriteCommand was ~2% of the GPU command processor
+  // thread. Maintained correctly in both modes.
+  size_t command_stream_size_ = 0;
+  // Snapshot of cvars::vulkan_deferred_cmd_size_cursor at construction.
+  bool use_size_cursor_;
 };
 
 }  // namespace vulkan

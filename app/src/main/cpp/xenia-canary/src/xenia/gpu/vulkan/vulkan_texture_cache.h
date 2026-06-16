@@ -114,6 +114,13 @@ class VulkanTextureCache final : public TextureCache {
   uint64_t GetSubmissionToAwaitOnSamplerOverflow(
       uint32_t overflowed_sampler_count) const;
 
+  // Incremented whenever any VkSampler is destroyed (LRU eviction in
+  // UseSampler, cache teardown). Lets the command processor's cross-draw
+  // sampler cache detect that cached handles may no longer be valid.
+  uint64_t sampler_destroy_generation() const {
+    return sampler_destroy_generation_;
+  }
+
   // Returns the 2D view of the front buffer texture (for fragment shader
   // reading - the barrier will be pushed in the command processor if needed),
   // or VK_NULL_HANDLE in case of failure. May call LoadTextureData.
@@ -362,6 +369,8 @@ class VulkanTextureCache final : public TextureCache {
     std::pair<const SamplerParameters, Sampler>* used_previous;
     std::pair<const SamplerParameters, Sampler>* used_next;
   };
+
+  uint64_t sampler_destroy_generation_ = 0;
 
   static constexpr bool AreDimensionsCompatible(
       xenos::FetchOpDimension binding_dimension,

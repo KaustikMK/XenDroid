@@ -974,7 +974,12 @@ void TextureCache::ResetTextureBindings(bool from_destructor) {
     binding.Reset();
     bindings_reset |= UINT32_C(1) << i;
   }
-  texture_bindings_in_sync_ &= ~bindings_reset;
+  // Clear in-sync bits for all slots, including invalid-key ones: a slot
+  // whose fetch constant was last seen producing an invalid key must still be
+  // re-derived after a reset (e.g. trace playback restoring registers behind
+  // WriteRegister's back), and with same-value fetch-constant writes no
+  // longer dirtying bindings, this is the reset path's responsibility.
+  texture_bindings_in_sync_ = 0;
   if (!from_destructor && bindings_reset) {
     UpdateTextureBindingsImpl(bindings_reset);
   }
