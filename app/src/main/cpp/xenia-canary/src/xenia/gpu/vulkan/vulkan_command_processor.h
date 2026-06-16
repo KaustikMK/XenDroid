@@ -561,6 +561,30 @@ class VulkanCommandProcessor final : public CommandProcessor {
   VkDeviceSize zpd_fsi_counter_descriptor_range_ = 0;
 
   ui::vulkan::VulkanGPUCompletionTimeline completion_timeline_;
+  // Per-frame GPU synchronization diagnostics (worker thread only), reported
+  // alongside the log_gpu_frame_time_breakdown breakdown.
+  struct VkFrameSyncStats {
+    uint64_t frames = 0;
+    uint64_t awaits = 0;    // blocking waits for own submissions
+    uint64_t await_ns = 0;  // time inside those waits
+    uint64_t submissions = 0;
+    uint64_t memexport_awaits = 0;
+    uint64_t readback_awaits = 0;
+    // Host-side latency from vkQueueSubmit to the fence being observed
+    // completed - includes GPU queue wait, render time and detection delay.
+    uint64_t sub_latency_ns = 0;
+    uint64_t sub_latency_max_ns = 0;
+    uint64_t sub_completions = 0;
+    // Awaits that actually blocked, and the sum over them of
+    // (current submission - awaited submission) to see how many submissions
+    // of headroom the throttle really has.
+    uint64_t blocking_awaits = 0;
+    uint64_t await_delta = 0;
+    uint64_t last_report_ns = 0;
+  };
+  VkFrameSyncStats vk_frame_sync_stats_;
+  // (submission index, host submit time) of not-yet-completed submissions.
+  std::deque<std::pair<uint64_t, uint64_t>> vk_submit_times_;
   bool submission_open_ = false;
   // In case vkQueueSubmit fails after something like a successful
   // vkQueueBindSparse, to wait correctly on the next attempt.

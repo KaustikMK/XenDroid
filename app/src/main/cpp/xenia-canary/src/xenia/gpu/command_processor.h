@@ -221,6 +221,28 @@ class CommandProcessor {
     return (uint64_t(address) << 32) | uint64_t(length);
   }
 
+  // Per-guest-frame time breakdown on the worker thread, reported through
+  // XELOGI roughly once per second when log_gpu_frame_time_breakdown is set.
+  // All accounting happens on the worker thread - no synchronization.
+  struct FrameTimeStats {
+    uint64_t frames = 0;
+    uint64_t draws = 0;
+    uint64_t draw_ns = 0;
+    uint64_t swap_ns = 0;
+    uint64_t exec_ns = 0;      // ExecutePrimaryBuffer total
+    uint64_t stall_ns = 0;     // worker idle, waiting for ring writes
+    uint64_t interval_ns = 0;  // sum of swap-to-swap intervals
+    uint64_t interval_max_ns = 0;
+    uint64_t last_swap_ns = 0;
+    uint64_t last_report_ns = 0;
+  };
+  FrameTimeStats frame_time_stats_;
+  static uint64_t FrameStatsNow();
+  // Returns 0 (and skips the clock read) when the breakdown is disabled.
+  uint64_t FrameStatsBegin();
+  void FrameStatsEndDraw(uint64_t begin_ns);
+  void FrameStatsEndSwap(uint64_t begin_ns);
+
   void WorkerThreadMain();
   virtual bool SetupContext() = 0;
   virtual void ShutdownContext() = 0;

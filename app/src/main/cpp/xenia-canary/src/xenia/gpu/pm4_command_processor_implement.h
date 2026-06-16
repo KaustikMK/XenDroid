@@ -660,8 +660,10 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_XE_SWAP(uint32_t packet,
   uint32_t frontbuffer_height = reader_.ReadAndSwap<uint32_t>();
   reader_.AdvanceRead((count - 4) * sizeof(uint32_t));
 
+  const uint64_t fs_swap_begin = COMMAND_PROCESSOR::FrameStatsBegin();
   COMMAND_PROCESSOR::IssueSwap(frontbuffer_ptr, frontbuffer_width,
                                frontbuffer_height);
+  COMMAND_PROCESSOR::FrameStatsEndSwap(fs_swap_begin);
 
   ++counter_;
   return true;
@@ -1141,11 +1143,13 @@ bool COMMAND_PROCESSOR::ExecutePacketType3Draw(
       // shader has memexport.
       // TODO(Triang3l || JoelLinn): Handle this properly in the render
       // backends.
+      const uint64_t fs_draw_begin = COMMAND_PROCESSOR::FrameStatsBegin();
       draw_succeeded = COMMAND_PROCESSOR::IssueDraw(
           vgt_draw_initiator.prim_type, vgt_draw_initiator.num_indices,
           is_indexed ? &index_buffer_info : nullptr,
           xenos::IsMajorModeExplicit(vgt_draw_initiator.major_mode,
                                      vgt_draw_initiator.prim_type));
+      COMMAND_PROCESSOR::FrameStatsEndDraw(fs_draw_begin);
       if (!draw_succeeded) {
         XELOGE("{}({}, {}, {}): Failed in backend", opcode_name,
                vgt_draw_initiator.num_indices,

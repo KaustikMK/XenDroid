@@ -39,6 +39,7 @@
 #include "xenia/ui/vulkan/vulkan_util.h"
 
 DECLARE_bool(clear_memory_page_state);
+DECLARE_bool(log_gpu_frame_time_breakdown);
 
 DEFINE_bool(
     vulkan_cache_texture_descriptors, true,
@@ -1728,6 +1729,33 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
   // stats (the game's real frame rate, independent of the host present path).
   xe::RecordGuestPresent();
 
+  if (cvars::log_gpu_frame_time_breakdown) {
+    auto& s = vk_frame_sync_stats_;
+    s.frames++;
+    const uint64_t now = FrameStatsNow();
+    if (!s.last_report_ns) {
+      s.last_report_ns = now;
+    } else if (now - s.last_report_ns >= 1000000000ull) {
+      const double f = static_cast<double>(s.frames);
+      XELOGI(
+          "VkFrameSync: {} frames | per frame: awaits={:.1f} await={:.1f}ms "
+          "submissions={:.1f} memexport_awaits={:.1f} readback_awaits={:.1f} "
+          "| submit->fence avg={:.1f}ms max={:.1f}ms | blocking={:.1f} "
+          "delta avg={:.2f}",
+          s.frames, s.awaits / f, s.await_ns / f / 1e6, s.submissions / f,
+          s.memexport_awaits / f, s.readback_awaits / f,
+          s.sub_completions
+              ? s.sub_latency_ns / static_cast<double>(s.sub_completions) / 1e6
+              : 0.0,
+          s.sub_latency_max_ns / 1e6, s.blocking_awaits / f,
+          s.blocking_awaits
+              ? s.await_delta / static_cast<double>(s.blocking_awaits)
+              : 0.0);
+      s = VkFrameSyncStats();
+      s.last_report_ns = now;
+    }
+  }
+
   ui::Presenter* presenter = graphics_system_->presenter();
   if (!presenter) {
     return;
@@ -3336,6 +3364,7 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
         }
 
         // Wait for GPU to finish (SYNCHRONIZATION STALL)
+        vk_frame_sync_stats_.memexport_awaits++;
         if (AwaitAllQueueOperationsCompletion()) {
           // Map staging buffer and copy to guest memory.
           void* mapped_data;
@@ -3525,6 +3554,7 @@ bool VulkanCommandProcessor::IssueCopy() {
       read_index = 1 - write_index;
     } else {
       // Wait for GPU to finish (accurate but slow)
+      vk_frame_sync_stats_.readback_awaits++;
       if (!AwaitAllQueueOperationsCompletion()) {
         XELOGE(
             "VulkanCommandProcessor: Failed to complete queue operations for "
@@ -3539,6 +3569,7 @@ bool VulkanCommandProcessor::IssueCopy() {
     if (use_delayed_sync && (rb.buffers[read_index] == VK_NULL_HANDLE ||
                              written_length > rb.sizes[read_index])) {
       read_index = write_index;
+      vk_frame_sync_stats_.readback_awaits++;
       if (!AwaitAllQueueOperationsCompletion()) {
         XELOGE(
             "VulkanCommandProcessor: Failed to complete queue operations for "
@@ -4096,7 +4127,34 @@ void VulkanCommandProcessor::CheckSubmissionCompletionAndDeviceLoss(
     await_submission = GetCurrentSubmission() - 1;
   }
 
-  completion_timeline_.AwaitSubmissionAndUpdateCompleted(await_submission);
+  if (cvars::log_gpu_frame_time_breakdown) {
+    const uint64_t completed_before = GetCompletedSubmission();
+    const uint64_t t0 = FrameStatsNow();
+    completion_timeline_.AwaitSubmissionAndUpdateCompleted(await_submission);
+    const uint64_t t1 = FrameStatsNow();
+    if (await_submission) {
+      vk_frame_sync_stats_.awaits++;
+      vk_frame_sync_stats_.await_ns += t1 - t0;
+      if (await_submission > completed_before) {
+        // The await actually blocked; record how far behind the GPU was.
+        vk_frame_sync_stats_.blocking_awaits++;
+        vk_frame_sync_stats_.await_delta +=
+            GetCurrentSubmission() - await_submission;
+      }
+    }
+    const uint64_t completed = GetCompletedSubmission();
+    while (!vk_submit_times_.empty() &&
+           vk_submit_times_.front().first <= completed) {
+      const uint64_t latency = t1 - vk_submit_times_.front().second;
+      vk_frame_sync_stats_.sub_latency_ns += latency;
+      vk_frame_sync_stats_.sub_latency_max_ns =
+          std::max(vk_frame_sync_stats_.sub_latency_max_ns, latency);
+      vk_frame_sync_stats_.sub_completions++;
+      vk_submit_times_.pop_front();
+    }
+  } else {
+    completion_timeline_.AwaitSubmissionAndUpdateCompleted(await_submission);
+  }
 
   const ui::vulkan::VulkanDevice* const vulkan_device = GetVulkanDevice();
 
@@ -4571,6 +4629,10 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
     command_buffers_writable_.pop_back();
 
     submission_open_ = false;
+    vk_frame_sync_stats_.submissions++;
+    if (cvars::log_gpu_frame_time_breakdown) {
+      vk_submit_times_.emplace_back(submission_index, FrameStatsNow());
+    }
 
     // Process any ZPD resolves that completed with this submission.
     // Block if strict mode has a pending result waiting on the guest sentinel.

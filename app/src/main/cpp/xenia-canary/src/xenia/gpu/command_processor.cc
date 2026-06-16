@@ -9,6 +9,9 @@
 
 #include "xenia/gpu/command_processor.h"
 
+#include <algorithm>
+#include <chrono>
+
 #include "third_party/fmt/include/fmt/format.h"
 #include "xenia/base/byte_stream.h"
 #include "xenia/base/clock.h"
@@ -49,6 +52,14 @@ DEFINE_bool(clear_memory_page_state, false,
             "Refresh state of memory pages to enable gpu written data. (Use "
             "for 'Team Ninja' Games to fix missing character models)",
             "GPU");
+
+DEFINE_bool(
+    log_gpu_frame_time_breakdown, false,
+    "Log a once-per-second breakdown of where the GPU command processor "
+    "thread spends each guest frame (swap-to-swap): PM4 execution, draw "
+    "processing, the swap itself, and idle stall waiting for ring writes. "
+    "Diagnostic aid for frame pacing investigations.",
+    "GPU");
 
 DEFINE_string(
     occlusion_query, "fast",
@@ -340,6 +351,57 @@ void CommandProcessor::SetDesiredSwapPostEffect(
   });
 }
 
+uint64_t CommandProcessor::FrameStatsNow() {
+  return static_cast<uint64_t>(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(
+          std::chrono::steady_clock::now().time_since_epoch())
+          .count());
+}
+
+uint64_t CommandProcessor::FrameStatsBegin() {
+  return cvars::log_gpu_frame_time_breakdown ? FrameStatsNow() : 0;
+}
+
+void CommandProcessor::FrameStatsEndDraw(uint64_t begin_ns) {
+  if (!begin_ns) {
+    return;
+  }
+  frame_time_stats_.draws++;
+  frame_time_stats_.draw_ns += FrameStatsNow() - begin_ns;
+}
+
+void CommandProcessor::FrameStatsEndSwap(uint64_t begin_ns) {
+  if (!begin_ns) {
+    return;
+  }
+  auto& s = frame_time_stats_;
+  const uint64_t now = FrameStatsNow();
+  s.swap_ns += now - begin_ns;
+  s.frames++;
+  if (s.last_swap_ns) {
+    const uint64_t interval = now - s.last_swap_ns;
+    s.interval_ns += interval;
+    s.interval_max_ns = std::max(s.interval_max_ns, interval);
+  }
+  s.last_swap_ns = now;
+  if (!s.last_report_ns) {
+    s.last_report_ns = now;
+  } else if (now - s.last_report_ns >= 1000000000ull && s.frames) {
+    const double f = static_cast<double>(s.frames);
+    XELOGI(
+        "GpuFrame: {} frames, interval avg={:.1f}ms max={:.1f}ms | per frame: "
+        "exec={:.1f}ms draws={:.0f} draw={:.1f}ms swap={:.1f}ms "
+        "stall={:.1f}ms",
+        s.frames, s.interval_ns / f / 1e6, s.interval_max_ns / 1e6,
+        s.exec_ns / f / 1e6, s.draws / f, s.draw_ns / f / 1e6,
+        s.swap_ns / f / 1e6, s.stall_ns / f / 1e6);
+    const uint64_t keep_swap = s.last_swap_ns;
+    s = FrameTimeStats();
+    s.last_swap_ns = keep_swap;
+    s.last_report_ns = now;
+  }
+}
+
 void CommandProcessor::WorkerThreadMain() {
   if (!SetupContext()) {
     xe::FatalError("Unable to setup command processor internal state");
@@ -359,6 +421,7 @@ void CommandProcessor::WorkerThreadMain() {
       // We've run out of commands to execute.
       // We spin here waiting for new ones, as the overhead of waiting on our
       // event is too high.
+      const uint64_t fs_stall_begin = FrameStatsBegin();
       PrepareForWait();
       uint32_t loop_count = 0;
       do {
@@ -376,6 +439,9 @@ void CommandProcessor::WorkerThreadMain() {
                (write_ptr_index == 0xBAADF00D ||
                 read_ptr_index_ == write_ptr_index));
       ReturnFromWait();
+      if (fs_stall_begin) {
+        frame_time_stats_.stall_ns += FrameStatsNow() - fs_stall_begin;
+      }
       if (!worker_running_ || !pending_fns_.empty()) {
         continue;
       }
@@ -383,7 +449,11 @@ void CommandProcessor::WorkerThreadMain() {
     assert_true(read_ptr_index_ != write_ptr_index);
 
     // Execute. Note that we handle wraparound transparently.
+    const uint64_t fs_exec_begin = FrameStatsBegin();
     read_ptr_index_ = ExecutePrimaryBuffer(read_ptr_index_, write_ptr_index);
+    if (fs_exec_begin) {
+      frame_time_stats_.exec_ns += FrameStatsNow() - fs_exec_begin;
+    }
 
     // TODO(benvanik): use reader->Read_update_freq_ and only issue after moving
     //     that many indices.
