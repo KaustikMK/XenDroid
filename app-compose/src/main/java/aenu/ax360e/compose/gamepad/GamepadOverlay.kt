@@ -409,13 +409,14 @@ private fun DrawScope.drawDpad(
 ) {
     val arm = dpadArmPath(center, radius)           // the LEFT arm; rotate for the others
     val idle = Color.White.copy(alpha = 0.5f * opacity)
-    val gold = Color(0xFFD8AF35)
+    // Pressed/active highlight: white, matching every other button (was gold/yellow).
+    val lit = Color.White
     // (code, rotation): LEFT base at left/tip toward center; +90 each step -> UP/RIGHT/DOWN.
     val arms = listOf(Kc.DPAD_LEFT to 0f, Kc.DPAD_UP to 90f, Kc.DPAD_RIGHT to 180f, Kc.DPAD_DOWN to 270f)
     for ((_, angle) in arms) rotate(angle, center) { drawPath(arm, idle, style = Stroke(strokeW)) }
     for ((code, angle) in arms) if (code in dirs) rotate(angle, center) {
-        drawPath(arm, gold.copy(alpha = 0.18f * opacity))                       // faint fill
-        drawPath(arm, gold.copy(alpha = 0.95f * opacity), style = Stroke(strokeW * 1.4f))
+        drawPath(arm, lit.copy(alpha = 0.22f * opacity))                        // faint fill
+        drawPath(arm, lit.copy(alpha = 0.95f * opacity), style = Stroke(strokeW * 1.4f))
     }
 }
 
