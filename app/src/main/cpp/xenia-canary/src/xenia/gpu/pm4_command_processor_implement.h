@@ -12,6 +12,7 @@ void COMMAND_PROCESSOR::ExecuteIndirectBuffer(uint32_t ptr,
   trace_writer_.WriteIndirectBufferStart(ptr, count * sizeof(uint32_t));
   if (count != 0) {
     RingBuffer old_reader = reader_;
+    ++indirect_buffer_depth_;
 
     // Execute commands!
     new (&reader_)
@@ -34,6 +35,7 @@ void COMMAND_PROCESSOR::ExecuteIndirectBuffer(uint32_t ptr,
     } while (reader_.read_count());
 
     trace_writer_.WriteIndirectBufferEnd();
+    --indirect_buffer_depth_;
     reader_ = old_reader;
   } else {
     // rare, but i've seen it happen! (and then a division by 0 occurs)
@@ -411,9 +413,33 @@ bool COMMAND_PROCESSOR::ExecutePacketType3(uint32_t packet) XE_RESTRICT {
     if (packet & 1) {
       bool any_pass = (bin_select_ & bin_mask_) != 0;
       if (!any_pass || opcode == PM4_XE_SWAP) {
-        reader_.AdvanceRead(count * sizeof(uint32_t));
-        trace_writer_.WritePacketEnd();
-        return true;
+        // On real hardware, tiled rendering replays the command list once per
+        // bin, so a packet predicated to some bin set still executes during
+        // those bins' passes. This emulator executes a single pass: dropping
+        // a predicated synchronization packet (fence write, interrupt,
+        // indirect buffer with fences inside) here means it executes NEVER,
+        // and a title gating ring-segment retirement on such a fence
+        // deadlocks with the command processor idle.
+        bool is_sync_side_effect =
+            opcode == PM4_MEM_WRITE || opcode == PM4_INTERRUPT ||
+            opcode == PM4_EVENT_WRITE || opcode == PM4_EVENT_WRITE_SHD ||
+            opcode == PM4_INDIRECT_BUFFER || opcode == PM4_INDIRECT_BUFFER_PFD;
+        bool execute_anyway =
+            is_sync_side_effect && opcode != PM4_XE_SWAP && !any_pass;
+        if (execute_anyway) {
+          static std::atomic<uint32_t> predicated_sync_log_budget{50};
+          if (predicated_sync_log_budget.load() > 0 &&
+              predicated_sync_log_budget-- > 0) {
+            XELOGW(
+                "PM4: executing predicated-out sync packet opcode={:02X} "
+                "count={} bin_select={:016X} bin_mask={:016X}",
+                static_cast<uint32_t>(opcode), count, bin_select_, bin_mask_);
+          }
+        } else {
+          reader_.AdvanceRead(count * sizeof(uint32_t));
+          trace_writer_.WritePacketEnd();
+          return true;
+        }
       }
     }
 
@@ -633,6 +659,28 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_INTERRUPT(
 
   // generate interrupt from the command stream
   uint32_t cpu_mask = reader_.ReadAndSwap<uint32_t>();
+  static std::atomic<uint32_t> interrupt_log_budget{64};
+  if (interrupt_log_budget.load() > 0 && interrupt_log_budget-- > 0) {
+    XELOGI("CP: PM4_INTERRUPT cpu_mask={:02X}", cpu_mask);
+  }
+
+  // On real hardware the read pointer writeback is current when the CP
+  // interrupt fires; the D3D ISR reads it to publish the consumed ring
+  // position (with a wrap counter) that ring-space waiters poll. The worker
+  // loop only writes it back after a whole execution slice, so without this
+  // flush the ISR can observe a position that is stale by up to a slice -
+  // and if the title then blocks waiting for ring space (no further
+  // interrupts), its view never heals (Ninja Gaiden 2 freeze).
+  if (read_ptr_writeback_ptr_) {
+    uint32_t consumed_index =
+        indirect_buffer_depth_
+            ? primary_ring_read_index_shadow_
+            : uint32_t(reader_.read_offset() / sizeof(uint32_t));
+    register_file_->values[XE_GPU_REG_CP_RB_RPTR] = consumed_index;
+    xe::store_and_swap<uint32_t>(
+        memory_->TranslatePhysical(read_ptr_writeback_ptr_), consumed_index);
+  }
+
   for (int n = 0; n < 6; n++) {
     if (cpu_mask & (1 << n)) {
       graphics_system_->DispatchInterruptCallback(1, n);
@@ -875,9 +923,35 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_EVENT_WRITE(
   COMMAND_PROCESSOR::WriteEventInitiator(initiator & 0x3f);
   if (count == 1) {
     // Just an event flag? Where does this write?
+  } else if (count == 3) {
+    // Fence form: address + value, like EVENT_WRITE_SHD. This was previously
+    // dropped (silently in NDEBUG builds) - a guest waiting on the fence
+    // value would deadlock with the command processor idle.
+    uint32_t address = reader_.ReadAndSwap<uint32_t>();
+    uint32_t value = reader_.ReadAndSwap<uint32_t>();
+    XELOGI("EVENT_WRITE fence: initiator={:02X} address={:08X} value={:08X}",
+           initiator & 0x3F, address, value);
+    auto endianness = static_cast<xenos::Endian>(address & 0x3);
+    address &= ~0x3;
+    uint32_t data_value = GpuSwap(value, endianness);
+    uint8_t* write_destination = memory_->TranslatePhysical(address);
+    if (address > 0x1FFFFFFF) {
+      uint32_t writeback_base =
+          register_file_->values[XE_GPU_REG_WRITEBACK_START];
+      uint32_t writeback_size =
+          register_file_->values[XE_GPU_REG_WRITEBACK_SIZE];
+      uint32_t writeback_offset = address - writeback_base;
+      if (writeback_base != 0 && writeback_offset < writeback_size) {
+        write_destination =
+            memory_->TranslateVirtual(0x7F000000 + writeback_offset);
+      }
+    }
+    xe::store(write_destination, data_value);
+    trace_writer_.WriteMemoryWrite(CpuToGpu(address), 4);
   } else {
-    // Write to an address.
+    // Unknown form.
     assert_always();
+    XELOGW("EVENT_WRITE: unhandled count {}", count);
     reader_.AdvanceRead((count - 1) * sizeof(uint32_t));
   }
   return true;
@@ -1455,6 +1529,11 @@ uint32_t COMMAND_PROCESSOR::ExecutePrimaryBuffer(uint32_t read_index,
   reader_.BeginPrefetchedRead<swcache::PrefetchTag::Level2>(
       GetCurrentRingReadCount());
   do {
+    // Ring position of the packet about to execute - read by the
+    // INTERRUPT-time read pointer writeback flush when execution is inside
+    // an indirect buffer (where reader_ no longer covers the primary ring).
+    primary_ring_read_index_shadow_ =
+        uint32_t(reader_.read_offset() / sizeof(uint32_t));
     if (!COMMAND_PROCESSOR::ExecutePacket()) {
       // This probably should be fatal - but we're going to continue anyways.
       XELOGE("**** PRIMARY RINGBUFFER: Failed to execute packet.");

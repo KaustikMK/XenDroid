@@ -646,6 +646,19 @@ void CommandProcessor::HandleSpecialRegisterWrite(uint32_t index,
       // Enabled - write to address.
       uint32_t scratch_addr = regs.values[XE_GPU_REG_SCRATCH_ADDR];
       uint32_t mem_addr = scratch_addr + (scratch_reg * 4);
+      // Unbudgeted log for RARE callback installs (REG4: anything that is
+      // not the sentinel or the two per-frame swap/vblank callbacks) - the
+      // deferred-kick train install is the event of interest.
+      static std::atomic<uint32_t> scratch_log_budget{64};
+      bool rare_install =
+          scratch_reg == 4 && value != 0x0BADF00D && value != 0x83744BF8 &&
+          value != 0x837C59C8;
+      if (rare_install ||
+          (scratch_log_budget.load() > 0 && scratch_log_budget-- > 0)) {
+        XELOGI("CP: scratch writeback REG{} value={:08X} -> phys {:08X}{}",
+               scratch_reg, value, mem_addr,
+               rare_install ? "  <== RARE INSTALL" : "");
+      }
       xe::store_and_swap<uint32_t>(memory_->TranslatePhysical(mem_addr), value);
     }
   } else {
