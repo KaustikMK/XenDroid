@@ -4581,6 +4581,16 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
     // Block if strict mode has a pending result waiting on the guest sentinel.
     PumpQueryResolves();
     PumpPendingRetire();
+
+    // Persist the driver pipeline cache periodically. This is the only
+    // reliable once-per-submission hook: VulkanPipelineCache::EndSubmission,
+    // despite its name, is a creation-queue drain that only runs when a draw
+    // stalls on an unready pipeline, so a save placed only there never
+    // happens in steady state - leaving the cache file unwritten and the
+    // driver recompiling every shader on every launch.
+    if (pipeline_cache_) {
+      pipeline_cache_->MaybeSaveVkPipelineCache();
+    }
   }
 
   if (is_closing_frame) {

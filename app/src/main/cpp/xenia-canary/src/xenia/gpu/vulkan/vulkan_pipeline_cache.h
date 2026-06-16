@@ -112,6 +112,13 @@ class VulkanPipelineCache {
   void ShutdownShaderStorage();
 
   void EndSubmission();
+  // Throttled persist of the VkPipelineCache blob; call once per actual
+  // submission from the command processor. Cheap no-op unless new pipelines
+  // were created and the save interval elapsed. Must not live only inside
+  // EndSubmission() - despite the name, that is a creation-queue drain that
+  // only runs when a draw stalls on an unready pipeline, so in steady state
+  // it never executes and the cache would never reach disk.
+  void MaybeSaveVkPipelineCache();
   bool IsCreatingPipelines();
   // Waits for any pipeline creation needed by the current draw path to finish
   // before state is consumed. This was added so strict ZPD query paths stop

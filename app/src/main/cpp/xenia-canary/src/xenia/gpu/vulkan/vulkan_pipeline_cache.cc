@@ -719,7 +719,7 @@ bool VulkanPipelineCache::ConfigurePipeline(
   return true;
 }
 
-void VulkanPipelineCache::EndSubmission() {
+void VulkanPipelineCache::MaybeSaveVkPipelineCache() {
   // Periodically persist vk_pipeline_cache_ to disk so it survives Android
   // process kills (upstream only writes it in ShutdownShaderStorage, which
   // Android frequently skips). Throttled, and only when new pipelines were
@@ -736,6 +736,10 @@ void VulkanPipelineCache::EndSubmission() {
       SaveVkPipelineCache();
     }
   }
+}
+
+void VulkanPipelineCache::EndSubmission() {
+  MaybeSaveVkPipelineCache();
 
   if (shader_storage_file_flush_needed_ ||
       pipeline_storage_file_flush_needed_) {
@@ -3482,8 +3486,14 @@ void VulkanPipelineCache::SaveVkPipelineCache() {
         fwrite(cache_data.data(), 1, cache_size, cache_file);
         fclose(cache_file);
         XELOGI("Saved {} bytes of VkPipelineCache data", cache_size);
+      } else {
+        XELOGE("Failed to open VkPipelineCache file for writing: {}",
+               xe::path_to_utf8(vk_pipeline_cache_path_));
       }
     }
+  } else {
+    XELOGW("VkPipelineCache data unavailable for saving (size {})",
+           cache_size);
   }
 }
 
