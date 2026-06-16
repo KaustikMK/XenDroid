@@ -47,9 +47,9 @@ import androidx.core.view.WindowInsetsControllerCompat
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
-/** Coarse, clearly-visible snap grid: cells along the SHORTER screen edge. The longer edge gets
- *  proportionally more cells of the same pixel pitch, so the cells are square. */
-const val EDITOR_GRID_STEPS = 12
+/** Snap grid: cells along the SHORTER screen edge. The longer edge gets proportionally more
+ *  cells of the same pixel pitch, so the cells are square. Higher = smaller (finer) cells. */
+const val EDITOR_GRID_STEPS = 20
 
 /** Rounds a fraction to the [EDITOR_GRID_STEPS] grid (a visible, coarse grid so "Snap"
  *  actually aligns controls). steps<=0 is identity. */
