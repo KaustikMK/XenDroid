@@ -69,9 +69,15 @@ cache partition for its streaming installer; upstream desktop default since
 **Per-game** `config/4D5307F1.config.toml` (best-known as of 2026-06-13):
 
 ```toml
-[GPU]
+[Vulkan]
 vulkan_depth_unorm24 = false
 ```
+
+> **Section header must match the cvar's CATEGORY, not always `[GPU]`.** Per-game
+> keys are looked up as `category.name` (`config.cc` `ReadGameConfig`).
+> `vulkan_depth_unorm24` is category `Vulkan` → `[Vulkan]`; `clear_memory_page_state`
+> etc. are `GPU` → `[GPU]`. A wrong section silently no-ops (the symptom: the
+> per-game value is ignored and the global default stands).
 
 - `vulkan_depth_unorm24 = false` forces the float32 depth-emulation path
   instead of native `D24_UNORM_S8_UINT`. This gives the best overall result so

@@ -9,6 +9,7 @@
 
 #include "xenia/gpu/vulkan/vulkan_command_processor.h"
 
+#include <atomic>
 #include <cstdint>
 #include <cstring>
 
@@ -2748,6 +2749,21 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
 #endif  // XE_GPU_FINE_GRAINED_DRAW_SCOPES
 
   const RegisterFile& regs = *register_file_;
+
+  // One-time confirmation of the effective guest depth path for this title
+  // (after per-game config has loaded) - lets a setting like the per-game
+  // vulkan_depth_unorm24 override be verified from the log.
+  static std::atomic<bool> depth_path_logged{false};
+  {
+    bool expected = false;
+    if (depth_path_logged.compare_exchange_strong(expected, true)) {
+      bool unorm24 = render_target_cache_->depth_unorm24_vulkan_format_supported();
+      XELOGI(
+          "Depth path: vulkan_depth_unorm24(effective)={} -> guest 24-bit depth "
+          "uses {}",
+          cvars::vulkan_depth_unorm24, unorm24 ? "native D24_UNORM_S8" : "float32 emulation");
+    }
+  }
 
   xenos::EdramMode edram_mode = regs.Get<reg::RB_MODECONTROL>().edram_mode;
   if (edram_mode == xenos::EdramMode::kCopy) {
