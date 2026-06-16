@@ -36,6 +36,16 @@ std::filesystem::path config_folder;
 std::filesystem::path config_path;
 std::string game_config_suffix = ".config.toml";
 
+// Set once a per-game config (config/<title_id>.config.toml) has been overlaid onto
+// the live cvars by LoadGameConfig. After that the in-memory cvars are GLOBAL + that
+// one game's sparse overrides, so SaveConfig() (which serializes ALL cvars to the
+// GLOBAL config_path) must NOT run -- otherwise the game's overrides get baked into
+// the global file and silently apply to every other game. The trigger on Android is
+// real and common: graphics_system.cc calls SaveConfig() on GPU device-loss, which
+// happens routinely on Adreno/Turnip. The in-app editor is the only intended writer
+// of the config files; the emulator process only reads them at boot.
+bool game_config_loaded = false;
+
 bool sortCvar(cvar::IConfigVar* a, cvar::IConfigVar* b) {
   if (a->category() < b->category()) {
     return true;
@@ -168,6 +178,12 @@ void ReadGameConfig(const std::filesystem::path& file_path) {
 
 void SaveConfig() {
   if (config_path.empty()) {
+    return;
+  }
+  // A per-game overlay is active -> the live cvars are not the pure global config;
+  // persisting them would pollute the global file with this game's overrides. Skip.
+  if (game_config_loaded) {
+    XELOGI("SaveConfig skipped: a per-game config overlay is active");
     return;
   }
 
@@ -311,6 +327,9 @@ void LoadGameConfig(const std::string_view title_id) {
       game_config_folder / (std::string(title_id) + game_config_suffix);
   if (std::filesystem::exists(game_config_path)) {
     ReadGameConfig(game_config_path);
+    // Lock out SaveConfig() for the rest of this process: the live cvars now carry
+    // this game's sparse overrides and must never be written back to the global file.
+    game_config_loaded = true;
   }
 }
 
