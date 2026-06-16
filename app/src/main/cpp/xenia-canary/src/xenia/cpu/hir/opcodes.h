@@ -292,6 +292,14 @@ enum Opcode {
   OPCODE_DELAY_EXECUTION,  // for db16cyc
   OPCODE_RESERVED_LOAD,
   OPCODE_RESERVED_STORE,
+  // Bounded host-side wait, used to collapse proven constant-trip-count guest
+  // spin-backoff loops (mtctr N + priority-hint nop sled + bdnz). src1.offset
+  // holds the number of backoff units (host pipeline stalls) to wait, already
+  // clamped by the emitting pass. It is a real wait, not elision: pure
+  // elision would tighten the caller's outer poll loop and burn more host CPU
+  // via contention. No guest-visible effects whatsoever (no context, memory,
+  // or flag changes).
+  OPCODE_SPIN_BACKOFF,
 
   __OPCODE_MAX_VALUE,  // Keep at end.
 };

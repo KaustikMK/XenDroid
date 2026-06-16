@@ -83,6 +83,16 @@ PPCTranslator::PPCTranslator(PPCFrontend* frontend) : frontend_(frontend) {
   }
   compiler_->AddPass(std::move(sap));
 
+  // Collapse constant-trip-count CTR spin-backoff loops (mtctr N + hint-nop
+  // sled + bdnz) into a bounded host wait. Must run after constant
+  // propagation (the predecessor's CTR store needs to carry a literal
+  // constant) and while the CFG edges built by ControlFlowAnalysisPass are
+  // still valid.
+  compiler_->AddPass(std::make_unique<passes::SpinLoopBackoffPass>());
+  if (validate) {
+    compiler_->AddPass(std::make_unique<passes::ValidationPass>());
+  }
+
   if (backend->machine_info()->supports_extended_load_store) {
     // Backend supports the advanced LOAD/STORE instructions.
     // These will save us a lot of HIR opcodes.

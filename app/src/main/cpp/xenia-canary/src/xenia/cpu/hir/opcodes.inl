@@ -220,10 +220,17 @@ DEFINE_OPCODE(
     0)
 
 DEFINE_OPCODE(
-	OPCODE_DELAY_EXECUTION, 
+	OPCODE_DELAY_EXECUTION,
 	"delay_execution",
 	OPCODE_SIG_X,
 	0)
+
+DEFINE_OPCODE(
+    OPCODE_SPIN_BACKOFF,
+    "spin_backoff",
+    OPCODE_SIG_X_O,
+    0)
+
 DEFINE_OPCODE(
     OPCODE_LOAD_MMIO,
     "load_mmio",

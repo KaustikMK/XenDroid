@@ -59,6 +59,35 @@ struct DELAY_EXECUTION
 EMITTER_OPCODE_TABLE(OPCODE_DELAY_EXECUTION, DELAY_EXECUTION);
 
 // ============================================================================
+// OPCODE_SPIN_BACKOFF
+// ============================================================================
+// Bounded host-side wait: a counted loop of `isb sy` (~tens of cycles each on
+// modern cores), emitted in place of proven constant-trip-count guest
+// spin-backoff loops. src1.offset is the iteration count, already clamped by
+// the pass that emits this op. The loop is held entirely in w16, an
+// emitter-scratch register (the register allocator only hands out x22-x28;
+// w16/w17 are already used as per-sequence scratch elsewhere). It uses
+// sub+cbnz rather than subs+b.ne so NZCV is never written - no host state
+// that surrounding sequences could observe is disturbed, and there is no
+// guest context or memory traffic at all.
+struct SPIN_BACKOFF
+    : Sequence<SPIN_BACKOFF, I<OPCODE_SPIN_BACKOFF, VoidOp, OffsetOp>> {
+  static void Emit(A64Emitter& e, const EmitArgType& i) {
+    const uint32_t count = static_cast<uint32_t>(i.src1.value);
+    if (!count) {
+      return;
+    }
+    Xbyak_aarch64::Label loop;
+    e.mov(e.w16, count);
+    e.L(loop);
+    e.isb(Xbyak_aarch64::SY);
+    e.sub(e.w16, e.w16, 1);
+    e.cbnz(e.w16, loop);
+  }
+};
+EMITTER_OPCODE_TABLE(OPCODE_SPIN_BACKOFF, SPIN_BACKOFF);
+
+// ============================================================================
 // OPCODE_MEMORY_BARRIER
 // ============================================================================
 struct MEMORY_BARRIER

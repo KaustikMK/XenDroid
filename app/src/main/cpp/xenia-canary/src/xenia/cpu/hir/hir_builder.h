@@ -209,6 +209,8 @@ class HIRBuilder {
                     CacheControlType type);
   void MemoryBarrier();
   void DelayExecution();
+  // Bounded host-only wait of `units` backoff units; no guest-visible effect.
+  void SpinBackoff(uint32_t units);
   void SetRoundingMode(Value* value);
   Value* Max(Value* value1, Value* value2);
   Value* VectorMax(Value* value1, Value* value2, TypeName part_type,
