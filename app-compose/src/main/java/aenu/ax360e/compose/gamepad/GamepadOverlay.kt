@@ -7,6 +7,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.State
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
@@ -83,6 +84,10 @@ fun GamepadOverlay(
     val dpadState = remember { mutableMapOf<ControlId, Set<Int>>() }
     val density = LocalDensity.current
     var sizePx by remember { mutableStateOf(IntSize.Zero) }
+    // Latest controls WITHOUT restarting the pointerInput: in edit mode every drag frame
+    // produces a new `controls` list; if it keyed the pointerInput, the gesture would cancel
+    // mid-drag (the button moves one frame then stutters/stops). Read this inside instead.
+    val controlsState = rememberUpdatedState(controls)
 
     // On teardown (overlay leaves composition: emulator exit / booted->false), release
     // every code so a control held at dispose can't stick. Keyed on Unit so it fires ONLY
@@ -93,9 +98,12 @@ fun GamepadOverlay(
         modifier = modifier
             .fillMaxSize()
             .onSizeChanged { sizePx = it }
-            .pointerInput(controls, sizePx, editMode, selectedId) {
+            // Keyed only on editMode+sizePx (stable during a gesture). controls is read live
+            // via controlsState so a drag (which mutates controls every frame) never restarts
+            // the gesture. selectedId is not needed here (only the draw uses it).
+            .pointerInput(editMode, sizePx) {
                 if (editMode) {
-                    editPointerLoop(controls, sizePx, density, onSelect, onTranslate, onScale)
+                    editPointerLoop(controlsState, sizePx, density, onSelect, onTranslate, onScale)
                 } else {
                     awaitPointerEventScope {
                         while (true) {
@@ -105,7 +113,7 @@ fun GamepadOverlay(
                                 val pid = ch.id.value
                                 when {
                                     ch.changedToDownIgnoreConsumed() -> {
-                                        val hit = hitTest(controls, ch.position, sizePx, density)
+                                        val hit = hitTest(controlsState.value, ch.position, sizePx, density)
                                         if (hit != null) {
                                             claims[pid] = hit.id
                                             pointerPos[pid] = ch.position
@@ -122,7 +130,7 @@ fun GamepadOverlay(
                                             // control (two fingers on one stick: lifting one
                                             // must not zero the input the other is still driving).
                                             if (claims.none { it.value == id }) {
-                                                controls.firstOrNull { it.id == id }?.let {
+                                                controlsState.value.firstOrNull { it.id == id }?.let {
                                                     dispatchUp(emitter, it, dpadState)
                                                 }
                                             }
@@ -132,7 +140,7 @@ fun GamepadOverlay(
                                     ch.pressed -> {            // MOVE on a claimed pointer
                                         val id = claims[pid] ?: continue
                                         pointerPos[pid] = ch.position
-                                        controls.firstOrNull { it.id == id }?.let {
+                                        controlsState.value.firstOrNull { it.id == id }?.let {
                                             dispatchMove(emitter, it, ch.position, sizePx, density, dpadState)
                                             ch.consume()
                                         }
@@ -164,7 +172,7 @@ fun GamepadOverlay(
 /** Edit-mode pointer loop: DOWN selects + claims; single-pointer drag translates the
  *  claimed control; two-pointer pinch scales the selected control by span ratio. */
 private suspend fun PointerInputScope.editPointerLoop(
-    controls: List<OnScreenControl>,
+    controlsState: State<List<OnScreenControl>>,
     size: IntSize,
     density: Density,
     onSelect: (ControlId?) -> Unit,
@@ -180,7 +188,7 @@ private suspend fun PointerInputScope.editPointerLoop(
             val pressed = ev.changes.filter { it.pressed }
             // DOWN: hit-test + select + start a drag on the hit control.
             ev.changes.firstOrNull { it.changedToDownIgnoreConsumed() }?.let { ch ->
-                val hit = hitTest(controls, ch.position, size, density)
+                val hit = hitTest(controlsState.value, ch.position, size, density)
                 onSelect(hit?.id)
                 dragId = hit?.id
                 lastDrag = if (hit != null) ch.position else null
