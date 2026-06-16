@@ -34,6 +34,22 @@
 #include "xenia/base/string_util.h"
 #endif
 
+#if defined(__aarch64__) && defined(__linux__)
+#include <sys/auxv.h>
+
+#include "xenia/base/cvar.h"
+#ifndef HWCAP_EVTSTRM
+#define HWCAP_EVTSTRM (1 << 2)
+#endif
+
+DEFINE_bool(wfe_yield, true,
+            "ARM64: wait for the generic-timer event stream (WFE) instead of "
+            "calling sched_yield() in guest yield/delay(0) spin loops. "
+            "Avoids the syscall and lets the core idle in low power between "
+            "polls (~10 kHz).",
+            "CPU");
+#endif
+
 #if XE_PLATFORM_LINUX
 // SIGEV_THREAD_ID in timer_create(...) is a Linux extension
 #define XE_HAS_SIGEV_THREAD_ID 1
@@ -146,7 +162,25 @@ uint32_t current_thread_system_id() {
 }
 
 void MaybeYield() {
+#if defined(__aarch64__) && defined(__linux__)
+  // Every caller is a "burn CPU until some other thread makes progress" loop
+  // (XThread::Delay(0), NtYieldExecution, guest spinlock contention, command
+  // processor stall). With fewer emulator threads than cores there is usually
+  // nothing to yield to, so sched_yield() is pure syscall + scheduler
+  // overhead at full clock. WFE instead parks the core in a low-power stall
+  // until the generic-timer event stream ticks (10 kHz on Linux/Android, so
+  // <=100us) — but only if the event stream exists, otherwise a bare WFE can
+  // stall until the next interrupt.
+  static const bool use_wfe =
+      cvars::wfe_yield && (getauxval(AT_HWCAP) & HWCAP_EVTSTRM) != 0;
+  if (use_wfe) {
+    __asm__ __volatile__("wfe" ::: "memory");
+  } else {
+    sched_yield();
+  }
+#else
   sched_yield();
+#endif
   __sync_synchronize();
 }
 
