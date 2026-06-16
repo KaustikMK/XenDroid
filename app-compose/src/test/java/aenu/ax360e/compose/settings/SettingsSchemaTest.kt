@@ -12,9 +12,11 @@ class SettingsSchemaTest {
     private val all = SettingsSchema.allSettings
 
     // The plan's prose says "124 rows" but its own type breakdown sums to 123
-    // (100 Bool + 6 IntRange + 16 ListChoice + 1 Action). The legacy inventory
+    // (100 Bool + 7 IntRange + 15 ListChoice + 1 Action). The legacy inventory
     // (app/src/main/res/xml/emulator_settings.xml) has exactly 100 CheckBoxPreference
-    // + 16 ListPreference + 6 SeekBarPreference + 1 vulkan_lib_path action = 123.
+    // + 16 ListPreference + 6 SeekBarPreference + 1 vulkan_lib_path action = 123;
+    // vulkan_pipeline_creation_threads was since moved ListChoice -> IntRange (a 0-5
+    // slider), so the live split is 7 IntRange / 15 ListChoice (total unchanged).
     // The "124" is a plan arithmetic error; the authoritative per-type counts (and
     // hence 123) are asserted here and in counts_by_type_match_verified_inventory.
     @Test fun total_entry_count_is_123() {
@@ -28,8 +30,8 @@ class SettingsSchemaTest {
 
     @Test fun counts_by_type_match_verified_inventory() {
         assertEquals(100, all.count { it is Setting.Bool })
-        assertEquals(6, all.count { it is Setting.IntRange })
-        assertEquals(16, all.count { it is Setting.ListChoice })
+        assertEquals(7, all.count { it is Setting.IntRange })
+        assertEquals(15, all.count { it is Setting.ListChoice })
         assertEquals(1, all.count { it is Setting.Action })
     }
 
