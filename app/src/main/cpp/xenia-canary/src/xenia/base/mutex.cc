@@ -88,7 +88,14 @@ inline int futex_wake(std::atomic<uint32_t>* addr, int count) {
                  0);
 }
 
-inline pid_t gettid() { return static_cast<pid_t>(syscall(SYS_gettid)); }
+inline pid_t gettid() {
+  // Cached per thread: this is on the xe_global_mutex lock/unlock fast path
+  // (taken per kernel call and per GPU packet), and the raw syscall showed up
+  // as ~2% of the GPU command processor thread in profiles.
+  static thread_local const pid_t tid =
+      static_cast<pid_t>(syscall(SYS_gettid));
+  return tid;
+}
 
 }  // namespace
 

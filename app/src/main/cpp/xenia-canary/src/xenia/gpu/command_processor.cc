@@ -111,8 +111,15 @@ bool GetGPUSetting(GPUSetting setting) {
   return false;
 }
 
-ReadbackResolveMode GetReadbackResolveMode() {
-  const std::string& mode = cvars::readback_resolve;
+// Both mode getters are called on the GPU command processor's per-packet/
+// per-draw paths; parsing the cvar string each call cost ~5% of that thread
+// in profiles. Parse once, cache the enum, and have the setters (the only
+// way the modes change at runtime) refresh the cache.
+namespace {
+std::atomic<int> readback_resolve_mode_cache{-1};
+std::atomic<int> zpd_mode_cache{-1};
+
+ReadbackResolveMode ParseReadbackResolveMode(const std::string& mode) {
   if (mode == "full") {
     return ReadbackResolveMode::kFull;
   } else if (mode == "none") {
@@ -123,12 +130,7 @@ ReadbackResolveMode GetReadbackResolveMode() {
   }
 }
 
-void SetReadbackResolveMode(const std::string& mode) {
-  OVERRIDE_string(readback_resolve, mode);
-}
-
-ZPDMode GetZPDMode() {
-  const std::string& mode = cvars::occlusion_query;
+ZPDMode ParseZPDMode(const std::string& mode) {
   if (mode == "fake") {
     return ZPDMode::kFake;
   } else if (mode == "strict") {
@@ -138,9 +140,35 @@ ZPDMode GetZPDMode() {
   }
   return ZPDMode::kFast;
 }
+}  // namespace
+
+ReadbackResolveMode GetReadbackResolveMode() {
+  int cached = readback_resolve_mode_cache.load(std::memory_order_relaxed);
+  if (XE_UNLIKELY(cached < 0)) {
+    cached = int(ParseReadbackResolveMode(cvars::readback_resolve));
+    readback_resolve_mode_cache.store(cached, std::memory_order_relaxed);
+  }
+  return ReadbackResolveMode(cached);
+}
+
+void SetReadbackResolveMode(const std::string& mode) {
+  OVERRIDE_string(readback_resolve, mode);
+  readback_resolve_mode_cache.store(int(ParseReadbackResolveMode(mode)),
+                                    std::memory_order_relaxed);
+}
+
+ZPDMode GetZPDMode() {
+  int cached = zpd_mode_cache.load(std::memory_order_relaxed);
+  if (XE_UNLIKELY(cached < 0)) {
+    cached = int(ParseZPDMode(cvars::occlusion_query));
+    zpd_mode_cache.store(cached, std::memory_order_relaxed);
+  }
+  return ZPDMode(cached);
+}
 
 void SetZPDMode(const std::string& mode) {
   OVERRIDE_string(occlusion_query, mode);
+  zpd_mode_cache.store(int(ParseZPDMode(mode)), std::memory_order_relaxed);
 }
 
 using namespace xe::gpu::xenos;
