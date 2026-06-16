@@ -87,6 +87,12 @@ DEFINE_transient_bool(portable, false,
                       "General");
 
 DECLARE_bool(debug);
+// Defined in xenia/ui/presenter.cc. On Android this MUST be true: when false the
+// Presenter routes to kUIThreadOnRequest (presenter.cc), whose fire-and-forget
+// request_paint() never wakes the UI loop here, so guest frames never present
+// (black screen with working CPU/audio). We force it true after config load so a
+// stale/edited global config can't black-screen the app.
+DECLARE_bool(host_present_from_non_ui_thread);
 
 DEFINE_bool(discord, false, "Enable Discord rich presence", "General");
 
@@ -289,6 +295,11 @@ bool EmulatorApp::OnInitialize() {
     XELOGI("Storage root: {}", storage_root.c_str());
 
     config::SetupConfig(storage_root);
+
+    // Android has no UI-thread paint pump that the kUIThreadOnRequest present mode
+    // needs, so this must be true regardless of what the (possibly stale/edited)
+    // global config says -- otherwise nothing presents (black screen, audio/input OK).
+    cvars::host_present_from_non_ui_thread = true;
 
 #if XE_ARCH_AMD64 == 1
     xe::amd64::InitFeatureFlags();

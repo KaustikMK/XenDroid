@@ -107,7 +107,9 @@ object SettingsSchema {
             b("Display", "present_render_pass_clear", "Present render-pass clear", true),
             l("Display", "postprocess_antialiasing", "Antialiasing", "",
                 "none" to "none", "fxaa" to "fxaa", "fxaa_extreme" to "fxaa_extreme"), // "" => none
-            b("Display", "host_present_from_non_ui_thread", "Host present from non-UI thread", true),
+            // host_present_from_non_ui_thread intentionally NOT exposed: it MUST be true on
+            // Android (forced in ax360e_emu.cpp after config load) -- false black-screens the
+            // app, so there is no valid user choice to make.
             b("Display", "fullscreen", "Fullscreen", false),
             b("Display", "show_debug_overlay", "Show debug overlay", false),
         )),
