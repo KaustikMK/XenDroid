@@ -7,6 +7,8 @@
  ******************************************************************************
  */
 
+#include <set>
+
 #include "xenia/base/threading.h"
 
 #include "xenia/base/assert.h"
@@ -290,7 +292,7 @@ class PosixConditionBase {
   virtual ~PosixConditionBase() = default;
   virtual bool Signal() = 0;
 
-  WaitResult Wait(std::chrono::milliseconds timeout) {
+  virtual WaitResult Wait(std::chrono::milliseconds timeout) {
     bool executed;
     auto predicate = [this] { return this->signaled(); };
 
@@ -517,14 +519,68 @@ class PosixCondition<Semaphore> final : public PosixConditionBase {
     return true;
   }
 
+  // Guest semaphores need NT acquisition semantics: a release satisfies
+  // ALREADY-WAITING threads before any later acquirer - KeReleaseSemaphore
+  // hands the count to parked waiters inside the dispatcher lock, so a wait
+  // issued after the release can never overtake one issued before it.
+  // A bare count + wake-and-repoll lets a fresh waiter steal tokens from
+  // parked threads, which deadlocks titles whose thread pools depend on
+  // one-wake-per-release-per-waiter (Ninja Gaiden 2's job system: a greedy
+  // re-parking worker consumed every token of a batch while its peers,
+  // already blocked, never woke). Tickets enforce strict FIFO.
+  WaitResult Wait(std::chrono::milliseconds timeout) override {
+    std::unique_lock<std::mutex> lock(mutex_);
+    const uint64_t ticket = next_ticket_++;
+    auto predicate = [this, ticket] {
+      return count_ > 0 && serve_ticket_ == ticket;
+    };
+    bool executed;
+    if (predicate()) {
+      executed = true;
+    } else if (timeout == std::chrono::milliseconds::max()) {
+      cond_.wait(lock, predicate);
+      executed = true;
+    } else {
+      executed = cond_.wait_for(lock, timeout, predicate);
+    }
+    if (executed) {
+      count_--;
+      AdvanceServeTicket();
+      return WaitResult::kSuccess;
+    }
+    // Timed out: withdraw from the queue so later tickets can be served.
+    if (ticket == serve_ticket_) {
+      AdvanceServeTicket();
+    } else {
+      abandoned_tickets_.insert(ticket);
+    }
+    return WaitResult::kTimeout;
+  }
+
  private:
-  [[nodiscard]] bool signaled() const override { return count_ > 0; }
+  void AdvanceServeTicket() {
+    ++serve_ticket_;
+    while (abandoned_tickets_.erase(serve_ticket_)) {
+      ++serve_ticket_;
+    }
+    cond_.notify_all();
+  }
+
+  // For multi-object waits (which bypass the ticket queue): only report
+  // signaled when no single-object waiter is queued ahead, so a multi-wait
+  // cannot steal a parked waiter's token either.
+  [[nodiscard]] bool signaled() const override {
+    return count_ > 0 && next_ticket_ == serve_ticket_;
+  }
   void post_execution() override {
     count_--;
     cond_.notify_all();
   }
   uint32_t count_;
   const uint32_t maximum_count_;
+  uint64_t next_ticket_ = 0;
+  uint64_t serve_ticket_ = 0;
+  std::set<uint64_t> abandoned_tickets_;
 };
 
 template <>
