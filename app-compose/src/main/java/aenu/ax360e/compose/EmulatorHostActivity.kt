@@ -27,10 +27,14 @@ import android.widget.Toast
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.preference.PreferenceManager
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.Text
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -39,6 +43,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.viewinterop.AndroidView
+import aenu.ax360e.compose.ui.theme.Ax360eTheme
 import aenu.ax360e.compose.gamepad.GamepadConfigDto
 import aenu.ax360e.compose.gamepad.GamepadController
 import aenu.ax360e.compose.gamepad.GamepadOverlay
@@ -83,6 +88,7 @@ class EmulatorHostActivity : ComponentActivity(), SurfaceHolder.Callback {
     private var hapticsEnabled = false
     private val bootedState = mutableStateOf(false)   // gates the overlay (post-boot only)
     private val showFpsOverlay = mutableStateOf(false) // Display|show_debug_overlay (native TOML config)
+    private val menuOpenState = mutableStateOf(false)  // in-game menu (back pauses + shows Quit)
 
     // User hardware-key bindings (Android keycode -> game KEY_CODE), loaded from
     // KeymapStore in onCreate; falls back to GameButtons.DEFAULT_LOOKUP until loaded.
@@ -231,6 +237,24 @@ class EmulatorHostActivity : ComponentActivity(), SurfaceHolder.Callback {
                         modifier = Modifier.fillMaxSize(),
                     )
                 }
+
+                // In-game menu: back / swipe-back PAUSES the game and opens a menu (Quit) instead
+                // of leaving to the library. The dialog itself catches back / tap-outside -> resume.
+                val menuOpen by menuOpenState
+                BackHandler(enabled = !menuOpen) {
+                    menuOpenState.value = true
+                    if (session.booted) session.pause()
+                }
+                if (menuOpen) Ax360eTheme {
+                    AlertDialog(
+                        onDismissRequest = {
+                            menuOpenState.value = false
+                            if (session.booted) session.resumeIfPaused()
+                        },
+                        title = { Text("Paused") },
+                        confirmButton = { Button(onClick = { finish() }) { Text("Quit") } },
+                    )
+                }
             }
         }
         setContentView(compose)
@@ -266,8 +290,9 @@ class EmulatorHostActivity : ComponentActivity(), SurfaceHolder.Callback {
             }
         } else {
             // Post-rotation/background re-create: re-attach, resume; NEVER boot again.
+            // Stay paused if the in-game menu is open.
             session.attachSurface(holder.surface)
-            session.resumeIfPaused()
+            if (!menuOpenState.value) session.resumeIfPaused()
         }
     }
 
@@ -305,8 +330,9 @@ class EmulatorHostActivity : ComponentActivity(), SurfaceHolder.Callback {
         // Mirror of onStop. resumeIfPaused() (not bare resume) stays idempotent: the
         // swapchain-recreate path already calls resumeIfPaused() in surfaceCreated
         // (line 246), so this second call is a no-op there; onStart additionally covers
-        // the pure screen-sleep case where the surface was NOT destroyed.
-        if (session.booted) session.resumeIfPaused()
+        // the pure screen-sleep case where the surface was NOT destroyed. Stay paused if the
+        // in-game menu is open (don't run the game behind the menu after returning).
+        if (session.booted && !menuOpenState.value) session.resumeIfPaused()
     }
 
     override fun onDestroy() {
