@@ -40,15 +40,6 @@ fun KeymapScreen(vm: KeymapViewModel, onBack: () -> Unit) {
         }
     ) { padding ->
         LazyColumn(Modifier.fillMaxSize().padding(padding)) {
-            item {
-                ListItem(
-                    headlineContent = { Text("Enable vibration") },
-                    trailingContent = {
-                        Switch(checked = state.vibrate, onCheckedChange = { vm.onVibrateChanged(it) })
-                    },
-                )
-                HorizontalDivider()
-            }
             items(state.rows, key = { it.button.index }) { row ->
                 ListItem(
                     headlineContent = { Text(row.button.label) },

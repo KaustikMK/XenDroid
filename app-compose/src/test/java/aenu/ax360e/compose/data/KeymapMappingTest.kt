@@ -48,10 +48,10 @@ class KeymapMappingTest {
         assertTrue(out.containsKey(KeyEvent.KEYCODE_BUTTON_A))  // others untouched
     }
 
-    @Test fun binding_a_trigger_adds_it_to_the_lookup() {
-        // Index 14 (Left Trigger) is unbound by default; bind it to L2.
-        val out = androidToGameKey(mapOf(14 to KeyEvent.KEYCODE_BUTTON_L2))
-        assertEquals(14, out[KeyEvent.KEYCODE_BUTTON_L2])
+    @Test fun rebinding_a_trigger_updates_the_lookup() {
+        // Index 14 (Left Trigger) defaults to L2; rebinding it to R1 maps R1 -> game 14.
+        val out = androidToGameKey(mapOf(14 to KeyEvent.KEYCODE_BUTTON_R1))
+        assertEquals(14, out[KeyEvent.KEYCODE_BUTTON_R1])
     }
 
     @Test fun readBindings_default_fills_absent_indices() {
@@ -59,6 +59,6 @@ class KeymapMappingTest {
         assertEquals(16, out.size)
         assertEquals(KeyEvent.KEYCODE_SPACE, out[0])                       // overridden
         assertEquals(KeyEvent.KEYCODE_BUTTON_A, out[4])                    // default-filled
-        assertEquals(0, out[14])                                           // trigger default
+        assertEquals(KeyEvent.KEYCODE_BUTTON_L2, out[14])                  // left trigger -> L2
     }
 }

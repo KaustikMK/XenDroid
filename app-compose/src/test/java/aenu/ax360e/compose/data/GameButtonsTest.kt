@@ -21,15 +21,15 @@ class GameButtonsTest {
         }
     }
 
-    @Test fun triggers_are_unbound_by_default() {
-        // KeyMapConfig.DEFAULT_KEYMAPPERS indices 14/15 == 0 (Left/Right Trigger).
-        assertEquals(0, GameButtons.ALL[14].defaultAndroidKey)
-        assertEquals(0, GameButtons.ALL[15].defaultAndroidKey)
+    @Test fun triggers_default_to_l2_r2() {
+        // Left/Right Trigger (game 14/15) bind to the physical triggers KEYCODE_BUTTON_L2/R2.
+        assertEquals(KeyEvent.KEYCODE_BUTTON_L2, GameButtons.ALL[14].defaultAndroidKey)
+        assertEquals(KeyEvent.KEYCODE_BUTTON_R2, GameButtons.ALL[15].defaultAndroidKey)
     }
 
-    @Test fun default_lookup_drops_unbound_triggers() {
-        // 14 bound buttons; the 2 triggers (default 0) are excluded.
-        assertEquals(14, GameButtons.DEFAULT_LOOKUP.size)
+    @Test fun default_lookup_binds_all_sixteen() {
+        // All 16 controls have a distinct Android keycode now (nothing left unbound).
+        assertEquals(16, GameButtons.DEFAULT_LOOKUP.size)
         assertFalse(GameButtons.DEFAULT_LOOKUP.containsKey(0))
     }
 
@@ -40,11 +40,13 @@ class GameButtonsTest {
         assertEquals(11, GameButtons.DEFAULT_LOOKUP[KeyEvent.KEYCODE_BUTTON_R1])
     }
 
-    @Test fun l2_r2_default_to_thumb_press_not_triggers() {
-        // Legacy default: KEYCODE_BUTTON_L2/R2 (104/105) -> Left/Right Thumb Press
-        // (game KEY_CODE 12/13), NOT the triggers.
-        assertEquals(12, GameButtons.DEFAULT_LOOKUP[KeyEvent.KEYCODE_BUTTON_L2])
-        assertEquals(13, GameButtons.DEFAULT_LOOKUP[KeyEvent.KEYCODE_BUTTON_R2])
+    @Test fun l2_r2_are_triggers_and_stick_clicks_are_thumb_press() {
+        // KEYCODE_BUTTON_L2/R2 (104/105) -> Left/Right Trigger (game 14/15).
+        assertEquals(14, GameButtons.DEFAULT_LOOKUP[KeyEvent.KEYCODE_BUTTON_L2])
+        assertEquals(15, GameButtons.DEFAULT_LOOKUP[KeyEvent.KEYCODE_BUTTON_R2])
+        // Stick clicks (THUMBL/THUMBR, 106/107) -> Left/Right Thumb Press (game 12/13).
+        assertEquals(12, GameButtons.DEFAULT_LOOKUP[KeyEvent.KEYCODE_BUTTON_THUMBL])
+        assertEquals(13, GameButtons.DEFAULT_LOOKUP[KeyEvent.KEYCODE_BUTTON_THUMBR])
     }
 
     @Test fun every_button_has_a_label() =

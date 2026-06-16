@@ -30,13 +30,13 @@ object GameButtons {
         GameButton(9,  9,  KeyEvent.KEYCODE_BUTTON_START,  "Start"),   // 108
         GameButton(10, 10, KeyEvent.KEYCODE_BUTTON_L1,  "Left Shoulder"),  // 102
         GameButton(11, 11, KeyEvent.KEYCODE_BUTTON_R1,  "Right Shoulder"), // 103
-        GameButton(12, 12, KeyEvent.KEYCODE_BUTTON_L2,  "Left Thumb Press"),  // 104
-        GameButton(13, 13, KeyEvent.KEYCODE_BUTTON_R2,  "Right Thumb Press"), // 105
-        GameButton(14, 14, 0, "Left Trigger"),   // unbound by default
-        GameButton(15, 15, 0, "Right Trigger"),  // unbound by default
+        GameButton(12, 12, KeyEvent.KEYCODE_BUTTON_THUMBL, "Left Thumb Press"),  // 106 (L3 stick click)
+        GameButton(13, 13, KeyEvent.KEYCODE_BUTTON_THUMBR, "Right Thumb Press"), // 107 (R3 stick click)
+        GameButton(14, 14, KeyEvent.KEYCODE_BUTTON_L2,  "Left Trigger"),   // 104 (L2; also via AXIS_LTRIGGER)
+        GameButton(15, 15, KeyEvent.KEYCODE_BUTTON_R2,  "Right Trigger"),  // 105 (R2; also via AXIS_RTRIGGER)
     )
 
-    /** Default Android-keycode -> game KEY_CODE map (drops the two unbound triggers). */
+    /** Default Android-keycode -> game KEY_CODE map (skips any control left unbound, i.e. key 0). */
     val DEFAULT_LOOKUP: Map<Int, Int> =
         ALL.filter { it.defaultAndroidKey != 0 }
             .associate { it.defaultAndroidKey to it.keyCode }

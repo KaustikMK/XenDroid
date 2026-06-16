@@ -87,8 +87,10 @@ class EmulatorHostActivity : ComponentActivity(), SurfaceHolder.Callback {
     // User hardware-key bindings (Android keycode -> game KEY_CODE), loaded from
     // KeymapStore in onCreate; falls back to GameButtons.DEFAULT_LOOKUP until loaded.
     @Volatile private var keyMap: Map<Int, Int> = aenu.ax360e.compose.data.GameButtons.DEFAULT_LOOKUP
-    @Volatile private var vibrateEnabled: Boolean = false
     private var vibrator: android.os.Vibrator? = null
+    // Edge-detect state for analog triggers reported as axes (emit a digital press on threshold).
+    private var lTriggerDown = false
+    private var rTriggerDown = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -114,17 +116,15 @@ class EmulatorHostActivity : ComponentActivity(), SurfaceHolder.Callback {
         // actual native setup_* calls are marshaled back to the main thread.
         lifecycleScope.launch {
             val store = aenu.ax360e.compose.data.KeymapStore(applicationContext)
-            val (loadedMap, loadedVibrate, treeUri) = withContext(Dispatchers.IO) {
+            val (loadedMap, treeUri) = withContext(Dispatchers.IO) {
                 EmulatorRuntime.ensureLoaded()            // idempotent; lazy on Adreno 5xx/6xx
-                Triple(
+                Pair(
                     store.androidToGameKey.firstOrNull()
                         ?: aenu.ax360e.compose.data.GameButtons.DEFAULT_LOOKUP,
-                    store.vibrateEnabled.firstOrNull() ?: false,
                     readGameDirTreeUri(),
                 )
             }
             keyMap = loadedMap
-            vibrateEnabled = loadedVibrate
             // FPS overlay gate: SP2 settings live in the native TOML Config (NOT
             // SharedPreferences). Read the Display|show_debug_overlay boolean off-main
             // via ConfigStore so the existing settings toggle drives overlay visibility.
@@ -320,7 +320,6 @@ class EmulatorHostActivity : ComponentActivity(), SurfaceHolder.Callback {
         val gameKey = keyMap[keyCode] ?: return super.onKeyDown(keyCode, event)
         if (event.repeatCount == 0) {
             session.keyEvent(gameKey, true, KEY_VALUE_UNUSED)
-            vibrate()
             return true
         }
         return super.onKeyDown(keyCode, event)            // ignore auto-repeats
@@ -348,7 +347,22 @@ class EmulatorHostActivity : ComponentActivity(), SurfaceHolder.Callback {
             negKey = KC_RTHUMB_LEFT, posKey = KC_RTHUMB_RIGHT, invert = false)
         emitAxisPair(event.getAxisValue(MotionEvent.AXIS_RZ),
             negKey = KC_RTHUMB_UP, posKey = KC_RTHUMB_DOWN, invert = true)
+        // Triggers: digital game keys, but most pads report them as ANALOG axes (LTRIGGER/RTRIGGER,
+        // or BRAKE/GAS on others). Emit a press past the threshold, edge-detected so we don't spam.
+        lTriggerDown = emitTrigger(
+            maxOf(event.getAxisValue(MotionEvent.AXIS_LTRIGGER), event.getAxisValue(MotionEvent.AXIS_BRAKE)),
+            KC_TRIGGER_L, lTriggerDown)
+        rTriggerDown = emitTrigger(
+            maxOf(event.getAxisValue(MotionEvent.AXIS_RTRIGGER), event.getAxisValue(MotionEvent.AXIS_GAS)),
+            KC_TRIGGER_R, rTriggerDown)
         return true
+    }
+
+    /** Analog trigger -> digital game key. Emits only on the down/up edge (>0.5 = down). */
+    private fun emitTrigger(value: Float, gameKey: Int, wasDown: Boolean): Boolean {
+        val down = value > 0.5f
+        if (down != wasDown) session.keyEvent(gameKey, down, KEY_VALUE_UNUSED)
+        return down
     }
 
     /** For one axis emit the opposing thumb directions, scaled to signed-short range.
@@ -397,17 +411,6 @@ class EmulatorHostActivity : ComponentActivity(), SurfaceHolder.Callback {
     private fun dpad(pressCode: Int, releaseCode: Int) {
         session.keyEvent(pressCode, true, KEY_VALUE_UNUSED)
         session.keyEvent(releaseCode, false, KEY_VALUE_UNUSED)
-    }
-
-    private fun vibrate() {
-        if (!vibrateEnabled) return
-        val v = vibrator ?: (getSystemService(android.content.Context.VIBRATOR_SERVICE)
-            as? android.os.Vibrator)?.also { vibrator = it } ?: return
-        @Suppress("DEPRECATION")
-        v.vibrate(
-            android.os.VibrationEffect.createOneShot(25L,
-                android.os.VibrationEffect.DEFAULT_AMPLITUDE)
-        )
     }
 
     /** Legacy isDpadDevice: TRUE when the device is NOT a SOURCE_DPAD (i.e. treat as
