@@ -268,8 +268,9 @@ bool VulkanRenderTargetCache::Initialize(uint32_t shared_memory_binding_count) {
   VkFormatProperties depth_unorm24_properties;
   ifn.vkGetPhysicalDeviceFormatProperties(
       physical_device, VK_FORMAT_D24_UNORM_S8_UINT, &depth_unorm24_properties);
+  // Cache only the device-support half; the vulkan_depth_unorm24 cvar is
+  // applied live in the accessor so it can be overridden per-game.
   depth_unorm24_vulkan_format_supported_ =
-      cvars::vulkan_depth_unorm24 &&
       (depth_unorm24_properties.optimalTilingFeatures &
        kUsedDepthFormatFeatures) == kUsedDepthFormatFeatures;
   XELOGGPU(
