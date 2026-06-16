@@ -1,0 +1,54 @@
+plugins {
+    alias(libs.plugins.android.application)
+    alias(libs.plugins.kotlin.android)
+    alias(libs.plugins.compose.compiler)
+}
+
+// New Kotlin/Jetpack-Compose frontend. Depends on :emulator-core for the native
+// build (libe.so) + JNI boundary. Distinct applicationId so it installs alongside
+// the legacy build during the rewrite.
+android {
+    namespace 'aenu.ax360e.compose'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId 'aenu.ax360e.compose'
+        // 29+ matches :emulator-core (native ELF TLS in libe.so).
+        minSdk 29
+        targetSdk 35
+        versionCode 1
+        versionName '0.1'
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_11
+        targetCompatibility JavaVersion.VERSION_11
+    }
+    kotlinOptions {
+        jvmTarget = '11'
+    }
+    buildFeatures {
+        compose true
+    }
+    packaging {
+        // libe.so from :emulator-core is stored uncompressed (matches core).
+        jniLibs.useLegacyPackaging = true
+        resources {
+            excludes += '/META-INF/{AL2.0,LGPL2.1}'
+        }
+    }
+}
+
+dependencies {
+    implementation project(':emulator-core')
+
+    implementation platform(libs.compose.bom)
+    implementation libs.compose.ui
+    implementation libs.compose.ui.graphics
+    implementation libs.compose.ui.tooling.preview
+    implementation libs.compose.material3
+    implementation libs.androidx.activity.compose
+    implementation libs.androidx.navigation.compose
+    implementation libs.androidx.lifecycle.viewmodel.compose
+    debugImplementation libs.compose.ui.tooling
+}

@@ -74,16 +74,7 @@
             android:theme="@android:style/Theme.NoTitleBar.Fullscreen"
             android:launchMode="singleTask"/>
         <activity android:name="aenu.ax360e.AboutActivity" android:exported="false" android:label="@string/about"> </activity>
-        <provider
-            android:name="aenu.ax360e.DocumentsProvider"
-            android:authorities="${applicationId}.DocumentsProvider"
-            android:exported="true"
-            android:grantUriPermissions="true"
-            android:permission="android.permission.MANAGE_DOCUMENTS">
-            <intent-filter>
-                <action android:name="android.content.action.DOCUMENTS_PROVIDER" />
-            </intent-filter>
-        </provider>
+        <!-- DocumentsProvider now declared in :emulator-core's library manifest (merged in). -->
 
     </application>
 

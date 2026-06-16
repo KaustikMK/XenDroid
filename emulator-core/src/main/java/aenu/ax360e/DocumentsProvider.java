@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: WTFPL
 package aenu.ax360e;
 
+// R lives in the module namespace (aenu.ax360e.core), not this file's package.
+import aenu.ax360e.core.R;
+
 import static android.os.Build.VERSION.SDK_INT;
 
 import android.content.res.AssetFileDescriptor;

@@ -18,7 +18,7 @@ aps3e.jks
 app/build.gradle
 app/release/
 app/.cxx/
-app/src/main/cpp/bin/
+emulator-core/src/main/cpp/bin/
 app/build.gradle
 
 # ==============================================================================
@@ -86,10 +86,10 @@ obj/
 *.aps
 
 # Generated shader bytecode
-app/src/main/cpp/xenia-canary/src/xenia/gpu/shaders/bytecode/d3d12_5_1/
-app/src/main/cpp/xenia-canary/src/xenia/gpu/shaders/bytecode/vulkan_spirv/
-app/src/main/cpp/xenia-canary/src/xenia/ui/shaders/bytecode/d3d12_5_1/
-app/src/main/cpp/xenia-canary/src/xenia/ui/shaders/bytecode/vulkan_spirv/
+emulator-core/src/main/cpp/xenia-canary/src/xenia/gpu/shaders/bytecode/d3d12_5_1/
+emulator-core/src/main/cpp/xenia-canary/src/xenia/gpu/shaders/bytecode/vulkan_spirv/
+emulator-core/src/main/cpp/xenia-canary/src/xenia/ui/shaders/bytecode/d3d12_5_1/
+emulator-core/src/main/cpp/xenia-canary/src/xenia/ui/shaders/bytecode/vulkan_spirv/
 
 # ==============================================================================
 # Logs and dumps
@@ -123,45 +123,49 @@ node_modules/.bin/
 # ==============================================================================
 
 .vagrant
-app/src/main/cpp/xenia-canary/attic/
-app/src/main/cpp/xenia-canary/content/
-app/src/main/cpp/xenia-canary/third_party/binutils/binutils-2.24.tar.gz
-app/src/main/cpp/xenia-canary/third_party/binutils/binutils-2.24/
-app/src/main/cpp/xenia-canary/third_party/binutils/bin/
-app/src/main/cpp/xenia-canary/third_party/binutils/powerpc-none-elf/
-app/src/main/cpp/xenia-canary/third_party/binutils/share/
-app/src/main/cpp/xenia-canary/third_party/vasm/
-app/src/main/cpp/xenia-canary/tools/shader-playground/*.dll
-app/src/main/cpp/xenia-canary/profile_print_times.py
-app/src/main/cpp/xenia-canary/profile_times.txt
-app/src/main/cpp/xenia-canary/cache
-app/src/main/cpp/xenia-canary/cache1
-app/src/main/cpp/xenia-canary/cache0
-app/src/main/cpp/xenia-canary/devkit
-app/src/main/cpp/xenia-canary/recent.toml
+emulator-core/src/main/cpp/xenia-canary/attic/
+emulator-core/src/main/cpp/xenia-canary/content/
+emulator-core/src/main/cpp/xenia-canary/third_party/binutils/binutils-2.24.tar.gz
+emulator-core/src/main/cpp/xenia-canary/third_party/binutils/binutils-2.24/
+emulator-core/src/main/cpp/xenia-canary/third_party/binutils/bin/
+emulator-core/src/main/cpp/xenia-canary/third_party/binutils/powerpc-none-elf/
+emulator-core/src/main/cpp/xenia-canary/third_party/binutils/share/
+emulator-core/src/main/cpp/xenia-canary/third_party/vasm/
+emulator-core/src/main/cpp/xenia-canary/tools/shader-playground/*.dll
+emulator-core/src/main/cpp/xenia-canary/profile_print_times.py
+emulator-core/src/main/cpp/xenia-canary/profile_times.txt
+emulator-core/src/main/cpp/xenia-canary/cache
+emulator-core/src/main/cpp/xenia-canary/cache1
+emulator-core/src/main/cpp/xenia-canary/cache0
+emulator-core/src/main/cpp/xenia-canary/devkit
+emulator-core/src/main/cpp/xenia-canary/recent.toml
 
 
 *.tlog
-/app/src/main/cpp/xenia-canary/third_party/snappy/CMakeFiles/
+/emulator-core/src/main/cpp/xenia-canary/third_party/snappy/CMakeFiles/
 # Ignore snappy's in-source CMake build outputs, but KEEP the upstream source
 # templates (config.h.in / SnappyConfig.cmake.in) -- they are required build
 # inputs, and ignoring the whole cmake/ dir dropped them from history, breaking
 # fresh checkouts/worktrees.
-/app/src/main/cpp/xenia-canary/third_party/snappy/cmake/*
-!/app/src/main/cpp/xenia-canary/third_party/snappy/cmake/config.h.in
-!/app/src/main/cpp/xenia-canary/third_party/snappy/cmake/SnappyConfig.cmake.in
-/app/src/main/cpp/xenia-canary/third_party/snappy/ALL_BUILD.vcxproj
-/app/src/main/cpp/xenia-canary/third_party/snappy/ALL_BUILD.vcxproj.filters
-/app/src/main/cpp/xenia-canary/third_party/snappy/cmake_install.cmake
-/app/src/main/cpp/xenia-canary/third_party/snappy/CMakeCache.txt
-/app/src/main/cpp/xenia-canary/third_party/snappy/INSTALL.vcxproj
-/app/src/main/cpp/xenia-canary/third_party/snappy/INSTALL.vcxproj.filters
-/app/src/main/cpp/xenia-canary/third_party/snappy/Snappy.sln
-/app/src/main/cpp/xenia-canary/third_party/snappy/snappy.vcxproj
-/app/src/main/cpp/xenia-canary/third_party/snappy/snappy.vcxproj.filters
-/app/src/main/cpp/xenia-canary/third_party/snappy/snappy-stubs-public.h
-/app/src/main/cpp/xenia-canary/third_party/snappy/ZERO_CHECK.vcxproj
-/app/src/main/cpp/xenia-canary/third_party/snappy/ZERO_CHECK.vcxproj.filters
+/emulator-core/src/main/cpp/xenia-canary/third_party/snappy/cmake/*
+!/emulator-core/src/main/cpp/xenia-canary/third_party/snappy/cmake/config.h.in
+!/emulator-core/src/main/cpp/xenia-canary/third_party/snappy/cmake/SnappyConfig.cmake.in
+/emulator-core/src/main/cpp/xenia-canary/third_party/snappy/ALL_BUILD.vcxproj
+/emulator-core/src/main/cpp/xenia-canary/third_party/snappy/ALL_BUILD.vcxproj.filters
+/emulator-core/src/main/cpp/xenia-canary/third_party/snappy/cmake_install.cmake
+/emulator-core/src/main/cpp/xenia-canary/third_party/snappy/CMakeCache.txt
+/emulator-core/src/main/cpp/xenia-canary/third_party/snappy/INSTALL.vcxproj
+/emulator-core/src/main/cpp/xenia-canary/third_party/snappy/INSTALL.vcxproj.filters
+/emulator-core/src/main/cpp/xenia-canary/third_party/snappy/Snappy.sln
+/emulator-core/src/main/cpp/xenia-canary/third_party/snappy/snappy.vcxproj
+/emulator-core/src/main/cpp/xenia-canary/third_party/snappy/snappy.vcxproj.filters
+/emulator-core/src/main/cpp/xenia-canary/third_party/snappy/snappy-stubs-public.h
+/emulator-core/src/main/cpp/xenia-canary/third_party/snappy/ZERO_CHECK.vcxproj
+/emulator-core/src/main/cpp/xenia-canary/third_party/snappy/ZERO_CHECK.vcxproj.filters
+
+# Module build outputs / caches (root /build is anchored; per-module dirs need their own rules)
+/binary_cache/
+emulator-core/src/main/cpp/xenia-canary/third_party/snappy/Makefile
 
 # Git worktrees (isolated workspaces)
 .worktrees/
