@@ -152,6 +152,15 @@ fun GamepadOverlay(
                 }
             }
     ) {
+        // Auto-hidden (alpha animated to 0): emit NO draw ops. The overlay stays MOUNTED
+        // (pointerInput above keeps catching the wake tap / held-release), but the Canvas
+        // must not record a full-screen layer of alpha-0 shapes -- that keeps the host
+        // ComposeView window content-bearing, so SurfaceFlinger GPU-composites it over the
+        // game SurfaceView EVERY refresh, forever. That is the "slight, constant" stutter:
+        // legacy parity was the empty host window (its gamepad was a separate SurfaceView).
+        // Skipping draws here leaves the window transparent -> the present is punched
+        // straight through to the game layer, no per-frame blend.
+        if (opacity <= 0.01f) return@Canvas
         // Reverse lookup: claimed control id -> active pointer position (for stick knob).
         val activePos: (ControlId) -> Offset? = { id ->
             claims.entries.lastOrNull { it.value == id }?.key?.let { pointerPos[it] }
