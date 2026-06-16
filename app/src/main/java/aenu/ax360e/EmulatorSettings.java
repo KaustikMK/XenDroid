@@ -220,6 +220,14 @@ public class EmulatorSettings extends AppCompatActivity {
             requireActivity().getOnBackPressedDispatcher().addCallback(back_callback);
 
             if(!new File(config_path).exists()){
+                // First run: the config file is normally created by the
+                // native emulator on the first game launch. Bootstrap it from
+                // the bundled default template (same source as the "reset to
+                // default" action) so settings are editable immediately.
+                Utils.copy_file(Application.get_default_config_file(),
+                        new File(config_path));
+            }
+            if(!new File(config_path).exists()){
                 root_pref.setEnabled(false);
                 Toast.makeText(requireContext(), config_path, Toast.LENGTH_LONG).show();
                 return;
