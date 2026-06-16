@@ -944,6 +944,28 @@ dword_result_t NtCancelTimer_entry(dword_t timer_handle,
 }
 DECLARE_XBOXKRNL_EXPORT1(NtCancelTimer, kThreading, kImplemented);
 
+// NT semantics: a user APC already queued to this thread satisfies an
+// alertable wait immediately - the APC(s) run first and the wait returns
+// X_STATUS_USER_APC without blocking. KeDelayExecutionThread already does
+// this; the event waits must too. On POSIX hosts this entry drain is the
+// ONLY reliable delivery point: threading_posix's user-callback signal is
+// dropped when it lands outside an alertable region and its Wait() never
+// returns kUserCallback, so an APC a thread queues to itself (e.g. the
+// NtReadFile completion APC Fable II's VFS request manager relies on) would
+// otherwise never be delivered and the title deadlocks at boot.
+static X_STATUS xeDrainUserApcsOnAlertableWaitEntry() {
+  // Guest threads only: host threads executing guest callbacks (audio
+  // worker, GPU command processor) don't own the KPCR/guest-stack state
+  // xeProcessUserApcs borrows, and draining there wedges them inside the
+  // title's runtime (observed: Fable II's XAudio engine killing the audio
+  // worker at boot).
+  auto* thread = XThread::GetCurrentThread();
+  if (!thread || !thread->is_guest_thread()) {
+    return X_STATUS_SUCCESS;
+  }
+  return xeProcessUserApcs(nullptr);
+}
+
 uint32_t xeKeWaitForSingleObject(void* object_ptr, uint32_t wait_reason,
                                  uint32_t processor_mode, uint32_t alertable,
                                  uint64_t* timeout_ptr) {
@@ -953,6 +975,12 @@ uint32_t xeKeWaitForSingleObject(void* object_ptr, uint32_t wait_reason,
     // The only kind-of failure code (though this should never happen)
     assert_always();
     return X_STATUS_ABANDONED_WAIT_0;
+  }
+
+  if (alertable) {
+    if (xeDrainUserApcsOnAlertableWaitEntry() == X_STATUS_USER_APC) {
+      return X_STATUS_USER_APC;
+    }
   }
 
   X_STATUS result =
@@ -984,6 +1012,13 @@ uint32_t NtWaitForSingleObjectEx(uint32_t object_handle, uint32_t wait_mode,
   auto object =
       kernel_state()->object_table()->LookupObject<XObject>(object_handle);
   if (object) {
+    if (alertable) {
+      // See xeDrainUserApcsOnAlertableWaitEntry: pending user APCs satisfy
+      // an alertable wait on entry (and are the only POSIX delivery point).
+      if (xeDrainUserApcsOnAlertableWaitEntry() == X_STATUS_USER_APC) {
+        return X_STATUS_USER_APC;
+      }
+    }
     uint64_t timeout = timeout_ptr ? static_cast<uint64_t>(*timeout_ptr) : 0u;
     result =
         object->Wait(3, wait_mode, alertable, timeout_ptr ? &timeout : nullptr);
@@ -1015,6 +1050,13 @@ dword_result_t KeWaitForMultipleObjects_entry(
     dword_t wait_reason, dword_t processor_mode, dword_t alertable,
     lpqword_t timeout_ptr, lpvoid_t wait_block_array_ptr) {
   assert_true(wait_type <= X_KWAIT_REASON::WaitAny);
+
+  if (alertable) {
+    // See xeDrainUserApcsOnAlertableWaitEntry.
+    if (xeDrainUserApcsOnAlertableWaitEntry() == X_STATUS_USER_APC) {
+      return X_STATUS_USER_APC;
+    }
+  }
 
   assert_true(count <= 64);
   object_ref<XObject> objects[64];
@@ -1050,6 +1092,13 @@ uint32_t xeNtWaitForMultipleObjectsEx(uint32_t count, xe::be<uint32_t>* handles,
                                       uint32_t alertable,
                                       uint64_t* timeout_ptr) {
   assert_true(wait_type <= X_KWAIT_REASON::WaitAny);
+
+  if (alertable) {
+    // See xeDrainUserApcsOnAlertableWaitEntry.
+    if (xeDrainUserApcsOnAlertableWaitEntry() == X_STATUS_USER_APC) {
+      return X_STATUS_USER_APC;
+    }
+  }
 
   assert_true(count <= 64);
   object_ref<XObject> objects[64];
