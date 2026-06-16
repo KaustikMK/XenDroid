@@ -84,27 +84,34 @@ class GamepadEmitterTest {
         )
     }
 
+    // nx,ny normalized to [-1,1] across the pad; 3x3 grid (outer third = arm, center neutral).
     @Test
-    fun dpadSectors_upRight_returnsRightAndUp() {
+    fun dpadSectors_corner_returnsRightAndUp() {
         val r = Recorder()
-        // up-right in screen space: dx=+1 (right), dy=-1 (up). Beyond deadzone.
-        val sectors = r.emitter.dpadSectors(dx = 10f, dy = -10f, deadzone = 1f)
-        assertEquals(setOf(Kc.DPAD_RIGHT, Kc.DPAD_UP), sectors)
+        assertEquals(setOf(Kc.DPAD_RIGHT, Kc.DPAD_UP), r.emitter.dpadSectors(nx = 0.5f, ny = -0.5f))
     }
 
     @Test
-    fun dpadSectors_cardinalDirections() {
+    fun dpadSectors_cardinalArms() {
         val r = Recorder()
-        assertEquals(setOf(Kc.DPAD_RIGHT), r.emitter.dpadSectors(10f, 0f, 1f))
-        assertEquals(setOf(Kc.DPAD_UP), r.emitter.dpadSectors(0f, -10f, 1f))   // up = -dy
-        assertEquals(setOf(Kc.DPAD_LEFT), r.emitter.dpadSectors(-10f, 0f, 1f))
-        assertEquals(setOf(Kc.DPAD_DOWN), r.emitter.dpadSectors(0f, 10f, 1f))  // down = +dy
+        assertEquals(setOf(Kc.DPAD_RIGHT), r.emitter.dpadSectors(0.5f, 0f))
+        assertEquals(setOf(Kc.DPAD_UP), r.emitter.dpadSectors(0f, -0.5f))   // up = -ny
+        assertEquals(setOf(Kc.DPAD_LEFT), r.emitter.dpadSectors(-0.5f, 0f))
+        assertEquals(setOf(Kc.DPAD_DOWN), r.emitter.dpadSectors(0f, 0.5f))  // down = +ny
     }
 
     @Test
-    fun dpadSectors_belowDeadzone_returnsEmpty() {
+    fun dpadSectors_centerThirdIsNeutral() {
         val r = Recorder()
-        assertEquals(emptySet<Int>(), r.emitter.dpadSectors(dx = 1f, dy = 1f, deadzone = 5f))
+        // both axes within the center third (|n| < 1/3) -> no direction.
+        assertEquals(emptySet<Int>(), r.emitter.dpadSectors(nx = 0.2f, ny = 0.2f))
+    }
+
+    @Test
+    fun dpadSectors_outsidePadReleases() {
+        val r = Recorder()
+        // finger dragged off the pad box (|n| > 1) -> neutral (legacy rect.contains miss).
+        assertEquals(emptySet<Int>(), r.emitter.dpadSectors(nx = 1.5f, ny = 0f))
     }
 
     @Test

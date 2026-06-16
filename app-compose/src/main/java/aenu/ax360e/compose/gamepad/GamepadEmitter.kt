@@ -1,6 +1,5 @@
 package aenu.ax360e.compose.gamepad
 
-import kotlin.math.atan2
 import kotlin.math.hypot
 
 class GamepadEmitter(private val sink: (Int, Boolean, Int) -> Unit) {
@@ -39,22 +38,19 @@ class GamepadEmitter(private val sink: (Int, Boolean, Int) -> Unit) {
     /** D-pad radial 8-sector: dx,dy in screen space relative to center; deadzone in px²
      *  passed as normalized len. Returns the set of pressed dpad codes; caller diffs
      *  against previous to emit press/release. */
-    fun dpadSectors(dx: Float, dy: Float, deadzone: Float): Set<Int> {
-        if (hypot(dx, dy) < deadzone) return emptySet()
-        // atan2(-dy, dx): screen-up is -dy; 0 rad = RIGHT, +pi/2 = UP.
-        val ang = atan2(-dy, dx)                          // [-pi, pi]
-        val deg = (Math.toDegrees(ang.toDouble()) + 360.0) % 360.0
-        // 8 sectors of 45°, centered on each cardinal/diagonal.
-        return when (((deg + 22.5) / 45.0).toInt() % 8) {
-            0 -> setOf(Kc.DPAD_RIGHT)
-            1 -> setOf(Kc.DPAD_RIGHT, Kc.DPAD_UP)
-            2 -> setOf(Kc.DPAD_UP)
-            3 -> setOf(Kc.DPAD_UP, Kc.DPAD_LEFT)
-            4 -> setOf(Kc.DPAD_LEFT)
-            5 -> setOf(Kc.DPAD_LEFT, Kc.DPAD_DOWN)
-            6 -> setOf(Kc.DPAD_DOWN)
-            else -> setOf(Kc.DPAD_DOWN, Kc.DPAD_RIGHT)
-        }
+    /** Legacy VirtualControl 3x3-grid d-pad ("press the arm of the cross"). nx,ny are
+     *  normalized offsets from center (-1..1 across the pad). The pad is split into thirds
+     *  per axis: outer thirds = that cardinal, center third = neutral on that axis, so corners
+     *  give diagonals. Outside the pad box (|n|>1) releases. This matches the old d-pad feel
+     *  far better than radial sectoring -- the center is a real dead spot and each arm is a
+     *  flat third, not an angle. */
+    fun dpadSectors(nx: Float, ny: Float): Set<Int> {
+        if (kotlin.math.abs(nx) > 1f || kotlin.math.abs(ny) > 1f) return emptySet()
+        val third = 1f / 3f
+        val out = mutableSetOf<Int>()
+        if (nx <= -third) out.add(Kc.DPAD_LEFT) else if (nx >= third) out.add(Kc.DPAD_RIGHT)
+        if (ny <= -third) out.add(Kc.DPAD_UP) else if (ny >= third) out.add(Kc.DPAD_DOWN)
+        return out
     }
 
     fun applyDpad(prev: Set<Int>, now: Set<Int>) {

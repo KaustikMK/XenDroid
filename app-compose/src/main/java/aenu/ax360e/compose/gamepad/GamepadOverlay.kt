@@ -5,14 +5,19 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.nativeCanvas
@@ -70,10 +75,10 @@ fun GamepadOverlay(
     // the sink current without churning the emitter.
     val latestOnKeyEvent by rememberUpdatedState(onKeyEvent)
     val emitter = remember { GamepadEmitter { code, pressed, value -> latestOnKeyEvent(code, pressed, value) } }
-    // PointerId.value -> claimed control; survives recomposition.
-    val claims = remember { mutableMapOf<Long, ControlId>() }
-    // PointerId.value -> last position, for drawing stick knobs at the finger.
-    val pointerPos = remember { mutableMapOf<Long, Offset>() }
+    // Observable (mutableStateMapOf) so the Canvas re-draws the stick knob on every move/
+    // claim change -- plain maps record no snapshot read, so the knob would sit frozen.
+    val claims = remember { mutableStateMapOf<Long, ControlId>() }
+    val pointerPos = remember { mutableStateMapOf<Long, Offset>() }
     // per-dpad last-pressed sector set, for diffing.
     val dpadState = remember { mutableMapOf<ControlId, Set<Int>>() }
     val density = LocalDensity.current
@@ -113,8 +118,13 @@ fun GamepadOverlay(
                                     !ch.pressed -> {
                                         pointerPos.remove(pid)
                                         claims.remove(pid)?.let { id ->
-                                            controls.firstOrNull { it.id == id }?.let {
-                                                dispatchUp(emitter, it, dpadState)
+                                            // Only release if NO other finger still holds this
+                                            // control (two fingers on one stick: lifting one
+                                            // must not zero the input the other is still driving).
+                                            if (claims.none { it.value == id }) {
+                                                controls.firstOrNull { it.id == id }?.let {
+                                                    dispatchUp(emitter, it, dpadState)
+                                                }
                                             }
                                             ch.consume()
                                         }
@@ -136,12 +146,17 @@ fun GamepadOverlay(
     ) {
         // Reverse lookup: claimed control id -> active pointer position (for stick knob).
         val activePos: (ControlId) -> Offset? = { id ->
-            val pid = claims.entries.firstOrNull { it.value == id }?.key
-            pid?.let { pointerPos[it] }
+            claims.entries.lastOrNull { it.value == id }?.key?.let { pointerPos[it] }
         }
-        controls.filter { it.visible }.forEach {
-            drawControl(it, opacity, sizePx, density, activePos(it.id))
-            if (editMode && it.id == selectedId) drawSelection(it, sizePx, density)
+        val claimedIds = claims.values.toSet()
+        controls.filter { it.visible }.forEach { c ->
+            drawControl(
+                c, opacity, sizePx, density,
+                pressed = c.id in claimedIds,
+                dpadDirs = if (c is OnScreenControl.Dpad) dpadState[c.id] ?: emptySet() else emptySet(),
+                activePos = activePos(c.id),
+            )
+            if (editMode && c.id == selectedId) drawSelection(c, sizePx, density)
         }
     }
 }
@@ -244,8 +259,12 @@ private fun updateDpad(
     size: IntSize, density: Density, dpadState: MutableMap<ControlId, Set<Int>>,
 ) {
     val center = controlCenterPx(c, size)
-    val radius = controlRadiusPx(c, density)
-    val now = emitter.dpadSectors(pos.x - center.x, pos.y - center.y, deadzone = radius * 0.30f)
+    // Normalize the touch offset to [-1,1] across the pad (half-extent = the visual radius),
+    // then the 3x3 grid decides the direction (legacy "press the arm of the cross").
+    val radius = with(density) { c.baseSizeDp.dp.toPx() } / 2f * c.scale
+    val nx = (pos.x - center.x) / radius
+    val ny = (pos.y - center.y) / radius
+    val now = emitter.dpadSectors(nx, ny)
     emitter.applyDpad(dpadState[c.id] ?: emptySet(), now)
     dpadState[c.id] = now
 }
@@ -255,58 +274,127 @@ private fun updateStick(
     size: IntSize, density: Density,
 ) {
     val center = controlCenterPx(c, size)
-    val radius = controlRadiusPx(c, density)
-    var dxN = (pos.x - center.x) / radius
-    var dyN = (pos.y - center.y) / radius
-    // Radial dead-zone: ignore tiny wobble near center, then rescale so output ramps
-    // from 0 just past the dead-zone (smooth, no jump). PPSSPP defers dead-zone to the
-    // emulator, but a small source dead-zone makes the on-screen stick far less twitchy.
-    val r = hypot(dxN, dyN)
-    val dead = 0.12f
-    if (r < dead) { emitter.releaseStick(c.isLeft); return }
-    val rescale = ((r - dead) / (1f - dead)) / r
-    dxN *= rescale; dyN *= rescale
+    // Normalize by the VISUAL ring (matches drawControl), NOT the 1.15x grab radius, so
+    // full deflection == reaching the drawn ring (and the knob == the emitted value).
+    val radius = with(density) { c.baseSizeDp.dp.toPx() } / 2f * c.scale
+    val dxN = (pos.x - center.x) / radius
+    val dyN = (pos.y - center.y) / radius
+    // No source dead-zone (PPSSPP/legacy have none -- the emulator owns thumbstick
+    // dead-zone; a second one here double-dead-zones). Release happens only on touch-up.
     emitter.stick(c.isLeft, dxN, dyN)        // emitter circular-clamps
 }
 
 // ---- Drawing ----
 
+// Xbox face-button colours (A green, B red, X blue, Y yellow).
+private val XBOX_GREEN = Color(0xFF5EAE3A)
+private val XBOX_RED = Color(0xFFC23B3B)
+private val XBOX_BLUE = Color(0xFF3E78C2)
+private val XBOX_YELLOW = Color(0xFFD8A21E)
+private val PILL_IDS = setOf(ControlId.LB, ControlId.RB, ControlId.LT, ControlId.RT)
+
 private fun DrawScope.drawControl(
-    c: OnScreenControl, opacity: Float, size: IntSize, density: Density, activePos: Offset?,
+    c: OnScreenControl, opacity: Float, size: IntSize, density: Density,
+    pressed: Boolean, dpadDirs: Set<Int>, activePos: Offset?,
 ) {
     val center = controlCenterPx(c, size)
     val radius = with(density) { c.baseSizeDp.dp.toPx() } / 2f * c.scale
-    val fill = Color.White.copy(alpha = 0.12f * opacity)
-    val line = Color.White.copy(alpha = 0.55f * opacity)
     val strokeW = with(density) { 2.dp.toPx() }
     when (c) {
-        is OnScreenControl.Button -> {
-            drawCircle(fill, radius, center)
-            drawCircle(line, radius, center, style = Stroke(strokeW))
-            drawLabel(c.label, center, radius, line)
+        is OnScreenControl.Button -> drawButton(c, center, radius, strokeW, opacity, pressed)
+        is OnScreenControl.Dpad -> drawDpad(center, radius, strokeW, opacity, dpadDirs)
+        is OnScreenControl.AnalogStick -> drawStick(center, radius, strokeW, opacity, activePos)
+    }
+}
+
+private fun DrawScope.drawButton(
+    c: OnScreenControl.Button, center: Offset, radius: Float, strokeW: Float,
+    opacity: Float, pressed: Boolean,
+) {
+    fun white(a: Float) = Color.White.copy(alpha = a * opacity)
+    val face = when (c.id) {
+        ControlId.A -> XBOX_GREEN; ControlId.B -> XBOX_RED
+        ControlId.X -> XBOX_BLUE; ControlId.Y -> XBOX_YELLOW
+        else -> null
+    }
+    when {
+        face != null -> {                                   // round colour face button + letter
+            drawCircle(face.copy(alpha = (if (pressed) 1f else 0.82f) * opacity), radius, center)
+            drawCircle(white(0.55f), radius, center, style = Stroke(strokeW))
+            if (pressed) drawCircle(white(0.9f), radius + strokeW, center, style = Stroke(strokeW))
+            drawLabel(c.label, center, radius, white(0.95f), bold = true)
         }
-        is OnScreenControl.Dpad -> {
-            // A plus made of two rounded bars.
-            val arm = radius
-            val w = radius * 0.42f
-            drawCircle(fill, radius, center)
-            drawCircle(line, radius, center, style = Stroke(strokeW))
-            drawLine(line, Offset(center.x - arm, center.y), Offset(center.x + arm, center.y), w)
-            drawLine(line, Offset(center.x, center.y - arm), Offset(center.x, center.y + arm), w)
+        c.id in PILL_IDS -> {                               // bumper/trigger: rounded pill
+            val w = radius * 2.1f; val h = radius * 1.15f
+            val tl = Offset(center.x - w / 2f, center.y - h / 2f)
+            val cr = CornerRadius(h / 2f, h / 2f)
+            drawRoundRect(white(if (pressed) 0.42f else 0.18f), tl, Size(w, h), cr)
+            drawRoundRect(white(0.5f), tl, Size(w, h), cr, style = Stroke(strokeW))
+            drawLabel(c.label, center, radius, white(0.85f))
         }
-        is OnScreenControl.AnalogStick -> {
-            drawCircle(fill, radius, center)
-            drawCircle(line, radius, center, style = Stroke(strokeW))
-            // Inner knob offset toward the active pointer, clamped to the ring.
-            val knob = activePos?.let { p ->
-                var dx = p.x - center.x; var dy = p.y - center.y
-                val len = hypot(dx, dy)
-                if (len > radius) { dx = dx / len * radius; dy = dy / len * radius }
-                Offset(center.x + dx, center.y + dy)
-            } ?: center
-            drawCircle(line.copy(alpha = 0.7f * opacity), radius * 0.5f, knob)
+        else -> {                                           // L3/R3/Back/Start: small circle
+            val rr = radius * 0.82f
+            drawCircle(white(if (pressed) 0.42f else 0.16f), rr, center)
+            drawCircle(white(0.5f), rr, center, style = Stroke(strokeW))
+            drawLabel(c.label, center, rr, white(0.8f))
         }
     }
+}
+
+/** Original ax360e d-pad look: four OUTLINED "pennant" arrows (rounded base at the outer
+ *  edge, tapering to a point toward the center), idle white, pressed arm lights up gold. */
+private fun DrawScope.drawDpad(
+    center: Offset, radius: Float, strokeW: Float, opacity: Float, dirs: Set<Int>,
+) {
+    val arm = dpadArmPath(center, radius)           // the LEFT arm; rotate for the others
+    val idle = Color.White.copy(alpha = 0.5f * opacity)
+    val gold = Color(0xFFD8AF35)
+    // (code, rotation): LEFT base at left/tip toward center; +90 each step -> UP/RIGHT/DOWN.
+    val arms = listOf(Kc.DPAD_LEFT to 0f, Kc.DPAD_UP to 90f, Kc.DPAD_RIGHT to 180f, Kc.DPAD_DOWN to 270f)
+    for ((_, angle) in arms) rotate(angle, center) { drawPath(arm, idle, style = Stroke(strokeW)) }
+    for ((code, angle) in arms) if (code in dirs) rotate(angle, center) {
+        drawPath(arm, gold.copy(alpha = 0.18f * opacity))                       // faint fill
+        drawPath(arm, gold.copy(alpha = 0.95f * opacity), style = Stroke(strokeW * 1.4f))
+    }
+}
+
+/** The LEFT arm: a pennant from the outer-left edge tapering to a point near the center.
+ *  Rotated 90/180/270 about the center to make UP/RIGHT/DOWN. */
+private fun dpadArmPath(center: Offset, radius: Float): Path {
+    val hw = radius * 0.30f
+    val baseX = center.x - radius
+    val midX = center.x - radius * 0.42f      // where the rectangle starts tapering
+    val tipX = center.x - radius * 0.06f      // the point, near center
+    val corner = radius * 0.10f
+    val top = center.y - hw; val bot = center.y + hw
+    return Path().apply {
+        moveTo(baseX + corner, top)
+        lineTo(midX, top)
+        lineTo(tipX, center.y)
+        lineTo(midX, bot)
+        lineTo(baseX + corner, bot)
+        quadraticBezierTo(baseX, bot, baseX, bot - corner)
+        lineTo(baseX, top + corner)
+        quadraticBezierTo(baseX, top, baseX + corner, top)
+        close()
+    }
+}
+
+private fun DrawScope.drawStick(
+    center: Offset, radius: Float, strokeW: Float, opacity: Float, activePos: Offset?,
+) {
+    drawCircle(Color.White.copy(alpha = 0.10f * opacity), radius, center)                 // dish
+    drawCircle(Color.White.copy(alpha = 0.45f * opacity), radius, center, style = Stroke(strokeW)) // range ring
+    val knob = activePos?.let { p ->
+        var dx = p.x - center.x; var dy = p.y - center.y
+        val len = hypot(dx, dy)
+        if (len > radius) { dx = dx / len * radius; dy = dy / len * radius }
+        Offset(center.x + dx, center.y + dy)
+    } ?: center
+    val active = activePos != null
+    val knobR = radius * 0.52f
+    drawCircle(Color.White.copy(alpha = (if (active) 0.5f else 0.32f) * opacity), knobR, knob)
+    drawCircle(Color.White.copy(alpha = 0.7f * opacity), knobR, knob, style = Stroke(strokeW))
 }
 
 private fun DrawScope.drawSelection(c: OnScreenControl, size: IntSize, density: Density) {
@@ -316,11 +404,14 @@ private fun DrawScope.drawSelection(c: OnScreenControl, size: IntSize, density: 
     drawCircle(Color(0xFF4FC3F7), radius + ring, center, style = Stroke(ring))
 }
 
-private fun DrawScope.drawLabel(label: String, center: Offset, radius: Float, color: Color) {
+private fun DrawScope.drawLabel(
+    label: String, center: Offset, radius: Float, color: Color, bold: Boolean = false,
+) {
     if (label.isEmpty()) return
     drawIntoCanvas { canvas ->
         val paint = android.graphics.Paint().apply {
             isAntiAlias = true
+            isFakeBoldText = bold
             this.color = android.graphics.Color.argb(
                 (color.alpha * 255).toInt(), 255, 255, 255)
             textAlign = android.graphics.Paint.Align.CENTER
