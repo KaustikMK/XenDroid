@@ -855,6 +855,11 @@ bool VulkanPresenter::RefreshGuestOutputImpl(
       frontbuffer_height > max_framebuffer_extent.height) {
     // Writing the guest output isn't supposed to rescale, and a guest texture
     // exceeding the maximum size won't be loadable anyway.
+    XELOGE(
+        "VulkanPresenter: guest output {}x{} exceeds the maximum framebuffer "
+        "extent {}x{} - dropping the guest frame",
+        frontbuffer_width, frontbuffer_height, max_framebuffer_extent.width,
+        max_framebuffer_extent.height);
     return false;
   }
 

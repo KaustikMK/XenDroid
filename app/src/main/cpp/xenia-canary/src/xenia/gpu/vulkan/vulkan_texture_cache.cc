@@ -994,17 +994,26 @@ VkImageView VulkanTextureCache::RequestSwapTexture(
   BindingInfoFromFetchConstant(fetch, key, nullptr);
   if (!key.is_valid || key.base_page == 0 ||
       key.dimension != xenos::DataDimension::k2DOrStacked) {
+    XELOGE(
+        "RequestSwapTexture: invalid front buffer fetch constant (valid {}, "
+        "base page {:X}, dimension {})",
+        uint32_t(key.is_valid), key.base_page, uint32_t(key.dimension));
     return nullptr;
   }
   VulkanTexture* texture =
       static_cast<VulkanTexture*>(FindOrCreateTexture(key));
   if (!texture) {
+    XELOGE(
+        "RequestSwapTexture: failed to find or create the swap texture "
+        "(base page {:X}, format {})",
+        key.base_page, uint32_t(key.format));
     return VK_NULL_HANDLE;
   }
   VkImageView texture_view = texture->GetView(
       false, GuestToHostSwizzle(fetch.swizzle, GetHostFormatSwizzle(key)),
       false);
   if (texture_view == VK_NULL_HANDLE) {
+    XELOGE("RequestSwapTexture: failed to get the swap texture image view");
     return VK_NULL_HANDLE;
   }
   if (!LoadTextureData(*texture)) {
@@ -1194,6 +1203,12 @@ std::unique_ptr<TextureCache::Texture> VulkanTextureCache::CreateTexture(
   VmaAllocation allocation;
   if (vmaCreateImage(vma_allocator_, &image_create_info,
                      &allocation_create_info, &image, &allocation, nullptr)) {
+    XELOGE(
+        "VulkanTextureCache: vmaCreateImage failed (format {}, {}x{}x{}, "
+        "guest format {})",
+        uint32_t(image_create_info.format), image_create_info.extent.width,
+        image_create_info.extent.height, image_create_info.extent.depth,
+        uint32_t(key.format));
     return nullptr;
   }
 
