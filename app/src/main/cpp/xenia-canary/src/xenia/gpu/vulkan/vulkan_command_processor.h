@@ -580,11 +580,32 @@ class VulkanCommandProcessor final : public CommandProcessor {
     // of headroom the throttle really has.
     uint64_t blocking_awaits = 0;
     uint64_t await_delta = 0;
+    // GPU-side wall time (top-of-pipe to bottom-of-pipe timestamps) of
+    // completed submissions, and the idle gaps between consecutive ones.
+    uint64_t gpu_exec_ns = 0;
+    uint64_t gpu_gap_ns = 0;
+    uint64_t gpu_samples = 0;
     uint64_t last_report_ns = 0;
   };
   VkFrameSyncStats vk_frame_sync_stats_;
-  // (submission index, host submit time) of not-yet-completed submissions.
-  std::deque<std::pair<uint64_t, uint64_t>> vk_submit_times_;
+  struct SubmitTimeRecord {
+    uint64_t submission;
+    uint64_t submit_ns;
+    // Slot in frame_timestamp_pool_, UINT32_MAX if timestamps unavailable.
+    uint32_t timestamp_slot;
+  };
+  std::deque<SubmitTimeRecord> vk_submit_times_;
+  // GPU timestamps around each submission (2 per slot), copied in-buffer to
+  // the readback buffer so completion never requires host query calls (see
+  // the Turnip/kgsl note in the completion timeline about blocking fence
+  // status polls - vkGetQueryPoolResults would have the same hazard).
+  static constexpr uint32_t kFrameTimestampSlots = 32;
+  VkQueryPool frame_timestamp_pool_ = VK_NULL_HANDLE;
+  VkBuffer frame_timestamp_buffer_ = VK_NULL_HANDLE;
+  VkDeviceMemory frame_timestamp_buffer_memory_ = VK_NULL_HANDLE;
+  VkDeviceSize frame_timestamp_buffer_size_ = 0;
+  uint64_t* frame_timestamp_mapping_ = nullptr;
+  uint64_t frame_timestamp_prev_end_ = 0;
   bool submission_open_ = false;
   // In case vkQueueSubmit fails after something like a successful
   // vkQueueBindSparse, to wait correctly on the next attempt.

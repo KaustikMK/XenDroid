@@ -1203,6 +1203,39 @@ bool VulkanCommandProcessor::SetupContext() {
   zpd_host_query_pool_ = std::make_unique<VulkanZPDQueryPool>();
   EnsureZPDQueryResources();
 
+  // Per-submission GPU timestamps for the frame time breakdown diagnostics.
+  if (cvars::log_gpu_frame_time_breakdown &&
+      vulkan_device->properties().timestampPeriod > 0.0f) {
+    VkQueryPoolCreateInfo timestamp_pool_create_info = {
+        VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
+    timestamp_pool_create_info.queryType = VK_QUERY_TYPE_TIMESTAMP;
+    timestamp_pool_create_info.queryCount = kFrameTimestampSlots * 2;
+    if (dfn.vkCreateQueryPool(device, &timestamp_pool_create_info, nullptr,
+                              &frame_timestamp_pool_) == VK_SUCCESS) {
+      if (!ui::vulkan::util::CreateDedicatedAllocationBuffer(
+              vulkan_device, kFrameTimestampSlots * 2 * sizeof(uint64_t),
+              VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+              ui::vulkan::util::MemoryPurpose::kReadback,
+              frame_timestamp_buffer_, frame_timestamp_buffer_memory_, nullptr,
+              &frame_timestamp_buffer_size_) ||
+          dfn.vkMapMemory(device, frame_timestamp_buffer_memory_, 0,
+                          VK_WHOLE_SIZE, 0,
+                          reinterpret_cast<void**>(
+                              &frame_timestamp_mapping_)) != VK_SUCCESS) {
+        XELOGW(
+            "VulkanCommandProcessor: No readback buffer for frame timestamps; "
+            "GPU execution time reporting disabled");
+        ui::vulkan::util::DestroyAndNullHandle(dfn.vkDestroyBuffer, device,
+                                               frame_timestamp_buffer_);
+        ui::vulkan::util::DestroyAndNullHandle(dfn.vkFreeMemory, device,
+                                               frame_timestamp_buffer_memory_);
+        ui::vulkan::util::DestroyAndNullHandle(dfn.vkDestroyQueryPool, device,
+                                               frame_timestamp_pool_);
+        frame_timestamp_mapping_ = nullptr;
+      }
+    }
+  }
+
   // Just not to expose uninitialized memory.
   std::memset(&system_constants_, 0, sizeof(system_constants_));
   // ZPD FSI counter uses UINT32_MAX as its skip sentinel outside query draws.
@@ -1221,6 +1254,19 @@ void VulkanCommandProcessor::ShutdownContext() {
   const ui::vulkan::VulkanDevice* const vulkan_device = GetVulkanDevice();
   const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
   const VkDevice device = vulkan_device->device();
+
+  if (frame_timestamp_mapping_) {
+    dfn.vkUnmapMemory(device, frame_timestamp_buffer_memory_);
+    frame_timestamp_mapping_ = nullptr;
+  }
+  ui::vulkan::util::DestroyAndNullHandle(dfn.vkDestroyBuffer, device,
+                                         frame_timestamp_buffer_);
+  ui::vulkan::util::DestroyAndNullHandle(dfn.vkFreeMemory, device,
+                                         frame_timestamp_buffer_memory_);
+  ui::vulkan::util::DestroyAndNullHandle(dfn.vkDestroyQueryPool, device,
+                                         frame_timestamp_pool_);
+  vk_submit_times_.clear();
+  frame_timestamp_prev_end_ = 0;
 
   DestroyScratchBuffer();
 
@@ -1741,7 +1787,7 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
           "VkFrameSync: {} frames | per frame: awaits={:.1f} await={:.1f}ms "
           "submissions={:.1f} memexport_awaits={:.1f} readback_awaits={:.1f} "
           "| submit->fence avg={:.1f}ms max={:.1f}ms | blocking={:.1f} "
-          "delta avg={:.2f}",
+          "delta avg={:.2f} | gpu exec avg={:.1f}ms gap avg={:.1f}ms",
           s.frames, s.awaits / f, s.await_ns / f / 1e6, s.submissions / f,
           s.memexport_awaits / f, s.readback_awaits / f,
           s.sub_completions
@@ -1750,6 +1796,12 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
           s.sub_latency_max_ns / 1e6, s.blocking_awaits / f,
           s.blocking_awaits
               ? s.await_delta / static_cast<double>(s.blocking_awaits)
+              : 0.0,
+          s.gpu_samples
+              ? s.gpu_exec_ns / static_cast<double>(s.gpu_samples) / 1e6
+              : 0.0,
+          s.gpu_samples
+              ? s.gpu_gap_ns / static_cast<double>(s.gpu_samples) / 1e6
               : 0.0);
       s = VkFrameSyncStats();
       s.last_report_ns = now;
@@ -4143,13 +4195,46 @@ void VulkanCommandProcessor::CheckSubmissionCompletionAndDeviceLoss(
       }
     }
     const uint64_t completed = GetCompletedSubmission();
+    bool timestamps_invalidated = false;
     while (!vk_submit_times_.empty() &&
-           vk_submit_times_.front().first <= completed) {
-      const uint64_t latency = t1 - vk_submit_times_.front().second;
+           vk_submit_times_.front().submission <= completed) {
+      const SubmitTimeRecord& record = vk_submit_times_.front();
+      const uint64_t latency = t1 - record.submit_ns;
       vk_frame_sync_stats_.sub_latency_ns += latency;
       vk_frame_sync_stats_.sub_latency_max_ns =
           std::max(vk_frame_sync_stats_.sub_latency_max_ns, latency);
       vk_frame_sync_stats_.sub_completions++;
+      if (record.timestamp_slot != UINT32_MAX && frame_timestamp_mapping_) {
+        if (!timestamps_invalidated) {
+          // The readback memory type is not guaranteed to be host-coherent.
+          const ui::vulkan::VulkanDevice* const vulkan_device =
+              GetVulkanDevice();
+          VkMappedMemoryRange invalidate_range = {
+              VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE};
+          invalidate_range.memory = frame_timestamp_buffer_memory_;
+          invalidate_range.offset = 0;
+          invalidate_range.size = VK_WHOLE_SIZE;
+          vulkan_device->functions().vkInvalidateMappedMemoryRanges(
+              vulkan_device->device(), 1, &invalidate_range);
+          timestamps_invalidated = true;
+        }
+        const uint64_t ts_top =
+            frame_timestamp_mapping_[record.timestamp_slot * 2];
+        const uint64_t ts_bottom =
+            frame_timestamp_mapping_[record.timestamp_slot * 2 + 1];
+        const double period_ns =
+            double(GetVulkanDevice()->properties().timestampPeriod);
+        if (ts_bottom > ts_top) {
+          vk_frame_sync_stats_.gpu_exec_ns +=
+              uint64_t((ts_bottom - ts_top) * period_ns);
+          vk_frame_sync_stats_.gpu_samples++;
+        }
+        if (frame_timestamp_prev_end_ && ts_top > frame_timestamp_prev_end_) {
+          vk_frame_sync_stats_.gpu_gap_ns +=
+              uint64_t((ts_top - frame_timestamp_prev_end_) * period_ns);
+        }
+        frame_timestamp_prev_end_ = ts_bottom;
+      }
       vk_submit_times_.pop_front();
     }
   } else {
@@ -4576,6 +4661,16 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
       XELOGE("Failed to begin a Vulkan command buffer");
       return false;
     }
+    uint32_t fs_timestamp_slot = UINT32_MAX;
+    if (frame_timestamp_mapping_) {
+      fs_timestamp_slot =
+          uint32_t(GetCurrentSubmission() % kFrameTimestampSlots);
+      dfn.vkCmdResetQueryPool(command_buffer.buffer, frame_timestamp_pool_,
+                              fs_timestamp_slot * 2, 2);
+      dfn.vkCmdWriteTimestamp(command_buffer.buffer,
+                              VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                              frame_timestamp_pool_, fs_timestamp_slot * 2);
+    }
     // Submission boundary for asynchronously created pipelines: by default
     // this waits until every pipeline referenced by the recorded deferred
     // binds has finished creation, so no draw is lost. With
@@ -4589,6 +4684,24 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
     // Record ZPD resolves before submitting.
     if (zpd_host_query_pool_) {
       zpd_host_query_pool_->RecordResolveBatch(command_buffer.buffer);
+    }
+
+    if (fs_timestamp_slot != UINT32_MAX) {
+      dfn.vkCmdWriteTimestamp(
+          command_buffer.buffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+          frame_timestamp_pool_, fs_timestamp_slot * 2 + 1);
+      dfn.vkCmdCopyQueryPoolResults(
+          command_buffer.buffer, frame_timestamp_pool_, fs_timestamp_slot * 2,
+          2, frame_timestamp_buffer_,
+          fs_timestamp_slot * 2 * sizeof(uint64_t), sizeof(uint64_t),
+          VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT);
+      VkMemoryBarrier fs_timestamp_barrier = {VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+      fs_timestamp_barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+      fs_timestamp_barrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+      dfn.vkCmdPipelineBarrier(command_buffer.buffer,
+                               VK_PIPELINE_STAGE_TRANSFER_BIT,
+                               VK_PIPELINE_STAGE_HOST_BIT, 0, 1,
+                               &fs_timestamp_barrier, 0, nullptr, 0, nullptr);
     }
 
     if (dfn.vkEndCommandBuffer(command_buffer.buffer) != VK_SUCCESS) {
@@ -4631,7 +4744,8 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
     submission_open_ = false;
     vk_frame_sync_stats_.submissions++;
     if (cvars::log_gpu_frame_time_breakdown) {
-      vk_submit_times_.emplace_back(submission_index, FrameStatsNow());
+      vk_submit_times_.push_back(
+          {submission_index, FrameStatsNow(), fs_timestamp_slot});
     }
 
     // Process any ZPD resolves that completed with this submission.
