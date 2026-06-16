@@ -16,6 +16,7 @@ import androidx.compose.material.icons.Icons
 // in core. See the implementation report for this deviation.
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -49,6 +50,9 @@ fun GameLibraryScreen(
             TopAppBar(
                 title = { Text("Library") },
                 actions = {
+                    IconButton(onClick = onOpenSettings) {
+                        Icon(Icons.Default.Settings, contentDescription = "Settings")
+                    }
                     IconButton(onClick = { pickDir.launch(null) }) {
                         Icon(Icons.Default.Add, contentDescription = "Set game folder")
                     }

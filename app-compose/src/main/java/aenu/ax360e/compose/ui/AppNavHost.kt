@@ -11,12 +11,14 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import aenu.ax360e.compose.AppContainer
+import aenu.ax360e.compose.settings.SettingsViewModel
 import aenu.ax360e.compose.ui.library.GameLibraryScreen
 import aenu.ax360e.compose.ui.library.GameLibraryViewModel
+import aenu.ax360e.compose.ui.settings.SettingsScreen
 
 object Routes {
     const val LIBRARY = "library"
-    const val SETTINGS = "settings"   // SP1 later
+    const val SETTINGS = "settings"
     const val KEYMAP = "keymap"       // SP1 later
     const val ABOUT = "about"         // SP1 later
 }
@@ -33,7 +35,10 @@ fun AppNavHost(container: AppContainer) {
                 onOpenSettings = { nav.navigate(Routes.SETTINGS) },
             )
         }
-        composable(Routes.SETTINGS) { Placeholder("Settings — SP1 later") }
+        composable(Routes.SETTINGS) {
+            val vm: SettingsViewModel = viewModel(factory = container.settingsViewModelFactory())
+            SettingsScreen(vm = vm, onBack = { nav.popBackStack() })
+        }
         composable(Routes.KEYMAP) { Placeholder("Key mapping — SP1 later") }
         composable(Routes.ABOUT) { Placeholder("About — SP1 later") }
     }
