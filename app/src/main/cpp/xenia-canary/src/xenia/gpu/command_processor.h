@@ -539,12 +539,6 @@ class CommandProcessor {
   uint32_t read_ptr_index_ = 0;
   uint32_t read_ptr_update_freq_ = 0;
   uint32_t read_ptr_writeback_ptr_ = 0;
-  // Primary-ring position of the packet currently executing, and the
-  // indirect-buffer nesting depth - used to give the guest ISR a current
-  // read pointer writeback at PM4 INTERRUPT time (see
-  // ExecutePacketType3_INTERRUPT).
-  uint32_t primary_ring_read_index_shadow_ = 0;
-  uint32_t indirect_buffer_depth_ = 0;
 
   std::unique_ptr<xe::threading::Event> write_ptr_index_event_;
   std::atomic<uint32_t> write_ptr_index_;
