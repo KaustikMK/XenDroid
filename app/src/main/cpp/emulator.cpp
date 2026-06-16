@@ -455,19 +455,17 @@ static void j_boot(JNIEnv* env,jobject self){
 }
 
 static void j_change_surface(JNIEnv* env,jobject self,jint w,jint h){
-    ae::window_width=w;
-    ae::window_height=h;
+    ae::surface_resize(w,h);
 }
 
 static void j_setup_surface(JNIEnv* env,jobject self,jobject surface){
-
-    if(ae::window){
-        ANativeWindow_release(ae::window);
-        ae::window=nullptr;}
-    if(surface) {
-        ae::window=ANativeWindow_fromSurface(env,surface);
-        ae::window_width=ANativeWindow_getWidth(ae::window);
-        ae::window_height=ANativeWindow_getHeight(ae::window);
+    if(surface){
+        // ANativeWindow_fromSurface returns one owned reference; ae::surface_*
+        // owns it from here and releases it on detach.
+        ANativeWindow* w = ANativeWindow_fromSurface(env,surface);
+        ae::surface_attach(w, ANativeWindow_getWidth(w), ANativeWindow_getHeight(w));
+    } else {
+        ae::surface_detach();
     }
 }
 

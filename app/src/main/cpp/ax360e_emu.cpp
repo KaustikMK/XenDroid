@@ -95,10 +95,15 @@ namespace ae{
     extern std::unique_ptr<xe::ui::WindowedApp> g_windowed_app;
 }
 void AndroidWindowedAppContext::NotifyUILoopOfPendingFunctions() {
+    // Only ever called from non-UI threads (emu_thr at boot, binder thread for
+    // surface ops) -- NEVER the GPU present thread -- so blocking here cannot
+    // recreate the request_paint() AB-BA deadlock. Preserves the fork's
+    // synchronous CallInUIThread contract that boot relies on.
     assert(WindowedAppContext::ui_thread_id_!=std::this_thread::get_id());
     pthread_mutex_lock(&mutex);
-    event=EVENT_EXECUTE_PENDING_FUNCTIONS;
-    while(event){
+    uint64_t ticket = ++exec_requested;
+    pending_events |= EVENT_EXECUTE_PENDING_FUNCTIONS;
+    while(exec_completed < ticket && !ui_loop_exited){
         pthread_cond_wait(&cond, &mutex);
     }
     pthread_mutex_unlock(&mutex);
@@ -106,30 +111,26 @@ void AndroidWindowedAppContext::NotifyUILoopOfPendingFunctions() {
 
 void AndroidWindowedAppContext::PlatformQuitFromUIThread() {
     if(WindowedAppContext::ui_thread_id_==std::this_thread::get_id()){
-        event=EVENT_QUIT;
+        pthread_mutex_lock(&mutex);
+        pending_events |= EVENT_QUIT;
+        pthread_mutex_unlock(&mutex);
         return;
     }
-
     pthread_mutex_lock(&mutex);
-    event=EVENT_QUIT;
-    while ( event){
+    pending_events |= EVENT_QUIT;
+    while((pending_events & EVENT_QUIT) && !ui_loop_exited){
         pthread_cond_wait(&cond, &mutex);
     }
     pthread_mutex_unlock(&mutex);
 }
 
 void AndroidWindowedAppContext::request_paint() {
-
-    if(WindowedAppContext::ui_thread_id_==std::this_thread::get_id()){
-        event=EVENT_PAINT;
-        return;
-    }
-
+    // FIRE-AND-FORGET. Must NEVER block: the GPU present thread calls this from
+    // Presenter::PaintAndPresent while holding paint_mode_mutex_. Blocking here
+    // (the old behavior) is the AB-BA deadlock -- main_thr would wait on the
+    // pump while the GPU thread waits on main_thr holding paint_mode_mutex_.
     pthread_mutex_lock(&mutex);
-    event=EVENT_PAINT;
-    while(event){
-        pthread_cond_wait(&cond, &mutex);
-    }
+    pending_events |= EVENT_PAINT;
     pthread_mutex_unlock(&mutex);
 }
 
@@ -140,38 +141,55 @@ void AndroidWindowedAppContext::setup_ui_thr_id(std::thread::id id){
 void AndroidWindowedAppContext::main_loop(){
     assert(WindowedAppContext::ui_thread_id_==std::this_thread::get_id());
     while(!WindowedAppContext::HasQuitFromUIThread()){
-        if(event==0){
-            //std::this_thread::yield();
+        // Snapshot the pending bits, then run all work UNLOCKED. Holding `mutex`
+        // across ExecutePendingFunctions / Paint would self-deadlock: those can
+        // call request_paint() -> pthread_mutex_lock(&mutex) on this same thread.
+        pthread_mutex_lock(&mutex);
+        uint32_t ev = pending_events;
+        // PAINT is fire-and-forget; consume it now. EXECUTE is consumed here too
+        // but its waiters block on exec_completed, signalled AFTER the run below.
+        pending_events &= ~(EVENT_PAINT | EVENT_EXECUTE_PENDING_FUNCTIONS);
+        uint64_t exec_to = exec_requested;
+        pthread_mutex_unlock(&mutex);
+
+        if(ev == 0){
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            continue;
         }
-        else if(event==EVENT_EXECUTE_PENDING_FUNCTIONS){
-            pthread_mutex_lock(&mutex);
 
+        if(ev & EVENT_EXECUTE_PENDING_FUNCTIONS){
             WindowedAppContext::ExecutePendingFunctionsFromUIThread();
-            if(event==EVENT_EXECUTE_PENDING_FUNCTIONS)
-                event=0;
-
-            pthread_cond_signal(&cond);
+            // Release every producer whose ticket was taken before this drain.
+            pthread_mutex_lock(&mutex);
+            exec_completed = exec_to;
+            pthread_cond_broadcast(&cond);
             pthread_mutex_unlock(&mutex);
         }
-        else if(event==EVENT_PAINT){
-            pthread_mutex_lock(&mutex);
+
+        if(ev & EVENT_PAINT){
             EmulatorApp* app=reinterpret_cast<EmulatorApp*>(ae::g_windowed_app.get());
             AndroidWindow* win=reinterpret_cast<AndroidWindow*>(app->emu_window.get());
             win->Paint();
-            event=0;
-            pthread_cond_signal(&cond);
-            pthread_mutex_unlock(&mutex);
         }
-        else if(event==EVENT_QUIT){
-            pthread_mutex_lock(&mutex);
+
+        if(ev & EVENT_QUIT){
+            // Drain remaining queued functions, then fall through to the
+            // shutdown epilogue (which releases any stranded synchronous waiter).
             WindowedAppContext::QuitFromUIThread();
-            event=0;
-            pthread_cond_signal(&cond);
-            pthread_mutex_unlock(&mutex);
-            return;
+            break;
         }
     }
+
+    // Loop is exiting (quit). Release every producer still blocked in
+    // NotifyUILoopOfPendingFunctions / PlatformQuitFromUIThread so a synchronous
+    // surface_detach (or any CallInUIThread) can't hang forever during teardown --
+    // their closures were already drained by QuitFromUIThread or a prior iteration.
+    // (SP0 adversarial-review fix: quit-vs-detach lost wakeup.)
+    pthread_mutex_lock(&mutex);
+    ui_loop_exited = true;
+    exec_completed = exec_requested;
+    pthread_cond_broadcast(&cond);
+    pthread_mutex_unlock(&mutex);
 }
 
 AndroidWindowedAppContext::AndroidWindowedAppContext() {
@@ -200,6 +218,7 @@ void AndroidWindow::RequestCloseImpl() {
 std::unique_ptr<xe::ui::Surface> AndroidWindow::CreateSurfaceImpl(xe::ui::Surface::TypeFlags allowed_types) {
     XELOGI("Creating Android surface...");
     if(allowed_types&xe::ui::Surface::kTypeFlag_AndroidNativeWindow) {
+        std::lock_guard<std::mutex> lk(ae::window_mutex);
         ANativeWindow *window = ae::window;
         return std::make_unique<xe::ui::AndroidNativeWindowSurface>(window);
     }
@@ -213,7 +232,16 @@ void AndroidWindow::RequestPaintImpl() {
 }
 
 void AndroidWindow::UpdateSurface(){
+    // Detach the old presenter surface (if any) and create+attach a new one
+    // from ae::window. All GPU drain + swapchain rebuild happens inside
+    // Presenter::SetWindowSurfaceFromUIThread. UI-thread only.
     OnSurfaceChanged(true);
+}
+
+void AndroidWindow::DetachSurface(){
+    // Detach the presenter from the current surface WITHOUT creating a new one
+    // (drains the GPU + destroys swapchain/VkSurfaceKHR). UI-thread only.
+    OnSurfaceChanged(false);
 }
 
 void AndroidWindow::Paint(){
@@ -305,9 +333,16 @@ bool EmulatorApp::OnInitialize() {
     // GraphicsSystem::GetInternalDisplayResolution() was dropped in favor of
     // upstream's XConfig-based GetResolution().
 
-    // Main emulator display window.
+    // Main emulator display window. Snapshot the surface dimensions under the
+    // window guard -- the binder thread can write them via surface_attach/resize.
+    int boot_w, boot_h;
+    {
+        std::lock_guard<std::mutex> lk(ae::window_mutex);
+        boot_w = ae::window_width;
+        boot_h = ae::window_height;
+    }
     emu_window = xe::app::EmulatorWindow::Create(emu.get(), app_context(),
-                                                 ae::window_width,ae::window_height);
+                                                 boot_w, boot_h);
 
     if (!emu_window) {
         XELOGE("Failed to create the main emulator window");
@@ -634,6 +669,9 @@ namespace ae{
     ANativeWindow* window;
     int window_width;
     int window_height;
+    std::mutex window_mutex;
+    // Set once in main_thr; null before boot. Used to marshal surface ops.
+    AndroidWindowedAppContext* g_app_context = nullptr;
 
     std::string game_id;
 
@@ -683,6 +721,7 @@ namespace ae{
 
         AndroidWindowedAppContext wnd_ctx;
         wnd_ctx.setup_ui_thr_id(std::this_thread::get_id());
+        g_app_context=&wnd_ctx;
         g_windowed_app=xe::ui::GetWindowedAppCreator()(wnd_ctx);
         g_windowed_app_ref=dynamic_cast<EmulatorApp*>(g_windowed_app.get());
 
@@ -746,6 +785,67 @@ namespace ae{
     }
 
     void init(){
+    }
+
+    void surface_detach(){
+        ANativeWindow* old = nullptr;
+        {
+            std::lock_guard<std::mutex> lk(window_mutex);
+            old = window;
+        }
+        // Marshal the teardown to main_thr and BLOCK until it finishes (the
+        // fork's CallInUIThread is synchronous via the pump). Only after the
+        // GPU drain + vkDestroySurfaceKHR is it safe to release the window.
+        if(g_app_context && g_windowed_app_ref){
+            AndroidWindow* win =
+                reinterpret_cast<AndroidWindow*>(g_windowed_app_ref->emu_window.get());
+            if(win){
+                XELOGI("ae::surface_detach: marshalling DetachSurface to main_thr");
+                g_app_context->CallInUIThread([win]{ win->DetachSurface(); });
+            }
+        }
+        {
+            std::lock_guard<std::mutex> lk(window_mutex);
+            if(window == old) window = nullptr;
+        }
+        if(old){
+            XELOGI("ae::surface_detach: ANativeWindow_release");
+            ANativeWindow_release(old);
+        }
+    }
+
+    void surface_attach(ANativeWindow* w, int width, int height){
+        // Defensive: if a surface is somehow still attached (no prior detach),
+        // tear it down first so we never leak the old ANativeWindow.
+        bool had_old;
+        { std::lock_guard<std::mutex> lk(window_mutex); had_old = (window != nullptr); }
+        if(had_old){
+            XELOGW("ae::surface_attach: previous surface still attached; detaching first");
+            surface_detach();
+        }
+        {
+            std::lock_guard<std::mutex> lk(window_mutex);
+            window = w;
+            window_width = width;
+            window_height = height;
+        }
+        // Pre-boot: just stash the window; main_thr snapshots it during
+        // SetupGraphicsSystemPresenterPainting. Post-boot: marshal a recreate
+        // (async is fine -- the new swapchain comes up on the next paint tick).
+        if(!g_app_context || !g_windowed_app_ref) return;
+        AndroidWindow* win =
+            reinterpret_cast<AndroidWindow*>(g_windowed_app_ref->emu_window.get());
+        if(!win) return;
+        XELOGI("ae::surface_attach: marshalling UpdateSurface to main_thr");
+        g_app_context->CallInUIThread([win]{ win->UpdateSurface(); });
+    }
+
+    void surface_resize(int width, int height){
+        std::lock_guard<std::mutex> lk(window_mutex);
+        window_width = width;
+        window_height = height;
+        // SP0: size is re-queried from the live ANativeWindow on swapchain
+        // recreate, so no separate resize marshal is needed here (spec OQ3).
     }
 
 }

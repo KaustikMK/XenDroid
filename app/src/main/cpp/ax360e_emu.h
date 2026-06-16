@@ -3,6 +3,8 @@
 #ifndef AX360E_AX360E_EMU_H
 #define AX360E_AX360E_EMU_H
 
+#include <cstdint>
+
 #include "xenia/app/emulator_window.h"
 #include "xenia/ui/windowed_app_context.h"
 #include "xenia/ui/windowed_app.h"
@@ -12,10 +14,19 @@
 class AndroidWindowedAppContext final : public xe::ui::WindowedAppContext {
 public:
 
-    volatile int event=0;
-    static const int EVENT_EXECUTE_PENDING_FUNCTIONS = 1;
-    static const int EVENT_QUIT = 2;
-    static const int EVENT_PAINT = 3;
+    // Pending-work bitmask, guarded by `mutex`. Bit flags (NOT the old 1/2/3
+    // equality values) so concurrent producers can't clobber each other.
+    uint32_t pending_events = 0;
+    static const uint32_t EVENT_EXECUTE_PENDING_FUNCTIONS = 1u << 0;
+    static const uint32_t EVENT_QUIT = 1u << 1;
+    static const uint32_t EVENT_PAINT = 1u << 2;
+    // Generation counters preserving SYNCHRONOUS CallInUIThread semantics:
+    // a producer waits until exec_completed >= the ticket it took.
+    uint64_t exec_requested = 0;
+    uint64_t exec_completed = 0;
+    // Set true when main_loop exits (quit). Releases any producer still blocked
+    // on a synchronous marshal so it can't hang during teardown.
+    bool ui_loop_exited = false;
 
     pthread_mutex_t mutex;
     pthread_cond_t cond;
@@ -48,7 +59,8 @@ protected:
     void RequestPaintImpl() override;
 
 public:
-    void UpdateSurface();
+    void UpdateSurface();   // attach/recreate: OnSurfaceChanged(true)
+    void DetachSurface();   // detach only:    OnSurfaceChanged(false)
     void Paint();
 };
 
