@@ -1682,6 +1682,20 @@ bool VulkanTextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture,
         vulkan_texture.image(), ui::vulkan::util::InitializeSubresourceRange(),
         texture_src_stage_mask, texture_dst_stage_mask, texture_src_access_mask,
         texture_dst_access_mask, texture_old_layout, texture_new_layout);
+  } else {
+    // Re-uploading a texture already written by a transfer in this submission
+    // without being sampled in between (the guest modified it again): the
+    // previous copy's writes must be made available before writing the image
+    // again, or the copies race (WRITE_AFTER_WRITE hazard reported by
+    // synchronization validation). skip_if_equal must be false - this barrier
+    // is intentionally all-equal and would otherwise be elided.
+    command_processor_.PushImageMemoryBarrier(
+        vulkan_texture.image(), ui::vulkan::util::InitializeSubresourceRange(),
+        VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+        VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
+        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_QUEUE_FAMILY_IGNORED,
+        VK_QUEUE_FAMILY_IGNORED, false);
   }
   command_processor_.SubmitBarriers(true);
   VkBufferImageCopy* copy_regions = command_buffer.CmdCopyBufferToImageEmplace(
