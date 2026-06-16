@@ -409,6 +409,13 @@ void XmaDecoder::Pause() {
   }
   paused_ = true;
 
+  // Wake the worker if it's parked idle (no active XMA contexts) so it can
+  // reach the pause check and ack - otherwise this fence deadlocks the
+  // pauser (e.g. the guest-crash handler hanging before it logs anything).
+  if (work_event_) {
+    work_event_->Set();
+  }
+
   pause_fence_.Wait();
 }
 
