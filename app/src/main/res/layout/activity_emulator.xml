@@ -9,7 +9,7 @@
         android:keepScreenOn="true"
         android:id="@+id/surface_view" />
 
-    <aenu.ax360e.VirtualControl
+    <xedroid.VirtualControl
         android:id="@+id/virtual_control"
         android:layout_width="match_parent"
         android:layout_height="match_parent" />

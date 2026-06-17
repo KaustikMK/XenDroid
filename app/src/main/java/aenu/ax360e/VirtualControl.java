@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: WTFPL
-package aenu.ax360e;
+package xedroid.compose;
 
 import android.content.Context;
 import android.graphics.Bitmap;

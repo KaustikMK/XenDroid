@@ -1,6 +1,6 @@
 
 // SPDX-License-Identifier: WTFPL
-// Created by aenu on 2025/5/29.
+// Created by xedroid on 2025/5/29.
 //
 #include <dlfcn.h>
 #include <string>

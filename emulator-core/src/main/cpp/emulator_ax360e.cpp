@@ -41,7 +41,7 @@ jobject g_doocument_file_tree;
 
 jmethodID mid_open_uri_fd;
 
-// Set in JNI_OnLoad (ax360e.cpp); used by DocumentFile::find for the ISO path.
+// Set in JNI_OnLoad (compose.cpp); used by DocumentFile::find for the ISO path.
 extern JavaVM* g_jvm;
 
 // Title-id format codes -- MUST match GameFormat.titleIdCode in Kotlin.
@@ -98,7 +98,7 @@ static jstring j_simple_device_info(JNIEnv* env, jobject thiz)
             vk_unload();
         });
 
-        std::optional<VkInstance> inst=vk_create_instance("ax360e-gpu_info");
+        std::optional<VkInstance> inst=vk_create_instance("compose-gpu_info");
         if(!inst) {
             return "获取gpu信息失败";
         }
@@ -550,7 +550,7 @@ static jobject j_meta_from_xex(JNIEnv* env, jobject self,
         return nullptr;
     }
 
-    jclass cls = env->FindClass("aenu/ax360e/Emulator$GameInfo");
+    jclass cls = env->FindClass("xedroid/compose/Emulator$GameInfo");
     jmethodID ctor = env->GetMethodID(cls, "<init>", "()V");
     jfieldID fid_name = env->GetFieldID(cls, "name", "Ljava/lang/String;");
     jfieldID fid_uri = env->GetFieldID(cls, "uri", "Ljava/lang/String;");
@@ -584,7 +584,7 @@ static jobject j_meta_from_xex(JNIEnv* env, jobject self,
 }
 
 static jobject j_meta_info_from_god_game(JNIEnv* env,jobject self,jobject context,jstring uri_str ) {
-    jclass cls_Emulator$GameInfo = env->FindClass("aenu/ax360e/Emulator$GameInfo");
+    jclass cls_Emulator$GameInfo = env->FindClass("xedroid/compose/Emulator$GameInfo");
     jmethodID mid_Emulator$GameInfo = env->GetMethodID(cls_Emulator$GameInfo, "<init>", "()V");
     jfieldID fid_name = env->GetFieldID(cls_Emulator$GameInfo, "name", "Ljava/lang/String;");
     jfieldID fid_uri = env->GetFieldID(cls_Emulator$GameInfo, "uri", "Ljava/lang/String;");
@@ -662,7 +662,7 @@ static jobject j_meta_info_from_uri(JNIEnv* env,jobject self,jstring uri_str ){
         public int fd;
         public byte[] icon;
      */
-    jclass cls_Emulator$GameInfo = env->FindClass("aenu/ax360e/Emulator$GameInfo");
+    jclass cls_Emulator$GameInfo = env->FindClass("aenu/compose/Emulator$GameInfo");
     jmethodID mid_Emulator$GameInfo = env->GetMethodID(cls_Emulator$GameInfo, "<init>", "()V");
     jobject game_info = env->NewObject(cls_Emulator$GameInfo, mid_Emulator$GameInfo);
     jfieldID fid_name = env->GetFieldID(cls_Emulator$GameInfo, "name", "Ljava/lang/String;");
@@ -880,9 +880,9 @@ static const std::pair<std::string,range> gen_seekbar[]={
         //{"Video|internal_display_resolution_y",{1,1080}},
 };
 
-#define SEEKBAR_PREF_TAG "aenu.preference.SeekBarPreference"
-#define CHECKBOX_PREF_TAG "aenu.preference.CheckBoxPreference"
-#define LIST_PREF_TAG "aenu.preference.ListPreference"
+#define SEEKBAR_PREF_TAG "xedroid.preference.SeekBarPreference"
+#define CHECKBOX_PREF_TAG "xedroid.preference.CheckBoxPreference"
+#define LIST_PREF_TAG "xedroid.preference.ListPreference"
 #if 1
 
 static jstring generate_config_xml(JNIEnv* env,jobject self,jstring toml_path){
@@ -1198,7 +1198,7 @@ int register_ax360e_Emulator(JNIEnv* env){
     g_class_DocumentFile=env->FindClass("androidx/documentfile/provider/DocumentFile");
     g_class_DocumentFile=(jclass)env->NewGlobalRef(g_class_DocumentFile);
 
-    g_class_Emulator = env->FindClass("aenu/ax360e/Emulator");
+    g_class_Emulator = env->FindClass("xedroid/compose/Emulator");
     g_class_Emulator = (jclass)env->NewGlobalRef(g_class_Emulator);
 
     //public static int nc_open_uri_fd(Context ctx,String uri)
@@ -1208,9 +1208,9 @@ int register_ax360e_Emulator(JNIEnv* env){
             { "setup_context", "(Landroid/content/Context;)V", (void *) j_setup_context },
             { "setup_document_file_tree", "(Landroidx/documentfile/provider/DocumentFile;)V", (void *) j_setup_document_file_tree },
             { "setup_launch_args", "([Ljava/lang/String;)V", (void *) j_setup_launch_args },
-            { "meta_info_from_god_game", "(Landroid/content/Context;Ljava/lang/String;)Laenu/ax360e/Emulator$GameInfo;", (void *) j_meta_info_from_god_game },
+            { "meta_info_from_god_game", "(Landroid/content/Context;Ljava/lang/String;)Lxedroid/compose/Emulator$GameInfo;", (void *) j_meta_info_from_god_game },
             { "title_id_from_uri", "(Landroid/content/Context;Ljava/lang/String;I)Ljava/lang/String;", (void *) j_title_id_from_uri },
-            { "meta_from_xex", "(Landroid/content/Context;Ljava/lang/String;I)Laenu/ax360e/Emulator$GameInfo;", (void *) j_meta_from_xex },
+            { "meta_from_xex", "(Landroid/content/Context;Ljava/lang/String;I)Lxedroid/compose/Emulator$GameInfo;", (void *) j_meta_from_xex },
             { "setup_uri_info_list_file", "(Ljava/lang/String;)V", (void *) j_setup_uri_info_list_file },
             {"simple_device_info", "()Ljava/lang/String;", (void *) j_simple_device_info}
             ,{"generate_config_xml", "(Ljava/lang/String;)Ljava/lang/String;", (void *) generate_config_xml}

@@ -10,7 +10,7 @@ The Gradle build produces two modules:
   `libhardware_ProcessorInfo.so`) plus the JNI-bound Java classes. Built once,
   consumed transitively.
 - `:app-compose` — the Kotlin/Jetpack-Compose frontend (`applicationId
-  aenu.ax360e.compose`).
+  compose.compose`).
 
 ## Toolchain
 

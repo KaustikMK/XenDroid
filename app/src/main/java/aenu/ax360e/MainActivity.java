@@ -1,4 +1,4 @@
-package aenu.ax360e;
+package xedroid.compose;
 
 import android.annotation.TargetApi;
 import android.app.Activity;
@@ -84,7 +84,7 @@ public class MainActivity extends AppCompatActivity {
 
             Emulator.GameInfo meta_info=((GameMetaInfoAdapter)l.getAdapter()).getMetaInfo(position);
 
-            Intent intent = new Intent("aenu.intent.action.AX360E");
+            Intent intent = new Intent("xedroid.intent.action.AX360E");
             intent.setPackage(getPackageName());
 
             intent.putExtra(EmulatorActivity.EXTRA_GAME_URI,meta_info.uri);
@@ -140,8 +140,8 @@ public class MainActivity extends AppCompatActivity {
         //FIXME
         Emulator.get.setup_document_file_tree(DocumentFile.fromTreeUri(this,MainActivity.load_pref_game_dir( this)));
         Emulator.get.setup_launch_args(new String[]{
-                "--storage_root=/storage/emulated/0/Download/ax360e",
-                "--log_file=/storage/emulated/0/Download/ax360e/xe.log",
+                "--storage_root=/storage/emulated/0/Download/compose",
+                "--log_file=/storage/emulated/0/Download/compose/xe.log",
         });*/
         setContentView(R.layout.activity_main);
         
@@ -156,7 +156,7 @@ public class MainActivity extends AppCompatActivity {
         list_view.setOnItemClickListener(item_click_l);
         list_view.setEmptyView(findViewById(R.id.game_list_is_empty));
 
-        if(getPackageName().equals("aenu.ax360e"))
+        if(getPackageName().equals("xedroid.compose"))
         registerForContextMenu(list_view);
         //refresh_game_list();
         show_game_list();

@@ -1,10 +1,10 @@
 Free Version
-<a href="https://play.google.com/store/apps/details?id=aenu.ax360e.free&pcampaignid=web_share">
+<a href="https://play.google.com/store/apps/details?id=compose.free&pcampaignid=web_share">
 <img src="https://play.google.com/intl/en_us/badges/static/images/badges/en_badge_web_generic.png" alt="Get it on Google Play" height="80"/>
 </a>
 
 Donation Version
-<a href="https://play.google.com/store/apps/details?id=aenu.ax360e&pcampaignid=web_share">
+<a href="https://play.google.com/store/apps/details?id=compose&pcampaignid=web_share">
 <img src="https://play.google.com/intl/en_us/badges/static/images/badges/en_badge_web_generic.png" alt="Get it on Google Play" height="80"/>
 </a>
 

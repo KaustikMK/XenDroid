@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: WTFPL
-package aenu.ax360e;
+package xedroid.compose;
 
 import android.annotation.TargetApi;
 import android.app.*;

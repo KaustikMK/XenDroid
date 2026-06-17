@@ -20,8 +20,8 @@ titles don't want — and use the emulator's per-game config mechanism instead.
 Example (adb):
 
 ```sh
-adb shell 'mkdir -p /sdcard/Android/data/aenu.ax360e.free/files/ax360e/config'
-adb push 544307D5.config.toml /sdcard/Android/data/aenu.ax360e.free/files/ax360e/config/
+adb shell 'mkdir -p /sdcard/Android/data/composee.free/files/compose/config'
+adb push 544307D5.config.toml /sdcard/Android/data/composee.free/files/compose/config/
 ```
 
 ## Known title requirements

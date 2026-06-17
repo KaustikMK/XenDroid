@@ -1,5 +1,5 @@
 
-# Native build for ax360e (arm64-v8a only). See ../../../BUILD.md for the
+# Native build for compose (arm64-v8a only). See ../../../BUILD.md for the
 # toolchain requirements (CMake version is pinned via cmake.dir in
 # local.properties and selected by the Gradle externalNativeBuild block).
 cmake_minimum_required(VERSION 3.30.3)

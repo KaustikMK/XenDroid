@@ -9,11 +9,11 @@ plugins {
 // build (libe.so) + JNI boundary. Distinct applicationId so it installs alongside
 // the legacy build during the rewrite.
 android {
-    namespace 'aenu.ax360e.compose'
+    namespace 'xedroid.compose'
     compileSdk 35
 
     defaultConfig {
-        applicationId 'aenu.ax360e.compose'
+        applicationId 'xedroid.compose'
         // 29+ matches :emulator-core (native ELF TLS in libe.so).
         minSdk 29
         targetSdk 35

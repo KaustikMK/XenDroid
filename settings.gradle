@@ -19,7 +19,7 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "ax360e"
+rootProject.name = "compose"
 include ':emulator-core'
 include ':app-compose'
 // Legacy Java/AppCompat UI retired after SP1-A1 proved :emulator-core (per user
