@@ -8,9 +8,10 @@ Donation Version
 <img src="https://play.google.com/intl/en_us/badges/static/images/badges/en_badge_web_generic.png" alt="Get it on Google Play" height="80"/>
 </a>
 
-Compilation Steps (Windows using Android Studio):
+Building:
 
-Rename app/build.gradle.bak to app/build.gradle  and complete the signing information.
+See [BUILD.md](BUILD.md) for build instructions (Linux and Windows). In short:
+`./gradlew :app-compose:assembleDebug` (Linux) or `gradlew.bat :app-compose:assembleDebug` (Windows).
 
 LICENSE:
 
@@ -19,10 +20,9 @@ Please check the LICENSE file under the appropriate file header and directory fo
 
 --------
 
-编译步骤(Windows下，使用Android Studio)
+编译说明:
 
-1:
-重命名 app/build.gradle.bak为app/build.gradle，并补全签名信息
+请参阅 [BUILD.md](BUILD.md) 获取 Linux 和 Windows 的构建说明。
 
 协议:
 请检查相应文件头和目录下的许可证文件以获取详细信息。

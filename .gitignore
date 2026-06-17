@@ -7,7 +7,6 @@
 /captures
 .externalNativeBuild
 .cxx
-local.properties
 sv.py
 
 app/src/main/lib/

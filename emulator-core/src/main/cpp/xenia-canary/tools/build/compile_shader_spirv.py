@@ -33,18 +33,24 @@ XESL_WRAPPER = (
 
 def find_vulkan_tools():
     """Find Vulkan SDK tools via VULKAN_SDK env or PATH."""
+    # On Windows the binaries carry a .exe suffix. A fully-qualified path without
+    # an extension is NOT resolved by CreateProcess, so VULKAN_SDK lookups must
+    # include it (the bare-name PATH fallback is fine -- PATHEXT applies there).
+    ext = ".exe" if os.name == "nt" else ""
+    tools = ("glslangValidator" + ext, "spirv-opt" + ext, "spirv-dis" + ext)
+
     vulkan_sdk = os.environ.get("VULKAN_SDK")
     if vulkan_sdk:
-        bin_dir = os.path.join(vulkan_sdk, "bin")
-        if os.path.isdir(bin_dir):
-            return (
-                os.path.join(bin_dir, "glslangValidator"),
-                os.path.join(bin_dir, "spirv-opt"),
-                os.path.join(bin_dir, "spirv-dis"),
-            )
+        # Windows SDK uses "Bin"; Linux/macOS use "bin".
+        for sub in ("bin", "Bin"):
+            bin_dir = os.path.join(vulkan_sdk, sub)
+            if os.path.isdir(bin_dir):
+                cand = tuple(os.path.join(bin_dir, t) for t in tools)
+                if all(os.path.isfile(c) for c in cand):
+                    return cand
 
     # Fall back to PATH
-    return ("glslangValidator", "spirv-opt", "spirv-dis")
+    return tools
 
 
 def parse_stage(filename):

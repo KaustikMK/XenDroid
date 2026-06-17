@@ -65,6 +65,28 @@ target_sources(emu
         vkutil.cpp
 )
 
+# Pre-flight: the GPU/UI shaders are compiled to SPIR-V at build time by
+# xenia-canary/tools/build/compile_shader_spirv.py, which needs these host tools.
+# Validate them at configure time so a missing dependency is a clear, actionable
+# error instead of a confusing Python failure deep inside the Ninja build.
+set(_xe_vk_hint_dirs)
+if(DEFINED ENV{VULKAN_SDK})
+    list(APPEND _xe_vk_hint_dirs "$ENV{VULKAN_SDK}/bin" "$ENV{VULKAN_SDK}/Bin")
+endif()
+foreach(_tool glslangValidator spirv-opt spirv-dis)
+    string(MAKE_C_IDENTIFIER "XE_TOOL_${_tool}" _tool_var)
+    find_program(${_tool_var} NAMES ${_tool} HINTS ${_xe_vk_hint_dirs})
+    if(NOT ${_tool_var})
+        message(FATAL_ERROR
+            "Shader toolchain: '${_tool}' not found.\n"
+            "  It compiles the GPU/UI shaders to SPIR-V at build time.\n"
+            "  Windows/macOS: install the Vulkan SDK (https://vulkan.lunarg.com) -- "
+            "it sets VULKAN_SDK and ships glslangValidator/spirv-opt/spirv-dis.\n"
+            "  Linux (Debian/Ubuntu): sudo apt install glslang-tools spirv-tools\n"
+            "  Then ensure the tools are on PATH or under $VULKAN_SDK/bin. See BUILD.md.")
+    endif()
+endforeach()
+
 add_subdirectory(xenia-canary EXCLUDE_FROM_ALL)
 
 add_subdirectory(libadrenotools EXCLUDE_FROM_ALL)

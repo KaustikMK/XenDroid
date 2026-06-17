@@ -194,34 +194,38 @@ target_include_directories(pugixml PUBLIC pugixml/src)
 # ==============================================================================
 # snappy
 # ==============================================================================
-# Generate snappy-stubs-public.h if missing
-if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/snappy/snappy-stubs-public.h")
-  if(XE_TARGET_X86_64)
-    set(_snappy_avx_flag "-DSNAPPY_REQUIRE_AVX=ON")
-  else()
-    set(_snappy_avx_flag "-DSNAPPY_REQUIRE_AVX=OFF")
-  endif()
-  execute_process(
-    COMMAND ${CMAKE_COMMAND}
-      -DSNAPPY_BUILD_TESTS=OFF
-      -DSNAPPY_BUILD_BENCHMARKS=OFF
-      ${_snappy_avx_flag}
-      ${CMAKE_CURRENT_SOURCE_DIR}/snappy
-      -B${CMAKE_CURRENT_SOURCE_DIR}/snappy
-    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-  )
-endif()
+# snappy-stubs-public.h is generated from the committed .h.in template. We do it
+# with CMake's own configure_file using fixed values for the Android target,
+# written OUT of the source tree.
+#
+# Previously this ran a NESTED host CMake configure (execute_process with no
+# generator) into the source dir. That (a) baked HOST-OS feature probes into the
+# Android binary, (b) polluted the source tree with CMakeCache.txt/Makefile/etc.,
+# and (c) on a Windows host defaulted to the MSVC/NMake generator and failed the
+# whole build with "Running 'nmake' '-?' failed / CMAKE_C_COMPILER not set",
+# which then cascaded into "Cannot find source file: snappy-stubs-public.h".
+set(_snappy_gen_dir "${CMAKE_CURRENT_BINARY_DIR}/snappy-gen")
+set(HAVE_SYS_UIO_H_01 1)  # Android (bionic) provides <sys/uio.h>.
+# Keep in sync with snappy/CMakeLists.txt: project(Snappy VERSION 1.2.2).
+set(PROJECT_VERSION_MAJOR 1)
+set(PROJECT_VERSION_MINOR 2)
+set(PROJECT_VERSION_PATCH 2)
+# NOTE: the template uses ${VAR} tokens (not @VAR@), so this must NOT be @ONLY
+# -- default mode substitutes ${...}, matching snappy's own configure_file.
+configure_file(
+  "${CMAKE_CURRENT_SOURCE_DIR}/snappy/snappy-stubs-public.h.in"
+  "${_snappy_gen_dir}/snappy-stubs-public.h")
 add_library(snappy STATIC
   snappy/snappy-internal.h
   snappy/snappy-sinksource.cc
   snappy/snappy-sinksource.h
   snappy/snappy-stubs-internal.cc
   snappy/snappy-stubs-internal.h
-  snappy/snappy-stubs-public.h
+  "${_snappy_gen_dir}/snappy-stubs-public.h"
   snappy/snappy.cc
   snappy/snappy.h
 )
-target_include_directories(snappy PUBLIC snappy)
+target_include_directories(snappy PUBLIC snappy "${_snappy_gen_dir}")
 
 # ==============================================================================
 # xxhash
