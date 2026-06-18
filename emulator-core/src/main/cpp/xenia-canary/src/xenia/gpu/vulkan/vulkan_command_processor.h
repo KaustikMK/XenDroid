@@ -26,6 +26,7 @@
 #include "xenia/base/hash.h"
 #include "xenia/gpu/command_processor.h"
 #include "xenia/gpu/draw_util.h"
+#include "xenia/gpu/gpu_flags.h"
 #include "xenia/gpu/registers.h"
 #include "xenia/gpu/spirv_shader_translator.h"
 #include "xenia/gpu/vulkan/deferred_command_buffer.h"
@@ -40,6 +41,7 @@
 #include "xenia/gpu/xenos.h"
 #include "xenia/kernel/kernel_state.h"
 #include "xenia/ui/vulkan/linked_type_descriptor_set_allocator.h"
+#include "xenia/ui/vulkan/vulkan_descriptor_pool_chain.h"
 #include "xenia/ui/vulkan/vulkan_gpu_completion_timeline.h"
 #include "xenia/ui/vulkan/vulkan_presenter.h"
 #include "xenia/ui/vulkan/vulkan_provider.h"
@@ -144,6 +146,8 @@ class VulkanCommandProcessor final : public CommandProcessor {
   ~VulkanCommandProcessor();
 
   void ClearCaches() override;
+  void InvalidateGpuMemory() override;
+  void ClearReadbackBuffers() override;
 
   void TracePlaybackWroteMemory(uint32_t base_ptr, uint32_t length) override;
 
@@ -217,6 +221,12 @@ class VulkanCommandProcessor final : public CommandProcessor {
   void SubmitBarriersAndEnterRenderTargetCacheRenderPass(
       VkRenderPass render_pass,
       const VulkanRenderTargetCache::Framebuffer* framebuffer);
+  // Overload for transfer operations with dynamic rendering.
+  // transfer_dest_view is the destination render target view for the transfer.
+  void SubmitBarriersAndEnterRenderTargetCacheRenderPass(
+      VkRenderPass render_pass,
+      const VulkanRenderTargetCache::Framebuffer* framebuffer,
+      VkImageView transfer_dest_view, bool transfer_dest_is_depth);
   // Must be called before doing anything outside the render pass scope,
   // including adding pipeline barriers that are not a part of the render pass
   // scope. Submission must be open.
@@ -261,8 +271,13 @@ class VulkanCommandProcessor final : public CommandProcessor {
   void SetViewport(const VkViewport& viewport);
   void SetScissor(const VkRect2D& scissor);
 
-  // Returns the text to display in the GPU backend name in the window title.
-  std::string GetWindowTitleText() const;
+  std::string GetTitleStateSuffix() const override;
+
+  // Debug marker methods - public so subsystems can annotate their operations.
+  void PushDebugMarker(const char* format, ...);
+  void PopDebugMarker();
+  void InsertDebugMarker(const char* format, ...);
+  bool debug_markers_enabled() const { return debug_markers_enabled_; }
 
  protected:
   bool SetupContext() override;
@@ -300,7 +315,9 @@ class VulkanCommandProcessor final : public CommandProcessor {
   void IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontbuffer_width,
                  uint32_t frontbuffer_height) override;
 
-  Shader* LoadShader(xenos::ShaderType shader_type, uint32_t guest_address,
+  void OnPrimaryBufferEnd() override;
+
+  Shader* LoadShader(xenos::ShaderType shader_type,
                      const uint32_t* host_address,
                      uint32_t dword_count) override;
 
@@ -308,6 +325,9 @@ class VulkanCommandProcessor final : public CommandProcessor {
                  IndexBufferInfo* index_buffer_info,
                  bool major_mode_explicit) override;
   bool IssueCopy() override;
+
+  void IssueDraw_MemexportReadbackFullPath(uint32_t memexport_total_size);
+  void IssueDraw_MemexportReadbackFastPath(uint32_t memexport_total_size);
 
   void InitializeTrace() override;
 
@@ -418,16 +438,9 @@ class VulkanCommandProcessor final : public CommandProcessor {
   enum SwapApplyGammaDescriptorSet : uint32_t {
     kSwapApplyGammaDescriptorSetRamp,
     kSwapApplyGammaDescriptorSetSource,
+    kSwapApplyGammaDescriptorSetDest,
 
     kSwapApplyGammaDescriptorSetCount,
-  };
-
-  // Framebuffer for the current presenter's guest output image revision, and
-  // its usage tracking.
-  struct SwapFramebuffer {
-    VkFramebuffer framebuffer = VK_NULL_HANDLE;
-    uint64_t version = UINT64_MAX;
-    uint64_t last_submission = 0;
   };
 
   // BeginSubmission and EndSubmission may be called at any time. If there's an
@@ -451,6 +464,9 @@ class VulkanCommandProcessor final : public CommandProcessor {
   // clearing and stopping capturing. Returns whether the submission was done
   // successfully, if it has failed, leaves it open.
   bool EndSubmission(bool is_swap);
+  // Checks if ending a submission right now would not cause potentially more
+  // delay than it would reduce - such as when there are unfinished graphics
+  // pipeline creation requests.
   bool CanEndSubmissionImmediately() const;
   bool AwaitAllQueueOperationsCompletion() {
     CheckSubmissionCompletionAndDeviceLoss(GetCurrentSubmission());
@@ -474,6 +490,7 @@ class VulkanCommandProcessor final : public CommandProcessor {
   // DiscardZPDQuery defers the slot release until the submission completes.
   // FSI queries clear a dedicated counter with vkCmdFillBuffer, so they may
   // need to open before a pass begins or split an active pass around the clear.
+
   void EnsureZPDQueryResources() override;
   void ShutdownZPDQueryResources() override {
     zpd_resolves_in_flight_.clear();
@@ -481,7 +498,6 @@ class VulkanCommandProcessor final : public CommandProcessor {
     zpd_active_query_index_ = UINT32_MAX;
     zpd_active_query_generation_ = 0;
     zpd_active_query_is_fsi_ = false;
-    zpd_query_pool_needs_fsi_counter_ = false;
     zpd_fsi_counter_index_force_update_ = true;
     if (zpd_host_query_pool_) {
       zpd_host_query_pool_->Shutdown();
@@ -504,13 +520,15 @@ class VulkanCommandProcessor final : public CommandProcessor {
                           bool primitive_polygonal,
                           reg::RB_DEPTHCONTROL normalized_depth_control,
                           uint32_t draw_resolution_scale_x,
-                          uint32_t draw_resolution_scale_y);
+                          uint32_t draw_resolution_scale_y,
+                          bool depth_bias_in_pixel_shader);
   void UpdateSystemConstantValues(
       bool primitive_polygonal,
       const PrimitiveProcessor::ProcessingResult& primitive_processing_result,
       bool shader_32bit_index_dma, const draw_util::ViewportInfo& viewport_info,
       uint32_t used_texture_mask, reg::RB_DEPTHCONTROL normalized_depth_control,
-      uint32_t normalized_color_mask);
+      uint32_t normalized_color_mask,
+      const draw_util::HostDepthPolygonOffset* host_depth_polygon_offset);
   bool UpdateBindings(const VulkanShader* vertex_shader,
                       const VulkanShader* pixel_shader);
   // Allocates a descriptor set and fills one or two VkWriteDescriptorSet
@@ -529,6 +547,26 @@ class VulkanCommandProcessor final : public CommandProcessor {
       VkWriteDescriptorSet* descriptor_set_writes_out);
 
   bool device_lost_ = false;
+
+  // Rolling per-submission summary for diagnosing VK_ERROR_DEVICE_LOST.
+  // Accumulated into submission_in_progress_ during a submission, snapshotted
+  // into submission_history_ on successful submit, dumped on device-loss.
+  struct SubmissionSummary {
+    uint64_t submission_index = 0;
+    uint64_t frame_index = 0;
+    uint32_t draw_count = 0;
+    uint32_t dispatch_count = 0;
+    uint32_t resolve_count = 0;
+    uint64_t last_vs_hash = 0;
+    uint64_t last_ps_hash = 0;
+    uint64_t last_render_pass_key = 0;
+  };
+  static constexpr size_t kSubmissionHistorySize = 16;
+  std::array<SubmissionSummary, kSubmissionHistorySize> submission_history_{};
+  size_t submission_history_next_ = 0;
+  SubmissionSummary submission_in_progress_{};
+
+  void LogRecentSubmissions(const char* context);
 
   bool cache_clear_requested_ = false;
 
@@ -550,7 +588,6 @@ class VulkanCommandProcessor final : public CommandProcessor {
   uint32_t zpd_active_query_index_ = UINT32_MAX;
   uint32_t zpd_active_query_generation_ = 0;
   bool zpd_active_query_is_fsi_ = false;
-  bool zpd_query_pool_needs_fsi_counter_ = false;
   bool zpd_fsi_counter_index_force_update_ = true;
   std::deque<PendingQueryResolve> zpd_resolves_in_flight_;
   // Fallback buffer for EDRAM descriptor binding 2.
@@ -630,6 +667,8 @@ class VulkanCommandProcessor final : public CommandProcessor {
   // <Submission where last used, resource>, sorted by the submission number.
   std::deque<std::pair<uint64_t, VkDeviceMemory>> destroy_memory_;
   std::deque<std::pair<uint64_t, VkBuffer>> destroy_buffers_;
+  std::deque<std::pair<uint64_t, VkImage>> destroy_images_;
+  std::deque<std::pair<uint64_t, VkImageView>> destroy_image_views_;
   std::deque<std::pair<uint64_t, VkFramebuffer>> destroy_framebuffers_;
 
   std::vector<CommandBuffer> command_buffers_writable_;
@@ -749,6 +788,9 @@ class VulkanCommandProcessor final : public CommandProcessor {
       VK_NULL_HANDLE;
   VkDescriptorSetLayout swap_descriptor_set_layout_uniform_texel_buffer_ =
       VK_NULL_HANDLE;
+  // Storage image descriptor set layout for compute shader destination.
+  VkDescriptorSetLayout swap_descriptor_set_layout_storage_image_ =
+      VK_NULL_HANDLE;
 
   // Descriptor pool for allocating descriptors needed for presentation, such as
   // the destination images and the gamma ramps.
@@ -758,20 +800,75 @@ class VulkanCommandProcessor final : public CommandProcessor {
   // uploaded directly, one otherwise.
   std::array<VkDescriptorSet, 2 * kMaxFramesInFlight>
       swap_descriptors_gamma_ramp_;
-  // Sampled images.
+  // Sampled images for source.
   std::array<VkDescriptorSet, kMaxFramesInFlight> swap_descriptors_source_;
+  // Storage images for destination.
+  std::array<VkDescriptorSet, kMaxFramesInFlight> swap_descriptors_dest_;
 
+  // Gamma ramp application compute pipeline constants.
+  struct ApplyGammaConstants {
+    uint32_t size[2];
+  };
   VkPipelineLayout swap_apply_gamma_pipeline_layout_ = VK_NULL_HANDLE;
-  // Has no dependencies on specific pipeline stages on both ends to simplify
-  // use in different scenarios with different pipelines - use explicit barriers
-  // for synchronization.
-  VkRenderPass swap_apply_gamma_render_pass_ = VK_NULL_HANDLE;
   VkPipeline swap_apply_gamma_256_entry_table_pipeline_ = VK_NULL_HANDLE;
   VkPipeline swap_apply_gamma_pwl_pipeline_ = VK_NULL_HANDLE;
+  // Gamma pipelines that also compute FXAA luma in the alpha channel.
+  VkPipeline swap_apply_gamma_256_entry_table_fxaa_luma_pipeline_ =
+      VK_NULL_HANDLE;
+  VkPipeline swap_apply_gamma_pwl_fxaa_luma_pipeline_ = VK_NULL_HANDLE;
 
-  std::array<SwapFramebuffer,
-             ui::vulkan::VulkanPresenter::kMaxActiveGuestOutputImageVersions>
-      swap_framebuffers_;
+  // FXAA post-processing.
+  struct FxaaConstants {
+    uint32_t size[2];
+    float size_inv[2];
+  };
+  // Descriptor set layout for FXAA source (combined image sampler).
+  VkDescriptorSetLayout fxaa_source_descriptor_set_layout_ = VK_NULL_HANDLE;
+  VkPipelineLayout fxaa_pipeline_layout_ = VK_NULL_HANDLE;
+  VkPipeline fxaa_pipeline_ = VK_NULL_HANDLE;
+  VkPipeline fxaa_extreme_pipeline_ = VK_NULL_HANDLE;
+  VkSampler fxaa_sampler_ = VK_NULL_HANDLE;
+
+  // Resolve downscale compute shader for scaled resolution readback.
+  // Downscales scaled resolve buffer data back to 1x resolution on the GPU,
+  // avoiding expensive CPU-side downscaling and reducing transfer bandwidth.
+  struct ResolveDownscaleConstants {
+    uint32_t scale_x;              // 1 to kMaxDrawResolutionScaleAlongAxis
+    uint32_t scale_y;              // 1 to kMaxDrawResolutionScaleAlongAxis
+    uint32_t pixel_size_log2;      // 0=8bit, 1=16bit, 2=32bit, 3=64bit
+    uint32_t tile_count;           // Number of 32x32 tiles to process
+    uint32_t source_offset_bytes;  // Byte offset into source buffer
+    // When non-zero, apply half-pixel offset correction by sampling from
+    // (scale/2, scale/2) within each scaled block instead of (0, 0).
+    uint32_t half_pixel_offset;
+  };
+  VkDescriptorSetLayout resolve_downscale_descriptor_set_layout_ =
+      VK_NULL_HANDLE;
+  VkPipelineLayout resolve_downscale_pipeline_layout_ = VK_NULL_HANDLE;
+  VkPipeline resolve_downscale_pipeline_ = VK_NULL_HANDLE;
+  // Descriptor pool chain for resolve downscale shader (2 storage buffers per
+  // set). Uses pool chain to avoid mid-frame GPU stalls on pool exhaustion.
+  std::unique_ptr<ui::vulkan::VulkanDescriptorPoolChain>
+      resolve_downscale_descriptor_pool_chain_;
+  // Intermediate buffer for downscaled output (device local, for compute).
+  VkBuffer resolve_downscale_buffer_ = VK_NULL_HANDLE;
+  VkDeviceMemory resolve_downscale_buffer_memory_ = VK_NULL_HANDLE;
+  uint32_t resolve_downscale_buffer_size_ = 0;
+
+  // FXAA source texture - R16G16B16A16_SFLOAT for luma in alpha.
+  static constexpr VkFormat kFxaaSourceFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
+  VkDeviceMemory fxaa_source_memory_ = VK_NULL_HANDLE;
+  VkImage fxaa_source_image_ = VK_NULL_HANDLE;
+  VkImageView fxaa_source_image_view_ = VK_NULL_HANDLE;
+  uint32_t fxaa_source_width_ = 0;
+  uint32_t fxaa_source_height_ = 0;
+  uint64_t fxaa_source_last_submission_ = 0;
+  // Descriptor sets for FXAA - source as combined image sampler (for FXAA
+  // read).
+  std::array<VkDescriptorSet, kMaxFramesInFlight> fxaa_source_descriptors_;
+  // Descriptor sets for FXAA - source as storage image (for gamma+luma write).
+  std::array<VkDescriptorSet, kMaxFramesInFlight>
+      fxaa_source_storage_descriptors_;
 
   // Pending pipeline barriers.
   std::vector<VkBufferMemoryBarrier> pending_barriers_buffer_memory_barriers_;
@@ -854,9 +951,12 @@ class VulkanCommandProcessor final : public CommandProcessor {
   uint64_t current_samplers_destroy_generation_ = ~uint64_t(0);
 
   // Cache render pass currently started in the command buffer with the
-  // framebuffer.
+  // framebuffer. For dynamic rendering, current_render_pass_ is VK_NULL_HANDLE
+  // but in_render_pass_ is true.
   VkRenderPass current_render_pass_;
   const VulkanRenderTargetCache::Framebuffer* current_framebuffer_;
+  // True when inside a render pass or dynamic rendering block.
+  bool in_render_pass_ = false;
 
   // Currently bound graphics pipeline, either from the pipeline cache (with
   // potentially deferred creation - current_external_graphics_pipeline_ is
@@ -955,6 +1055,16 @@ class VulkanCommandProcessor final : public CommandProcessor {
       SpirvShaderTranslator::kDescriptorSetCount <=
           sizeof(current_graphics_descriptor_sets_bound_up_to_date_) * CHAR_BIT,
       "Bit fields storing descriptor set validity must be large enough");
+  // For reusing the texture/sampler descriptor sets across draws while their
+  // contents stay valid - the shaders and the samplers the currently valid
+  // texture descriptor sets were written for (texture image view changes are
+  // tracked separately via VulkanTextureCache::texture_bindings_changed).
+  const VulkanShader* current_textures_vertex_shader_ = nullptr;
+  const VulkanShader* current_textures_pixel_shader_ = nullptr;
+  std::vector<std::pair<VulkanTextureCache::SamplerParameters, VkSampler>>
+      current_written_samplers_vertex_;
+  std::vector<std::pair<VulkanTextureCache::SamplerParameters, VkSampler>>
+      current_written_samplers_pixel_;
 
   // Float constant usage masks of the last draw call.
   uint64_t current_float_constant_map_vertex_[4];
@@ -974,16 +1084,30 @@ class VulkanCommandProcessor final : public CommandProcessor {
     VkBuffer buffers[2] = {VK_NULL_HANDLE, VK_NULL_HANDLE};
     VkDeviceMemory memories[2] = {VK_NULL_HANDLE, VK_NULL_HANDLE};
     uint32_t sizes[2] = {0, 0};
+    void* mapped_data[2] = {nullptr, nullptr};  // Persistent mappings
     uint32_t current_index = 0;
     uint64_t last_used_frame = 0;
   };
+
+  // Helper to evict old readback buffers from a cache map
+  void EvictOldReadbackBuffers(
+      std::unordered_map<uint64_t, ReadbackBuffer>& buffer_map);
+
   // Map: (written_address << 32 | written_length) -> ReadbackBuffer
   std::unordered_map<uint64_t, ReadbackBuffer> readback_buffers_;
 
-  // Simple single buffer for memexport (always syncs, no double-buffering)
+  // Simple single buffer for memexport (full mode - always syncs, no
+  // double-buffering)
   VkBuffer memexport_readback_buffer_ = VK_NULL_HANDLE;
   VkDeviceMemory memexport_readback_buffer_memory_ = VK_NULL_HANDLE;
   uint32_t memexport_readback_buffer_size_ = 0;
+
+  // Per-memexport double-buffered readback for fast mode (delayed sync)
+  std::unordered_map<uint64_t, ReadbackBuffer> memexport_readback_buffers_;
+
+  // Debug marker support for RenderDoc/debug tools.
+  bool debug_markers_enabled_ = false;
+  void UpdateDebugMarkersEnabled();
 };
 
 }  // namespace vulkan

@@ -10,6 +10,7 @@
 #include "xenia/kernel/xbdm/xbdm_misc.h"
 #include "xenia/base/logging.h"
 #include "xenia/base/string_util.h"
+#include "xenia/cpu/processor.h"
 #include "xenia/kernel/kernel_state.h"
 #include "xenia/kernel/util/shim_utils.h"
 #include "xenia/kernel/xbdm/xbdm_private.h"
@@ -61,12 +62,12 @@ dword_result_t DmGetXboxName_entry(lpstring_t name_ptr,
 }
 DECLARE_XBDM_EXPORT1(DmGetXboxName, kDebug, kImplemented)
 
-dword_result_t DmGetConsoleType_entry(lpdword_t console_type) {
-  if (!console_type) {
+dword_result_t DmGetConsoleType_entry(lpdword_t console_type_out) {
+  if (!console_type_out) {
     return X_E_INVALIDARG;
   }
 
-  *console_type = CONSOLE_TYPE::DEVELOPMENT_KIT;
+  *console_type_out = static_cast<uint32_t>(cvars::console_type);
 
   return XBDM_SUCCESSFUL;
 }
@@ -80,6 +81,13 @@ DECLARE_XBDM_EXPORT1(DmIsDebuggerPresent, kDebug, kStub);
 dword_result_t DmSendNotificationString_entry(lpstring_t notify_string_ptr) {
   if (!notify_string_ptr) {
     return X_E_INVALIDARG;
+  }
+
+  XELOGI("(DmSendNotificationString) {}", notify_string_ptr.value());
+
+  if (cpu::DebugListener* listener =
+          kernel_state()->processor()->debug_listener()) {
+    listener->OnDebugPrint(notify_string_ptr.value());
   }
 
   return XBDM_SUCCESSFUL;

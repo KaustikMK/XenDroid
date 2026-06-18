@@ -54,7 +54,7 @@ class D3D12ZPDQueryPool {
                          bool initialize_rov_counter);
   void Shutdown();
 
-  bool rtv_initialized() const {
+  bool is_initialized() const {
     return query_heap_ && readback_buffer_ && readback_mapping_ != nullptr &&
            capacity_ != 0;
   }
@@ -66,7 +66,7 @@ class D3D12ZPDQueryPool {
            !rov_counter_resolve_batch_indices_.empty();
   }
 
-  bool rov_initialized() const {
+  bool rov_counter_initialized() const {
     return rov_counter_buffer_ && rov_counter_readback_buffer_ &&
            rov_counter_readback_mapping_ != nullptr && capacity_ != 0;
   }

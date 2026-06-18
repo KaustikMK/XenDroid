@@ -14,7 +14,9 @@
 #include "xenia/base/byte_stream.h"
 #include "xenia/base/clock.h"
 #include "xenia/base/logging.h"
+#include "xenia/kernel/kernel_state.h"
 #include "xenia/kernel/xthread.h"
+#include "xenia/memory.h"
 
 namespace xe {
 namespace kernel {
@@ -27,7 +29,12 @@ XEvent::~XEvent() = default;
 void XEvent::Initialize(bool manual_reset, bool initial_state) {
   assert_false(event_);
 
+  manual_reset_ = manual_reset;
   this->CreateNative<X_KEVENT>();
+  auto* kevent = memory()->TranslateVirtual<X_KEVENT*>(guest_object());
+  // Don't touch header.wait_list: SetNativePointer stashes the handle there.
+  kevent->header.type = manual_reset ? 0 : 1;  // 0=notification, 1=sync
+  kevent->header.signal_state = initial_state ? 1 : 0;
 
   if (manual_reset) {
     event_ = xe::threading::Event::CreateManualResetEvent(initial_state);
@@ -61,6 +68,7 @@ void XEvent::InitializeNative(void* native_ptr, X_DISPATCH_HEADER* header) {
   }
   assert_not_null(event_);
   RecordCreator();
+  SetNativePointer(memory()->HostToGuestVirtual(native_ptr), true);
 }
 
 void XEvent::RecordCreator() {
@@ -102,6 +110,8 @@ int32_t XEvent::Set(uint32_t priority_increment, bool wait) {
   set_priority_increment(priority_increment);
   RecordSetter();
   event_->Set();
+  memory()->TranslateVirtual<X_KEVENT*>(guest_object())->header.signal_state =
+      1;
   return 1;
 }
 
@@ -109,12 +119,25 @@ int32_t XEvent::Pulse(uint32_t priority_increment, bool wait) {
   set_priority_increment(priority_increment);
   RecordSetter();
   event_->Pulse();
+  // Pulse leaves the event reset after releasing waiters.
+  memory()->TranslateVirtual<X_KEVENT*>(guest_object())->header.signal_state =
+      0;
   return 1;
 }
 
 int32_t XEvent::Reset() {
   event_->Reset();
+  memory()->TranslateVirtual<X_KEVENT*>(guest_object())->header.signal_state =
+      0;
   return 1;
+}
+
+void XEvent::WaitCallback() {
+  // Auto-reset events atomically clear on successful wait; manual stay set.
+  if (!manual_reset_) {
+    memory()->TranslateVirtual<X_KEVENT*>(guest_object())->header.signal_state =
+        0;
+  }
 }
 void XEvent::Query(uint32_t* out_type, uint32_t* out_state) {
   auto [type, state] = event_->Query();

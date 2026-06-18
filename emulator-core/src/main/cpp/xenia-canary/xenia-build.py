@@ -6,72 +6,26 @@
 
 Run with --help or no arguments for possible commands.
 """
-from datetime import datetime
 from multiprocessing import Pool
 from functools import partial
 from argparse import ArgumentParser, ArgumentTypeError
 from glob import glob
 from json import loads as jsonloads
 import os
-from re import findall as re_findall
 import platform
-from shutil import rmtree
+from shutil import rmtree, which as shutil_which
 import subprocess
 import sys
 import stat
+import tarfile
+import urllib.request
+import zipfile
 import enum
 
 __author__ = "ben.vanik@gmail.com (Ben Vanik)"
 
 
 self_path = os.path.dirname(os.path.abspath(__file__))
-
-# TODO: Automate getting these entries
-XENIA_TARGETS = [
-    "aes_128",
-    "capstone",
-    "dxbc",
-    "discord-rpc",
-    "fmt",
-    "glslang-spirv",
-    "imgui",
-    "libavcodec",
-    "libavformat",
-    "libavutil",
-    "mspack",
-    "pugixml",
-    "snappy",
-    "xxhash",
-    "zarchive",
-    "zlib-ng",
-    "zstd",
-    "xenia-app",
-    "xenia-app-discord",
-    "xenia-apu",
-    "xenia-apu-alsa",
-    "xenia-apu-nop",
-    "xenia-apu-sdl",
-    "xenia-base",
-    "xenia-core",
-    "xenia-cpu",
-    "xenia-cpu-backend-x64",
-    "xenia-debug-ui",
-    "xenia-gpu",
-    "xenia-gpu-null",
-    "xenia-gpu-vulkan",
-    "xenia-gpu-vulkan-spirv-shaders",
-    "xenia-helper-sdl",
-    "xenia-hid",
-    "xenia-hid-nop",
-    "xenia-hid-sdl",
-    "xenia-hid-skylander",
-    "xenia-kernel",
-    "xenia-patcher",
-    "xenia-ui",
-    "xenia-ui-vulkan",
-    "xenia-ui-vulkan-spirv-shaders",
-    "xenia-vfs",
-]
 
 class bcolors:
 #    HEADER = "\033[95m"
@@ -131,7 +85,6 @@ def import_subprocess_environment(args):
         "WindowsSdkDir",
         "PROGRAMFILES",
         "ProgramFiles(x86)",
-        "VULKAN_SDK"
         "CC",
         "CXX",
         )
@@ -179,7 +132,10 @@ def import_vs_environment():
     if vswhere:
         vswhere = jsonloads(vswhere)
     if vswhere and len(vswhere) > 0:
-        version = int(vswhere[0].get("catalog", {}).get("productLineVersion", VSVERSION_MINIMUM))
+        # Map internal version to year version: 17->2022, 18->2026, etc.
+        internal_version = int(vswhere[0].get("catalog", {}).get("productLineVersion", 17))
+        version_map = {17: 2022, 18: 2026}
+        version = version_map.get(internal_version, VSVERSION_MINIMUM)
         install_path = vswhere[0].get("installationPath", None)
 
     vsdevcmd_path = os.path.join(install_path, "Common7", "Tools", "VsDevCmd.bat")
@@ -197,114 +153,15 @@ def import_vs_environment():
     return version
 
 
+_user_path = os.environ.get("PATH", "")
+
 vs_version = import_vs_environment()
 
 default_branch = "canary_experimental"
 
-def setup_vulkan_sdk():
-    """Setup Vulkan SDK environment variables if not already set.
-
-    Returns:
-        True if Vulkan SDK is available and valid, False otherwise.
-    """
-    # Check if VULKAN_SDK is already set and valid
-    existing_vulkan_sdk = os.environ.get("VULKAN_SDK")
-    if existing_vulkan_sdk:
-        if os.path.exists(existing_vulkan_sdk):
-            if has_bin("spirv-opt"):
-                print(f"VULKAN_SDK is set to {existing_vulkan_sdk}")
-                return True
-            print_warning(f"VULKAN_SDK is set to {existing_vulkan_sdk} but spirv-opt not found in PATH")
-        else:
-            print_warning(f"VULKAN_SDK is set to {existing_vulkan_sdk} but directory does not exist")
-        return False
-
-    if sys.platform != "win32":
-        # On Linux, find spirv-opt in PATH and set VULKAN_SDK based on its location
-        spirv_opt_path = get_bin("spirv-opt")
-        if spirv_opt_path:
-            # spirv-opt is typically in $VULKAN_SDK/bin/, so get parent directory
-            spirv_bin_dir = os.path.dirname(spirv_opt_path)
-            vulkan_sdk = os.path.dirname(spirv_bin_dir)
-            os.environ["VULKAN_SDK"] = vulkan_sdk
-            print(f"Found Vulkan SDK at {vulkan_sdk} (from spirv-opt location)")
-            return True
-        return False
-
-    # Windows: Check if Vulkan SDK is installed at the default location
-    vulkan_base = "C:\\VulkanSDK"
-    if not os.path.exists(vulkan_base):
-        return False
-
-    try:
-        subdirs = [d for d in os.listdir(vulkan_base)
-                   if os.path.isdir(os.path.join(vulkan_base, d))]
-        if not subdirs:
-            return False
-
-        vulkan_sdk = os.path.join(vulkan_base, subdirs[0])
-        vulkan_bin = os.path.join(vulkan_sdk, "Bin")
-
-        os.environ["VULKAN_SDK"] = vulkan_sdk
-        os.environ["PATH"] = f"{vulkan_bin}{os.pathsep}{os.environ['PATH']}"
-
-        print(f"Found Vulkan SDK at {vulkan_sdk}")
-        return True
-    except Exception:
-        return False
-
-
-def get_dir_newest_mtime(directory):
-    """Get the newest modification time in a directory tree (files and dirs).
-
-    Checks both files and directories to catch deletions/additions.
-    """
-    newest = 0
-    try:
-        for root, dirs, files in os.walk(directory):
-            # Skip bytecode subdirectories when scanning source
-            dirs[:] = [d for d in dirs if d != "bytecode"]
-            # Check directory mtime (changes when files added/removed)
-            mtime = os.path.getmtime(root)
-            if mtime > newest:
-                newest = mtime
-            for name in files:
-                mtime = os.path.getmtime(os.path.join(root, name))
-                if mtime > newest:
-                    newest = mtime
-    except OSError:
-        pass
-    return newest
-
-
-def get_dir_oldest_mtime(directory):
-    """Get the oldest modification time in a directory tree (files and dirs).
-
-    Checks both files and directories to catch deletions/additions.
-    """
-    oldest = float('inf')
-    try:
-        for root, dirs, files in os.walk(directory):
-            # Check directory mtime
-            mtime = os.path.getmtime(root)
-            if mtime < oldest:
-                oldest = mtime
-            for name in files:
-                mtime = os.path.getmtime(os.path.join(root, name))
-                if mtime < oldest:
-                    oldest = mtime
-    except OSError:
-        pass
-    return oldest
-
-
-
 def main():
     # Add self to the root search path.
     sys.path.insert(0, self_path)
-
-    # Setup Vulkan SDK and check if available
-    setup_vulkan_sdk()
 
     # Augment path to include our fancy things.
     os.environ["PATH"] += os.pathsep + os.pathsep.join([
@@ -329,7 +186,7 @@ def main():
         print_warning("Visual Studio not found!"
               "\nBuilding for Windows will not be supported."
               " Please refer to the building guide:"
-              f"\nhttps://github.com/xenia-canary/xenia-canary/blob/{default_branch}/docs/building.md")
+              f"\nhttps://github.com/has207/xenia-edge/blob/{default_branch}/docs/building.md")
 
     # Setup main argument parser and common arguments.
     parser = ArgumentParser(prog="xenia-build.py")
@@ -357,6 +214,7 @@ def main():
     # Parse command name and dispatch.
     args = vars(parser.parse_args(command_args))
     command_name = args["subcommand"]
+
     try:
         command = commands[command_name]
         return_code = command.execute(args, pass_args, os.getcwd())
@@ -445,7 +303,11 @@ def shell_call(command, throw_on_error=True, stdout_path=None, stderr_path=None,
 
 
 def generate_version_h(build_dir="build"):
-    """Generates version.h in the given build directory with current git info.
+    """Writes <build_dir>/version.h with the current branch/commit/PR info.
+    The file is included by source files via `#include "version.h"`; the
+    relevant build directory is added to the project include path by the
+    root CMakeLists.txt, so different build trees (build/, build-vs/, ...)
+    each get their own copy.
     """
     os.makedirs(build_dir, exist_ok=True)
     header_file = os.path.join(build_dir, "version.h")
@@ -489,49 +351,6 @@ def generate_version_h(build_dir="build"):
     if contents_old != contents_new:
         with open(header_file, "w") as f:
             f.write(contents_new)
-
-
-def generate_source_class(path):
-    header_path = f"{path}.h"
-    source_path = f"{path}.cc"
-
-    if os.path.isfile(header_path) or os.path.isfile(source_path):
-        print_error("Target file already exists")
-        return 1
-
-    if generate_source_file(header_path) > 0:
-        return 1
-    if generate_source_file(source_path) > 0:
-        # remove header if source file generation failed
-        os.remove(os.path.join(source_root, header_path))
-        return 1
-
-    return 0
-
-def generate_source_file(path):
-    """Generates a source file at the specified path containing copyright notice
-    """
-    copyright = f"""/**
- ******************************************************************************
- * Xenia : Xbox 360 Emulator Research Project                                 *
- ******************************************************************************
- * Copyright {datetime.now().year} Ben Vanik. All rights reserved.                             *
- * Released under the BSD license - see LICENSE in the root for more details. *
- ******************************************************************************
- */"""
-
-    if os.path.isfile(path):
-        print_error("Target file already exists")
-        return 1
-    try:
-        with open(path, "w") as f:
-            f.write(copyright)
-    except Exception as e:
-        print_error(f"Could not write to file [path {path}]")
-        return 1
-
-    return 0
-
 
 
 def git_get_head_info():
@@ -589,29 +408,18 @@ def get_pr_number():
     Returns the pull request number if the workflow is triggered by a PR, otherwise None.
     """
     github_ref = os.getenv('GITHUB_REF')
-
+    
     if github_ref and github_ref.startswith('refs/pull/'):
         return github_ref.split('/')[2]
-
+    
 def git_submodule_update():
     """Runs a git submodule sync, init, and update.
     """
-    if sys.platform == "linux":
-        submodules_ignore = ["DirectX-Headers", "DirectXShaderCompiler"]
-    else:
-        submodules_ignore = None
-    if submodules_ignore:
-        with open(".gitmodules") as f:
-            gitmodules = f.read()
-        submodules = re_findall(r"(?<=path = )(?!third_party\/(?:" + "|".join(submodules_ignore) + r")).+", gitmodules)
-    else:
-        submodules = None
     # Sync submodule URLs from .gitmodules to local config
     shell_call([
         "git",
         "submodule",
         "sync",
-        *(submodules or []),
         ])
     # Then update all submodules to their recorded commits
     shell_call([
@@ -623,71 +431,125 @@ def git_submodule_update():
         "--init",
         "--depth=1",
         "-j", f"{os.cpu_count()}",
-        *(submodules or []),
         ])
+    # wxWidgets has its own nested submodules (pcre, libpng, etc.) needed when
+    # building from vendored source on Windows/macOS. The main `submodule update`
+    # above is non-recursive, so kick off a recursive update for wxWidgets only.
+    if sys.platform in ("win32", "darwin"):
+        shell_call([
+            "git",
+            "submodule",
+            "update",
+            "--init",
+            "--recursive",
+            "--depth=1",
+            "-j", f"{os.cpu_count()}",
+            "third_party/wxWidgets",
+            ])
+
+
+def fetch_data_repos():
+    """Fetches data repositories (game-patches, game-compat, controller db)
+    into build/data_repos/.
+
+    Removes and re-clones all data repos fresh each time. They are not submodules
+    to avoid constant submodule updates in the main repo.
+    """
+    print("- fetching data repositories...")
+
+    # Clean up the legacy in-source location if it's still around.
+    legacy_dir = ".data_repos"
+    if os.path.exists(legacy_dir):
+        rmtree(legacy_dir, onerror=remove_readonly)
+
+    data_dir = os.path.join("build", "data_repos")
+    if os.path.exists(data_dir):
+        rmtree(data_dir, onerror=remove_readonly)
+    os.makedirs(data_dir)
+
+    # Define data repos
+    data_repos = [
+        {
+            "name": "game-patches",
+            "url": "https://github.com/xenia-canary/game-patches.git",
+            "branch": "main",
+        },
+        {
+            "name": "xenia-manager-database",
+            "url": "https://github.com/xenia-manager/database.git",
+            "branch": "main",
+            "sparse_paths": [
+                "data/game-compatibility/canary.json",
+                "data/game-compatibility/stable.json",
+            ],
+        },
+        {
+            "name": "x360db",
+            "url": "https://github.com/xenia-manager/x360db.git",
+            "branch": "main",
+            "sparse_paths": ["games.json"],
+        },
+        {
+            "name": "SDL_GameControllerDB",
+            "url": "https://github.com/mdqinc/SDL_GameControllerDB.git",
+            "branch": "master",
+            "sparse_paths": ["gamecontrollerdb.txt"],
+        },
+    ]
+
+    # Clone each repo fresh
+    for repo in data_repos:
+        repo_path = os.path.join(data_dir, repo["name"])
+        print(f"  - cloning {repo['name']}...")
+        sparse_paths = repo.get("sparse_paths")
+        if sparse_paths:
+            shell_call([
+                "git", "clone",
+                "--depth=1",
+                "--branch", repo["branch"],
+                "--filter=blob:none",
+                "--sparse",
+                "--no-checkout",
+                repo["url"],
+                repo_path,
+            ])
+            shell_call(["git", "-C", repo_path, "sparse-checkout", "init", "--no-cone"])
+            shell_call(["git", "-C", repo_path, "sparse-checkout", "set", *sparse_paths])
+            shell_call(["git", "-C", repo_path, "checkout"])
+        else:
+            shell_call([
+                "git", "clone",
+                "--depth=1",
+                "--branch", repo["branch"],
+                repo["url"],
+                repo_path,
+            ])
 
 
 def get_cc(cc=None):
-    if sys.platform == "linux":
-        if os.environ.get("CC"):
-            if "gcc" in os.environ.get("CC"):
-                return "gcc"
-        return "clang"
-    if sys.platform == "win32":
-        return "msc"
+    """Resolve the (C, C++) compiler binaries to configure CMake with.
+
+    An explicit --cc family ("clang"/"gcc") maps to its driver pair;
+    otherwise $CC/$CXX are honored verbatim so versioned names like
+    clang-21 / clang++-21 survive. Defaults to clang.
+    """
+    families = {"clang": ("clang", "clang++"), "gcc": ("gcc", "g++")}
+    if cc in families:
+        return families[cc]
+    if cc:
+        return (cc, cc + "++")
+    return (os.environ.get("CC", "clang"), os.environ.get("CXX", "clang++"))
 
 def get_clang_format_binary():
-    """Finds a clang-format binary. Aborts if none is found.
-
-    Returns:
-      A path to the clang-format executable.
-    """
-    clang_format_version_min = 19
-
-    # Build list of all potential clang-format binaries
-    all_binaries = []
-
-    # Check versioned binaries from 21 down to min, preferring newer
-    for version in range(21, clang_format_version_min - 1, -1):
-        binary = f"clang-format-{version}"
-        if has_bin(binary):
-            all_binaries.append(binary)
-
-    # Also check generic clang-format
-    all_binaries.append("clang-format")
-
-    # Add Windows-specific paths
-    if sys.platform == "win32":
-        if "VCINSTALLDIR" in os.environ:
-            if is_amd64():
-                all_binaries.append(os.path.join(os.environ["VCINSTALLDIR"], "Tools", "Llvm", "x64", "bin", "clang-format.exe"))
-            elif is_arm():
-                all_binaries.append(os.path.join(os.environ["VCINSTALLDIR"], "Tools", "Llvm", "arm64", "bin", "clang-format.exe"))
-
-        all_binaries.append(os.path.join(os.environ["ProgramFiles"], "LLVM", "bin", "clang-format.exe"))
-
-    # Find the highest version available
-    best_binary = None
-    best_version = 0
-
-    for binary in all_binaries:
-        if has_bin(binary):
-            try:
-                clang_format_out = subprocess.check_output([binary, "--version"], text=True)
-                version = int(clang_format_out.split("version ")[1].split(".")[0])
-                if version >= clang_format_version_min and version > best_version:
-                    best_version = version
-                    best_binary = binary
-                    best_output = clang_format_out
-            except:
-                continue
-
-    if best_binary:
-        print(best_output)
-        return best_binary
-
-    print_error(f"clang-format {clang_format_version_min} or newer is not on PATH")
-    sys.exit(1)
+    # Use pre-vsvars PATH so VS's bundled Llvm clang-format doesn't shadow the user's.
+    binary = shutil_which("clang-format", path=_user_path) or "clang-format"
+    try:
+        out = subprocess.check_output([binary, "--version"], text=True)
+        print(out)
+    except (subprocess.CalledProcessError, OSError):
+        print_error("clang-format is not on PATH")
+        sys.exit(1)
+    return binary
 
 
 def normalize_target_arch(value):
@@ -711,7 +573,7 @@ def get_build_dir(target_arch=None):
 
     Uses a separate directory when cross-compiling to avoid cache conflicts.
     """
-    is_native_arm64 = platform.machine() in ("ARM64", "aarch64")
+    is_native_arm64 = platform.machine() in ("ARM64", "aarch64", "arm64")
     if target_arch == "arm64" and not is_native_arm64:
         return "build-arm64"
     if target_arch == "x64" and is_native_arm64:
@@ -719,52 +581,162 @@ def get_build_dir(target_arch=None):
     return "build"
 
 
-def run_cmake_configure(build_type="Release", cc=None, build_tests=False,
-                        extra_args=None, target_arch=None):
-    """Runs cmake configure on the project.
+def remove_readonly(func, path, _):
+    """rmtree onerror handler: clear the read-only bit and retry (Windows)."""
+    os.chmod(path, stat.S_IWRITE)
+    func(path)
 
-    Args:
-      build_type: Build configuration (Debug, Release, Checked).
-      cc: C compiler to use (e.g. 'clang', 'gcc').
-      build_tests: If True, enables building test suites.
-      extra_args: Additional arguments to pass to cmake (e.g. -D flags).
-      target_arch: Target architecture override (e.g. 'arm64' for cross-compile).
 
-    Returns:
-      Return code from cmake.
+# The Slang shader compiler is a build-time dependency. Pinned so local builds
+# and the CI cache key agree.
+SLANG_VERSION = "2026.8"
+SLANG_RELEASE_URL = "https://github.com/shader-slang/slang/releases/download"
+
+
+def get_slang_host_asset():
+    """Returns (archive_name, slangc_relpath) for the host, or (None, None).
+
+    slangc runs on the build host, so the asset tracks the host arch even
+    when cross-compiling guest binaries for another target.
     """
-    # Cross-compilation via --target-arch is only supported on Windows where
-    # we can locate the MSVC cross-compiler automatically.  On Linux it would
+    is_arm64 = platform.machine().lower() in ("arm64", "aarch64")
+    if sys.platform == "win32":
+        return (f"slang-{SLANG_VERSION}-windows-x86_64.zip", "bin/slangc.exe")
+    if sys.platform == "darwin":
+        arch = "aarch64" if is_arm64 else "x86_64"
+        return (f"slang-{SLANG_VERSION}-macos-{arch}.zip", "bin/slangc")
+    if sys.platform == "linux":
+        arch = "aarch64" if is_arm64 else "x86_64"
+        return (f"slang-{SLANG_VERSION}-linux-{arch}.tar.gz", "bin/slangc")
+    return (None, None)
+
+
+def find_slangc(slang_dir, slangc_relpath):
+    """Locates slangc under slang_dir, tolerating a nested top-level folder."""
+    direct = os.path.join(slang_dir, *slangc_relpath.split("/"))
+    if os.path.exists(direct):
+        return direct
+    name = os.path.basename(slangc_relpath)
+    for cand in glob(os.path.join(slang_dir, "**", name), recursive=True):
+        if os.path.basename(os.path.dirname(cand)) == "bin":
+            return cand
+    return direct
+
+
+def download_slang():
+    """Downloads the pinned Slang release into .slang/<version>/.
+
+    Skips the download if the pinned version is already present. Any other
+    (stale) version is removed so the tree holds only the pinned one (cmake
+    globs .slang/*/bin/slangc to find it). Sets nothing in the environment -
+    run this once locally, or from CI on a cache miss.
+    """
+    archive_name, slangc_relpath = get_slang_host_asset()
+    if not archive_name:
+        print_error(f"No prebuilt Slang for {sys.platform}/"
+                    f"{platform.machine()}.")
+        sys.exit(1)
+
+    root = os.path.abspath(".slang")
+    slang_dir = os.path.join(root, SLANG_VERSION)
+    slangc_path = find_slangc(slang_dir, slangc_relpath)
+    if os.path.exists(slangc_path):
+        print(f"- Slang {SLANG_VERSION} already present: {slangc_path}")
+        return slangc_path
+
+    # Drop any previously downloaded Slang (e.g. an older version) so the
+    # cmake glob resolves to exactly one slangc.
+    if os.path.isdir(root):
+        rmtree(root, onerror=remove_readonly)
+    os.makedirs(slang_dir)
+
+    url = f"{SLANG_RELEASE_URL}/v{SLANG_VERSION}/{archive_name}"
+    print(f"- downloading Slang {SLANG_VERSION} ({archive_name})...")
+    archive_path = os.path.join(slang_dir, archive_name)
+    try:
+        urllib.request.urlretrieve(url, archive_path)
+        if archive_name.endswith(".zip"):
+            with zipfile.ZipFile(archive_path) as zf:
+                zf.extractall(slang_dir)
+        else:
+            with tarfile.open(archive_path) as tf:
+                tf.extractall(slang_dir)
+    finally:
+        if os.path.exists(archive_path):
+            os.remove(archive_path)
+
+    slangc_path = find_slangc(slang_dir, slangc_relpath)
+    if not os.path.exists(slangc_path):
+        print_error(f"Slang download did not produce slangc under {slang_dir}.")
+        sys.exit(1)
+    if sys.platform != "win32":
+        os.chmod(slangc_path, os.stat(slangc_path).st_mode | stat.S_IEXEC)
+    print(f"- slangc: {slangc_path}")
+    return slangc_path
+
+
+def run_cmake_configure(cc=None, generator=None, build_tests=False,
+                        disable_lto=False, enable_profiler=False,
+                        enable_itrace=False, enable_dtrace=False,
+                        enable_ftrace=False,
+                        target_arch=None, config=None):
+    """Runs `cmake` to (re)configure build/ from the source root.
+
+    Uses Ninja Multi-Config by default on all platforms. On Linux the
+    C/C++ compilers come from get_cc() / the CC env var; on Windows the
+    detected Visual Studio toolchain wins. build_tests toggles
+    -DXENIA_BUILD_TESTS=ON; disable_lto toggles -DXENIA_ENABLE_LTO=OFF
+    (faster Release link, at the cost of LTO's whole-program opts);
+    enable_profiler toggles -DXENIA_ENABLE_PROFILER=ON (microprofile
+    instrumentation; UI overlay only in Debug, profile.html dump on
+    shutdown otherwise). target_arch enables cross-compilation on
+    Windows (arm64↔x64 via the MSVC cross-compiler) and macOS
+    (arm64↔x86_64 via clang's -arch and CMAKE_OSX_ARCHITECTURES) into a
+    separate build-<arch>/ tree; Linux rejects non-native target_arch.
+    """
+    # Cross-compilation via --target-arch is only supported on Windows
+    # (MSVC cross toolchain) and macOS (universal clang). On Linux it would
     # silently produce a native build in a differently-named directory.
-    if target_arch is not None and sys.platform != "win32":
-        is_native_arm64 = platform.machine() in ("ARM64", "aarch64")
+    if target_arch is not None and sys.platform not in ("win32", "darwin"):
+        is_native_arm64 = platform.machine() in ("ARM64", "aarch64", "arm64")
         native_arch = "arm64" if is_native_arm64 else "x64"
         if target_arch != native_arch:
             print_error(
                 f"Cross-compilation (--target-arch {target_arch}) is only "
-                f"supported on Windows.\n"
+                f"supported on Windows and macOS.\n"
                 f"  The current host architecture is {native_arch}.")
             return 1
 
+    if not generator:
+        generator = "Ninja Multi-Config"
     build_dir = get_build_dir(target_arch)
     args = [
         "cmake",
         "-S", ".",
         "-B", build_dir,
-        "-G", "Ninja Multi-Config",
+        "-G", generator,
     ]
     if sys.platform != "win32":
-        if not cc:
-            cc = get_cc(cc=cc)
-        c_compiler = cc or os.environ.get("CC", "clang")
-        cxx_compiler = (cc + "++") if cc else os.environ.get("CXX", "clang++")
+        c_compiler, cxx_compiler = get_cc(cc)
         args += [
             f"-DCMAKE_C_COMPILER={c_compiler}",
             f"-DCMAKE_CXX_COMPILER={cxx_compiler}",
         ]
-    elif platform.machine() in ("ARM64", "aarch64") or target_arch == "arm64":
+    if sys.platform == "darwin" and target_arch is not None:
+        # Apple clang is universal; CMAKE_OSX_ARCHITECTURES drives -arch.
+        # We don't set CMAKE_SYSTEM_PROCESSOR here — without
+        # CMAKE_SYSTEM_NAME, CMake re-derives it from the host. Our
+        # XE_TARGET_* detect reads CMAKE_OSX_ARCHITECTURES on Apple.
+        osx_arch = "arm64" if target_arch == "arm64" else "x86_64"
+        args += [f"-DCMAKE_OSX_ARCHITECTURES={osx_arch}"]
+    if sys.platform == "win32" and (
+            platform.machine() in ("ARM64", "aarch64", "arm64") or target_arch == "arm64"):
         # Determine the effective target and the appropriate compiler/environment.
-        is_native_arm64 = platform.machine() in ("ARM64", "aarch64")
+        # This covers both native ARM64 builds and x64→ARM64 cross-compilation.
+        # Without this, native ARM64 hosts (e.g. Parallels on Apple Silicon)
+        # may pick up x64-hosted cl.exe via PATH emulation, which defines
+        # _M_AMD64 instead of _M_ARM64.
+        is_native_arm64 = platform.machine() in ("ARM64", "aarch64", "arm64")
         if target_arch == "x64" and is_native_arm64:
             # Cross-compiling from ARM64 to x64
             target = "x64"
@@ -805,16 +777,17 @@ def run_cmake_configure(build_type="Release", cc=None, build_tests=False,
         else:
             print(f"  WARNING: {target.upper()} cross-compiler not found. Install "
                   f"'MSVC {target.upper()} build tools' in Visual Studio.")
-    if build_tests:
-        args += ["-DXENIA_BUILD_TESTS=ON"]
-    if extra_args:
-        args += extra_args
-
+    args += [f"-DXENIA_BUILD_TESTS={'ON' if build_tests else 'OFF'}"]
+    args += [f"-DXENIA_ENABLE_LTO={'OFF' if disable_lto else 'ON'}"]
+    args += [f"-DXENIA_ENABLE_PROFILER={'ON' if enable_profiler else 'OFF'}"]
+    args += [f"-DXENIA_ENABLE_ITRACE={'ON' if enable_itrace else 'OFF'}"]
+    args += [f"-DXENIA_ENABLE_DTRACE={'ON' if enable_dtrace else 'OFF'}"]
+    args += [f"-DXENIA_ENABLE_FTRACE={'ON' if enable_ftrace else 'OFF'}"]
+    if config:
+        args += [f"-DCMAKE_BUILD_TYPE={config.title()}"]
     ret = subprocess.call(args)
-
     if ret == 0:
         generate_version_h(build_dir)
-
     return ret
 
 
@@ -828,11 +801,14 @@ def get_build_bin_path(args):
     Returns:
       A full path for the bin folder.
     """
-    config = args["config"].title()
-    platform = "Windows" if sys.platform == "win32" else "Linux"
+    if sys.platform == "darwin":
+        platform_name = "macosx"
+    elif sys.platform == "win32":
+        platform_name = "windows"
+    else:
+        platform_name = "linux"
     build_dir = get_build_dir(args.get("target_arch"))
-    # Multi-config: <build_dir>/bin/<Platform>/<Config>
-    return os.path.join(self_path, build_dir, "bin", platform, config)
+    return os.path.join(self_path, build_dir, "bin", platform_name.capitalize(), args["config"].capitalize())
 
 
 def create_clion_workspace():
@@ -849,86 +825,26 @@ def create_clion_workspace():
     with open(os.path.join(".idea", "misc.xml"), "w") as f:
         f.write("""<?xml version="1.0" encoding="UTF-8"?>
 <project version="4">
-  <component name="CMakePythonSetting">
-    <option name="pythonIntegrationState" value="YES" />
+  <component name="CMakeWorkspace" PROJECT_DIR="$PROJECT_DIR$/build">
+    <contentRoot DIR="$PROJECT_DIR$" />
   </component>
-  <component name="CMakeWorkspace" PROJECT_DIR="$PROJECT_DIR$" />
 </project>
 """)
 
-    # Create workspace.xml file
+    # Set available configurations
+    # TODO Find a way to trigger a cmake reload
     with open(os.path.join(".idea", "workspace.xml"), "w") as f:
-        # Write CmakePresetLoader
         f.write("""<?xml version="1.0" encoding="UTF-8"?>
 <project version="4">
-  <component name="CMakePresetLoader"><![CDATA[{
-  "useNewFormat": true
-}]]></component>
-""")
-        f.write("""  <component name="CMakeReloadState">
-    <option name="reloaded" value="true" />
+  <component name="CMakeSettings">
+    <configurations>
+      <configuration PROFILE_NAME="Checked" CONFIG_NAME="Checked" />
+      <configuration PROFILE_NAME="Debug" CONFIG_NAME="Debug" />
+      <configuration PROFILE_NAME="Release" CONFIG_NAME="Release" />
+    </configurations>
   </component>
-""")
+</project>""")
 
-        # Write ConfigurationManager
-        f.write("""  <component name="CMakeRunConfigurationManager">\n""")
-        f.write("    <generated>\n")
-        # Loop over every entry
-        for target in XENIA_TARGETS:
-            f.write(f'      <config projectName="xenia" targetName="{target}" />\n')
-        f.write("    </generated>\n")
-        f.write("  </component>\n")
-
-        # Write CMakeSettings
-        f.write("""  <component name="CMakeSettings">\n""")
-        f.write("    <configurations>\n")
-        f.write("""      <configuration PROFILE_NAME="default - debug" ENABLED="true" FROM_PRESET="true" GENERATION_DIR="$PROJECT_DIR$/build" />\n""")
-        f.write("""      <configuration PROFILE_NAME="default - release" ENABLED="true" FROM_PRESET="true" GENERATION_DIR="$PROJECT_DIR$/build" />\n""")
-        f.write("""      <configuration PROFILE_NAME="default - checked" ENABLED="true" FROM_PRESET="true" GENERATION_DIR="$PROJECT_DIR$/build" />\n""")
-        f.write("    </configurations>\n")
-        f.write("  </component>\n")
-
-        # Write RunManager
-        # Write basic xenia-app manually
-        f.write("""  <component name="RunManager" selected="CMake Application.xenia-app">\n""")
-        f.write("""    <configuration default="true" type="CLionExternalRunConfiguration" factoryName="Application" REDIRECT_INPUT="false" ELEVATE="false" USE_EXTERNAL_CONSOLE="false" EMULATE_TERMINAL="false" PASS_PARENT_ENVS_2="true">\n""")
-        f.write("""      <method v="2">\n""")
-        f.write("""        <option name="CLION.EXTERNAL.BUILD" enabled="true" />\n""")
-        f.write("""      </method>\n""")
-        f.write("""    </configuration>\n""")
-
-        for target in XENIA_TARGETS:
-            if target != "xenia-app":
-                f.write(f'    <configuration name="{target}" type="CMakeRunConfiguration" factoryName="Application" REDIRECT_INPUT="false" ELEVATE="false" USE_EXTERNAL_CONSOLE="false" EMULATE_TERMINAL="false" PASS_PARENT_ENVS_2="true" PROJECT_NAME="xenia" TARGET_NAME="{target}" CONFIG_NAME="default - debug">\n')
-            else:
-                f.write(f'    <configuration name="{target}" type="CMakeRunConfiguration" factoryName="Application" REDIRECT_INPUT="false" ELEVATE="false" USE_EXTERNAL_CONSOLE="false" EMULATE_TERMINAL="false" PASS_PARENT_ENVS_2="true" PROJECT_NAME="xenia" TARGET_NAME="{target}" CONFIG_NAME="default - debug" RUN_TARGET_PROJECT_NAME="xenia" RUN_TARGET_NAME="{target}">\n')
-
-            f.write("""      <method v="2">\n""")
-            f.write("""        <option name="com.jetbrains.cidr.execution.CidrBuildBeforeRunTaskProvider$BuildBeforeRunTask" enabled="true" />\n""")
-            f.write("""      </method>\n""")
-            f.write("""    </configuration>\n""")
-
-        # Write itemvalue list
-        f.write("""    <list>\n""")
-        for target in XENIA_TARGETS:
-            f.write(f'      <item itemvalue="CMake Application.{target}" />\n')
-
-        f.write("""    </list>\n""")
-        f.write("""  </component>\n""")
-        f.write("""</project>\n""")
-
-    os.makedirs(os.path.join(".idea", "codeStyles"), exist_ok=True)
-    with open(os.path.join(".idea", "codeStyles", "Project.xml"), "w") as f:
-        f.write("""<component name="ProjectCodeStyleConfiguration">
-  <code_scheme name="Project">
-    <RiderCodeStyleSettings>
-      <option name="/Default/CodeStyle/CodeFormatting/CppClangFormat/EnableClangFormatSupport/@EntryValue" value="true" type="bool" />
-    </RiderCodeStyleSettings>
-    <clangFormatSettings>
-      <option name="ENABLED" value="true" />
-    </clangFormatSettings>
-  </code_scheme>
-</component>""")
     return True
 
 
@@ -944,22 +860,16 @@ def discover_commands(subparsers):
     """
     commands = {
         "setup": SetupCommand(subparsers),
-        "pull": PullCommand(subparsers),
-        "premake": PremakeCommand(subparsers),
+        "fetchdata": FetchDataCommand(subparsers),
+        "slang": SlangCommand(subparsers),
         "build": BuildCommand(subparsers),
-        "buildshaders": BuildShadersCommand(subparsers),
         "devenv": DevenvCommand(subparsers),
         "gentests": GenTestsCommand(subparsers),
         "test": TestCommand(subparsers),
-        "gputest": GpuTestCommand(subparsers),
-        "clean": CleanCommand(subparsers),
-        "nuke": NukeCommand(subparsers),
-        "cleangenerated": CleanGeneratedCommand(subparsers),
         "lint": LintCommand(subparsers),
         "format": FormatCommand(subparsers),
-        "style": StyleCommand(subparsers),
         "tidy": TidyCommand(subparsers),
-        "stub": StubCommand(subparsers),
+        "i18n": I18nCommand(subparsers),
         }
     return commands
 
@@ -1013,98 +923,66 @@ class SetupCommand(Command):
             *args, **kwargs)
         self.parser.add_argument(
             "--target-arch", type=normalize_target_arch, default=None,
-            help="Target architecture (arm64/aarch64, x64/amd64/x86_64/x86).")
+            help="Target architecture (arm64/aarch64/a64, x64/amd64/x86_64/x86). "
+                 "On Windows and macOS, non-native values enable cross-compilation "
+                 "into a separate build-<arch>/ tree.")
 
     def execute(self, args, pass_args, cwd):
         print("Setting up the build environment...\n")
 
-        # Setup submodules.
         print("- git submodule init / update...")
         if git_is_repository():
             git_submodule_update()
+            fetch_data_repos()
         else:
             print_warning("Git not available or not a repository. Dependencies may be missing.")
 
         print("\n- running cmake configure...")
-        ret = run_cmake_configure(target_arch=args["target_arch"])
+        ret = run_cmake_configure(target_arch=args.get("target_arch"))
         print_status(ResultStatus.SUCCESS if not ret else ResultStatus.FAILURE)
         return ret
 
 
-class PullCommand(Command):
-    """'pull' command.
+class FetchDataCommand(Command):
+    """'fetchdata' command.
     """
 
     def __init__(self, subparsers, *args, **kwargs):
-        super(PullCommand, self).__init__(
+        super(FetchDataCommand, self).__init__(
             subparsers,
-            name="pull",
-            help_short="Pulls the repo and all dependencies and rebases changes.",
+            name="fetchdata",
+            help_short="Fetches data repositories (game-patches, game-compat, controller db).",
             *args, **kwargs)
-        self.parser.add_argument(
-            "--merge", action="store_true",
-             help=f"Merges on {default_branch} instead of rebasing.")
 
     def execute(self, args, pass_args, cwd):
-        print("Pulling...\n")
+        print("Fetching data repositories...\n")
 
-        print(f"- switching to {default_branch}...")
-        shell_call([
-            "git",
-            "checkout",
-            default_branch,
-            ])
-
-        print("\n- pulling self...")
-        if args["merge"]:
-            shell_call([
-                "git",
-                "pull",
-                ])
+        if git_is_repository():
+            fetch_data_repos()
         else:
-            shell_call([
-                "git",
-                "pull",
-                "--rebase",
-                ])
+            print_warning("Git not available or not a repository.")
+            return 1
 
-        print("\n- pulling dependencies...")
-        git_submodule_update()
-
-        print("\n- running cmake configure...")
-        if run_cmake_configure() == 0:
-            print_status(ResultStatus.SUCCESS)
-
+        print("\nSuccess!")
         return 0
 
 
-class PremakeCommand(Command):
-    """'premake' command (now runs cmake configure).
+class SlangCommand(Command):
+    """'slang' command.
     """
 
     def __init__(self, subparsers, *args, **kwargs):
-        super(PremakeCommand, self).__init__(
+        super(SlangCommand, self).__init__(
             subparsers,
-            name="premake",
-            help_short="Runs cmake configure to update all projects.",
+            name="slang",
+            help_short="Downloads the Slang shader compiler (build dependency).",
             *args, **kwargs)
-        self.parser.add_argument(
-            "--cc", choices=["clang", "gcc", "msc"], default=None, help="Compiler toolchain")
-        self.parser.add_argument(
-            "--build-tests", action="store_true", default=False,
-            help="Enables building test suites.")
-        self.parser.add_argument(
-            "--target-arch", type=normalize_target_arch, default=None,
-            help="Target architecture (arm64/aarch64, x64/amd64/x86_64/x86).")
 
     def execute(self, args, pass_args, cwd):
-        print("Running cmake configure...\n")
-        ret = run_cmake_configure(cc=args["cc"],
-                                  build_tests=args["build_tests"],
-                                  target_arch=args["target_arch"])
-        print_status(ResultStatus.SUCCESS if not ret else ResultStatus.FAILURE)
-
-        return ret
+        print("Downloading the Slang shader compiler...\n")
+        download_slang()
+        print("\nSuccess!")
+        return 0
 
 
 class BaseBuildCommand(Command):
@@ -1116,7 +994,8 @@ class BaseBuildCommand(Command):
             subparsers,
             *args, **kwargs)
         self.parser.add_argument(
-            "--cc", choices=["clang", "gcc", "msc"], default=None, help="Compiler toolchain")
+            "--cc", choices=["clang", "gcc", "msc"], default=None,
+            help="Compiler toolchain.")
         self.parser.add_argument(
             "--config", choices=["checked", "debug", "release"], default="debug",
             type=str.lower, help="Chooses the build configuration.")
@@ -1127,51 +1006,81 @@ class BaseBuildCommand(Command):
             "--force", action="store_true",
             help="Forces a full rebuild.")
         self.parser.add_argument(
-            "--no_premake", action="store_true",
-            help="Skips running cmake configure before building.")
+            "--no_configure", action="store_true",
+            help="Skips the cmake configure step before building.")
         self.parser.add_argument(
-            "--build-tests", action="store_true", default=False,
-            help="Enables building test suites.")
+            "--build-tests", dest="build_tests", action="store_true",
+            default=False,
+            help="Enables building test suites (sets -DXENIA_BUILD_TESTS=ON).")
         self.parser.add_argument(
-            "--cmake-define", dest="cmake_defines", action="append",
-            default=[], metavar="KEY=VALUE",
-            help="Pass a CMake define (e.g. --cmake-define CMAKE_CXX_FLAGS=/DUSE_BCRYPT_RSA).")
+            "--disable-lto", dest="disable_lto", action="store_true",
+            default=False,
+            help="Disables link-time optimization for Release builds "
+                 "(sets -DXENIA_ENABLE_LTO=OFF). Much faster Release link "
+                 "at the cost of whole-program opts.")
+        self.parser.add_argument(
+            "--enable-profiler", dest="enable_profiler", action="store_true",
+            default=False,
+            help="Enables the microprofile profiler (sets "
+                 "-DXENIA_ENABLE_PROFILER=ON). UI overlay is built only in "
+                 "Debug; otherwise dumps profile.html on shutdown.")
+        self.parser.add_argument(
+            "--enable-itrace", dest="enable_itrace", action="store_true",
+            default=False,
+            help="Enables JIT per-instruction tracing to the log (sets "
+                 "-DXENIA_ENABLE_ITRACE=ON). Very slow; for debugging only.")
+        self.parser.add_argument(
+            "--enable-dtrace", dest="enable_dtrace", action="store_true",
+            default=False,
+            help="Enables JIT per-operation data tracing to the log (sets "
+                 "-DXENIA_ENABLE_DTRACE=ON). Very slow; for debugging only.")
+        self.parser.add_argument(
+            "--enable-ftrace", dest="enable_ftrace", action="store_true",
+            default=False,
+            help="Enables JIT per-function-call tracing to the log (sets "
+                 "-DXENIA_ENABLE_FTRACE=ON). For debugging only.")
         self.parser.add_argument(
             "--target-arch", type=normalize_target_arch, default=None,
-            help="Target architecture (arm64/aarch64, x64/amd64/x86_64/x86).")
+            help="Target architecture (arm64/aarch64/a64, x64/amd64/x86_64/x86). "
+                 "On Windows and macOS, non-native values enable cross-compilation "
+                 "into a separate build-<arch>/ tree.")
 
     def execute(self, args, pass_args, cwd):
-        config = args["config"].title()
-
-        extra_args = [f"-D{d}" for d in args["cmake_defines"]]
-
-        if not args["no_premake"]:
+        target_arch = args.get("target_arch")
+        if not args["no_configure"]:
             print("- running cmake configure...")
-            ret = run_cmake_configure(build_type=config, cc=args["cc"],
-                                      build_tests=args["build_tests"],
-                                      target_arch=args["target_arch"],
-                                      extra_args=extra_args)
+            ret = run_cmake_configure(
+                cc=args["cc"],
+                build_tests=args["build_tests"],
+                disable_lto=args["disable_lto"],
+                enable_profiler=args["enable_profiler"],
+                enable_itrace=args["enable_itrace"],
+                enable_dtrace=args["enable_dtrace"],
+                enable_ftrace=args["enable_ftrace"],
+                target_arch=target_arch,
+                config=args["config"],
+            )
             if ret:
                 return ret
             print("")
 
-        build_dir = get_build_dir(args.get("target_arch"))
+        build_dir = get_build_dir(target_arch)
         print("- building (%s):%s..." % (
             "all" if not len(args["target"]) else ", ".join(args["target"]),
             args["config"]))
-        build_args = [
-            "cmake",
-            "--build", build_dir,
+        config = args["config"].title()
+        cmake_args = [
+            "cmake", "--build", build_dir,
             "--config", config,
         ]
-        if args["target"]:
-            for target in args["target"]:
-                build_args += ["--target", target]
         if args["force"]:
-            build_args += ["--clean-first"]
-        result = subprocess.call(build_args + pass_args)
+            cmake_args.append("--clean-first")
+        if args["target"]:
+            cmake_args.append("--target")
+            cmake_args.extend(args["target"])
+        result = subprocess.call(cmake_args + pass_args, env=dict(os.environ))
         if result != 0:
-            print_error("Build failed with one or more errors.")
+            print_error("cmake build failed with one or more errors.")
         return result
 
 
@@ -1188,128 +1097,9 @@ class BuildCommand(BaseBuildCommand):
 
     def execute(self, args, pass_args, cwd):
         print(f"Building {args['config']}...\n")
-
         result = super(BuildCommand, self).execute(args, pass_args, cwd)
-
         print_status(ResultStatus.SUCCESS if not result else ResultStatus.FAILURE)
-
         return result
-
-
-class BuildShadersCommand(Command):
-    """'buildshaders' command.
-    """
-
-    def __init__(self, subparsers, *args, **kwargs):
-        super(BuildShadersCommand, self).__init__(
-            subparsers,
-            name="buildshaders",
-            help_short="Generates shader binaries for inclusion in C++ files.",
-            help_long="""
-            Generates the shader binaries under src/*/shaders/bytecode/.
-            Run after modifying any .hs/vs/ds/gs/ps/cs.glsl/hlsl/xesl files.
-            Direct3D shaders can be built only on a Windows host.
-            """,
-            *args, **kwargs)
-        self.parser.add_argument(
-            "--target", action="append", choices=["dxbc", "spirv"], default=[],
-            help="Builds only the given target(s).")
-
-    def execute(self, args, pass_args, cwd):
-        return build_shaders(args["target"])
-
-
-def build_shaders(targets=None):
-    """Builds shader bytecode. Called by BuildShadersCommand.
-
-    Delegates to the per-file compile scripts in tools/build/.
-
-    Args:
-        targets: List of targets ("dxbc", "spirv"), or None/empty for all.
-
-    Returns:
-        0 on success, non-zero on error.
-    """
-    # Check if shaders need rebuilding by comparing source vs generated timestamps
-    gpu_shaders = "src/xenia/gpu/shaders"
-    ui_shaders = "src/xenia/ui/shaders"
-    # DXBC directories only on Windows, SPIR-V everywhere
-    bytecode_dirs = [
-        "src/xenia/gpu/shaders/bytecode/vulkan_spirv",
-        "src/xenia/ui/shaders/bytecode/vulkan_spirv",
-    ]
-    if sys.platform == "win32":
-        bytecode_dirs.extend([
-            "src/xenia/gpu/shaders/bytecode/d3d12_5_1",
-            "src/xenia/ui/shaders/bytecode/d3d12_5_1",
-        ])
-
-    newest_source = max(get_dir_newest_mtime(gpu_shaders),
-                       get_dir_newest_mtime(ui_shaders))
-    oldest_generated = min((get_dir_oldest_mtime(d) for d in bytecode_dirs),
-                          default=0)
-
-    # If oldest_generated is inf, bytecode doesn't exist - need to generate
-    if oldest_generated != float('inf') and newest_source <= oldest_generated:
-        print("Shaders are up-to-date, skipping generation.")
-        return 0
-
-    # Clean old bytecode before regenerating to remove stale files from deleted sources
-    clean_shader_bytecode()
-
-    src_paths = [os.path.join(root, name)
-                 for root, dirs, files in os.walk("src")
-                 for name in files
-                 if (name.endswith(".glsl") or
-                     name.endswith(".hlsl") or
-                     name.endswith(".xesl"))]
-    if targets is None:
-        targets = []
-    all_targets = len(targets) == 0
-
-    valid_stages = ["vs", "hs", "ds", "gs", "ps", "cs"]
-    compile_spirv = os.path.join(self_path, "tools", "build", "compile_shader_spirv.py")
-    compile_dxbc = os.path.join(self_path, "tools", "build", "compile_shader_dxbc.py")
-
-    # Direct3D DXBC (Windows only).
-    if (all_targets or "dxbc" in targets) and sys.platform == "win32":
-        print("Building Direct3D 12 Shader Model 5.1 DXBC shaders...")
-        for src_path in src_paths:
-            src_name = os.path.basename(src_path)
-            if ((not src_name.endswith(".hlsl") and
-                 not src_name.endswith(".xesl")) or
-                len(src_name) <= 8 or src_name[-8] != "."):
-                continue
-            identifier = src_name[:-5].replace(".", "_")
-            if identifier[-2:] not in valid_stages:
-                continue
-            src_dir = os.path.dirname(src_path)
-            output = os.path.join(src_dir, "bytecode", "d3d12_5_1", f"{identifier}.h")
-            print(f"- {src_path} > d3d12_5_1")
-            result = subprocess.call([sys.executable, compile_dxbc, src_path, output])
-            if result != 0:
-                return result
-
-    # Vulkan SPIR-V.
-    if all_targets or "spirv" in targets:
-        print("Building Vulkan SPIR-V shaders...")
-        for src_path in src_paths:
-            src_name = os.path.basename(src_path)
-            if ((not src_name.endswith(".glsl") and
-                 not src_name.endswith(".xesl")) or
-                len(src_name) <= 8 or src_name[-8] != "."):
-                continue
-            identifier = src_name[:-5].replace(".", "_")
-            if identifier[-2:] not in valid_stages:
-                continue
-            src_dir = os.path.dirname(src_path)
-            output = os.path.join(src_dir, "bytecode", "vulkan_spirv", f"{identifier}.h")
-            print(f"- {src_path} > vulkan_spirv")
-            result = subprocess.call([sys.executable, compile_spirv, src_path, output])
-            if result != 0:
-                return result
-
-    return 0
 
 
 class TestCommand(BaseBuildCommand):
@@ -1333,6 +1123,9 @@ class TestCommand(BaseBuildCommand):
         self.parser.add_argument(
             "--continue", action="store_true",
             help="Don't stop when a test errors, but continue running all.")
+        self.parser.add_argument(
+            "--no_sde", action="store_true",
+            help="Don't use Intel SDE to test different CPU instruction sets.")
 
     def execute(self, args, pass_args, cwd):
         print("Testing...\n")
@@ -1340,8 +1133,7 @@ class TestCommand(BaseBuildCommand):
         # The test executables that will be built and run.
         test_targets = args["target"] or [
             "xenia-base-tests",
-            "xenia-cpu-tests",
-            "xenia-kernel-tests",
+            "xenia-cpu-ppc-tests"
             ]
         args["target"] = test_targets
 
@@ -1361,27 +1153,64 @@ class TestCommand(BaseBuildCommand):
                 print_error(f"Unable to find {test_targets[i]} - build it.")
                 return 1
 
-        # Prepare environment with Qt bin directory in PATH if available
         test_env = dict(os.environ)
-        qt_dir = os.environ.get("QT_DIR")
-        if qt_dir and sys.platform == "win32":
-            qt_bin = os.path.join(qt_dir, "bin")
-            if os.path.exists(qt_bin):
-                test_env["PATH"] = f"{qt_bin}{os.pathsep}{test_env['PATH']}"
-                print(f"- Qt bin directory added to PATH: {qt_bin}\n")
 
         # Run tests.
         any_failed = False
+
+        # Intel SDE configurations for testing different CPU paths
+        # Only apply to xenia-cpu-tests and xenia-cpu-ppc-tests
+        sde_executable = "/opt/intel-sde/sde64"
+
+        # Check if Intel SDE is available and if we're testing CPU-related tests
+        has_cpu_tests = any("cpu" in test.lower() for test in test_targets)
+        use_sde = has_cpu_tests and os.path.exists(sde_executable) and not args.get("no_sde", False)
+
+        if use_sde:
+            print(f"Intel SDE detected at {sde_executable}")
+            print("Will test CPU code with AVX2 and AVX512 instruction sets")
+            print("(Test binaries require AVX2 minimum)\n")
+            sde_configs = [
+                ("", "Native CPU"),  # Run without SDE first
+                ("-hsw", "Haswell (AVX2)"),
+                ("-skx", "Skylake-X (AVX512)")
+            ]
+        else:
+            if has_cpu_tests and not os.path.exists(sde_executable):
+                print("Intel SDE not found - running CPU tests with native CPU only")
+            sde_configs = [("", "Native CPU")]
+
         for test_executable in test_executables:
-            print(f"- {test_executable}")
-            result = subprocess.call([test_executable] + pass_args, env=test_env)
-            if result:
-                any_failed = True
-                if args["continue"]:
-                    print_error("test failed but continuing due to --continue.")
-                else:
-                    print_error("test failed, aborting, use --continue to keep going.")
-                    return result
+            test_name = os.path.basename(test_executable)
+
+            # Only use SDE for CPU tests
+            if use_sde and "cpu" in test_name.lower():
+                for sde_flag, cpu_name in sde_configs:
+                    if sde_flag:
+                        print(f"- {test_executable} (emulating {cpu_name})")
+                        cmd = [sde_executable, sde_flag, "--", test_executable] + pass_args
+                    else:
+                        print(f"- {test_executable} ({cpu_name})")
+                        cmd = [test_executable] + pass_args
+
+                    result = subprocess.call(cmd, env=test_env)
+                    if result:
+                        print_error(f"{test_name} failed with {cpu_name}")
+                        any_failed = True
+                        if not args["continue"]:
+                            print_error("test failed, aborting, use --continue to keep going.")
+                            return result
+            else:
+                # Non-CPU tests or SDE not available - run normally
+                print(f"- {test_executable}")
+                result = subprocess.call([test_executable] + pass_args, env=test_env)
+                if result:
+                    any_failed = True
+                    if args["continue"]:
+                        print_error("test failed but continuing due to --continue.")
+                    else:
+                        print_error("test failed, aborting, use --continue to keep going.")
+                        return result
 
         if any_failed:
             print_error("one or more tests failed.")
@@ -1481,7 +1310,7 @@ class GenTestsCommand(Command):
             # Save current directory
             original_dir = os.getcwd()
 
-            if sys.platform == "linux":
+            if sys.platform in ("linux", "darwin"):
                 # Set executable bit for build script before running it
                 os.chdir(binutils_dir)
                 os.chmod(shell_script, stat.S_IRUSR | stat.S_IWUSR |
@@ -1521,185 +1350,6 @@ class GenTestsCommand(Command):
             return 1
 
         return 0
-
-
-class GpuTestCommand(BaseBuildCommand):
-    """'gputest' command.
-    """
-
-    def __init__(self, subparsers, *args, **kwargs):
-        super(GpuTestCommand, self).__init__(
-            subparsers,
-            name="gputest",
-            help_short="Runs automated GPU diff tests against reference imagery.",
-            help_long="""
-            To pass arguments to the test executables separate them with `--`.
-            """,
-            *args, **kwargs)
-        self.parser.add_argument(
-            "--no_build", action="store_true",
-            help="Don't build before running tests.")
-        self.parser.add_argument(
-            "--update_reference_files", action="store_true",
-            help="Update all reference imagery.")
-        self.parser.add_argument(
-            "--generate_missing_reference_files", action="store_true",
-            help="Create reference files for new traces.")
-
-    def execute(self, args, pass_args, cwd):
-        print("Testing...\n")
-
-        # The test executables that will be built and run.
-        test_targets = args["target"] or [
-            "xenia-gpu-vulkan-trace-dump",
-            ]
-        args["target"] = test_targets
-
-        # Build all targets (if desired).
-        if not args["no_build"]:
-            result = super(GpuTestCommand, self).execute(args, [], cwd)
-            if result:
-                print("Failed to build, aborting test run.")
-                return result
-
-        # Ensure all targets exist before we run.
-        test_executables = [
-            get_bin(os.path.join(get_build_bin_path(args), test_target))
-            for test_target in test_targets]
-        for i in range(0, len(test_targets)):
-            if test_executables[i] is None:
-                print_error(f"Unable to find {test_targets[i]} - build it.")
-                return 1
-
-        output_path = os.path.join(self_path, "build", "gputest")
-        if os.path.isdir(output_path):
-            rmtree(output_path)
-        os.makedirs(output_path)
-        print(f"Running tests and outputting to {output_path}...")
-
-        reference_trace_root = os.path.join(self_path, "testdata",
-                                            "reference-gpu-traces")
-
-        # Run tests.
-        any_failed = False
-        result = shell_call([
-            sys.executable,
-            os.path.join(self_path, "tools", "gpu-trace-diff.py"),
-            f"--executable={test_executables[0]}",
-            f"--trace_path={os.path.join(reference_trace_root, 'traces')}",
-            f"--output_path={output_path}",
-            f"--reference_path={os.path.join(reference_trace_root, 'references')}",
-            ] + (["--generate_missing_reference_files"] if args["generate_missing_reference_files"] else []) +
-                (["--update_reference_files"] if args["update_reference_files"] else []) +
-                            pass_args,
-                            throw_on_error=False)
-        if result:
-            any_failed = True
-
-        if any_failed:
-            print_error("one or more tests failed.")
-            result = 1
-        print(f"Check {output_path}/results.html for more details.")
-        return result
-
-
-class CleanCommand(Command):
-    """'clean' command.
-    """
-
-    def __init__(self, subparsers, *args, **kwargs):
-        super(CleanCommand, self).__init__(
-            subparsers,
-            name="clean",
-            help_short="Removes intermediate files and build outputs.",
-            *args, **kwargs)
-
-    def execute(self, args, pass_args, cwd):
-        print("Cleaning build artifacts...")
-        # Clean all build directories
-        for build_dir in ["build", "build-arm64"]:
-            if os.path.isdir(build_dir):
-                print(f"- cleaning {build_dir}...")
-                subprocess.call(["cmake", "--build", build_dir, "--target", "clean"])
-
-        # Also clean generated files
-        clean_generated_files()
-
-        print_status(ResultStatus.SUCCESS)
-        return 0
-
-
-def clean_shader_bytecode():
-    """Removes generated shader bytecode files."""
-    bytecode_dirs = [
-        "src/xenia/gpu/shaders/bytecode/d3d12_5_1",
-        "src/xenia/gpu/shaders/bytecode/vulkan_spirv",
-        "src/xenia/ui/shaders/bytecode/d3d12_5_1",
-        "src/xenia/ui/shaders/bytecode/vulkan_spirv",
-    ]
-    for bytecode_dir in bytecode_dirs:
-        if os.path.isdir(bytecode_dir):
-            print(f"- removing {bytecode_dir}/...")
-            rmtree(bytecode_dir)
-
-
-def clean_generated_files():
-    """Removes generated shader bytecode files."""
-    clean_shader_bytecode()
-
-
-class NukeCommand(Command):
-    """'nuke' command.
-    """
-
-    def __init__(self, subparsers, *args, **kwargs):
-        super(NukeCommand, self).__init__(
-            subparsers,
-            name="nuke",
-            help_short="Removes all build/ output.",
-            *args, **kwargs)
-
-    def execute(self, args, pass_args, cwd):
-        print("Cleaning build artifacts...\n"
-              "- removing build/...")
-        if os.path.isdir("build/"):
-            rmtree("build/")
-
-        # Clean generated files
-        clean_generated_files()
-
-        print(f"\n- git reset to {default_branch}...")
-        shell_call([
-            "git",
-            "reset",
-            "--hard",
-            default_branch,
-            ])
-
-        print("\n- running cmake configure...")
-        run_cmake_configure()
-
-        print_status(ResultStatus.SUCCESS)
-        return 0
-
-
-class CleanGeneratedCommand(Command):
-    """'cleangenerated' command.
-    """
-
-    def __init__(self, subparsers, *args, **kwargs):
-        super(CleanGeneratedCommand, self).__init__(
-            subparsers,
-            name="cleangenerated",
-            help_short="Removes generated shader bytecode files.",
-            *args, **kwargs)
-
-    def execute(self, args, pass_args, cwd):
-        print("Cleaning generated files...")
-        clean_generated_files()
-        print_status(ResultStatus.SUCCESS)
-        return 0
-
 
 
 def find_xenia_source_files():
@@ -1775,7 +1425,7 @@ class LintCommand(Command):
                         os.remove(difftemp)
                     print("")
             if any_errors:
-                print("\nERROR: 1+ diffs. Stage changes and run 'xb format' to fix.")
+                print_error("1+ diffs. Stage changes and run 'xb format' to fix.")
                 return 1
             else:
                 print("\nLinting completed successfully.")
@@ -1783,14 +1433,15 @@ class LintCommand(Command):
         else:
             print("- git-clang-format --diff")
             if os.path.exists(difftemp): os.remove(difftemp)
-            ret = shell_call([
+            cmd = [
                 sys.executable,
                 "third_party/clang-format/git-clang-format",
                 f"--binary={clang_format_binary}",
                 f"--commit={'origin/canary_experimental' if args['origin'] else 'HEAD'}",
                 "--style=file",
                 "--diff",
-                ], throw_on_error=False, stdout_path=difftemp)
+            ]
+            ret = shell_call(cmd, throw_on_error=False, stdout_path=difftemp)
             with open(difftemp) as f:
                 contents = f.read()
                 not_modified = "no modified files" in contents
@@ -1800,14 +1451,15 @@ class LintCommand(Command):
             if not not_modified:
                 any_errors = True
                 print("")
-                shell_call([
+                cmd = [
                     sys.executable,
                     "third_party/clang-format/git-clang-format",
                     f"--binary={clang_format_binary}",
                     f"--commit={'origin/canary_experimental' if args['origin'] else 'HEAD'}",
                     "--style=file",
                     "--diff",
-                    ])
+                ]
+                shell_call(cmd, throw_on_error=False)
                 print_error("1+ diffs. Stage changes and run 'xb format' to fix.")
                 return 1
             else:
@@ -1850,7 +1502,7 @@ class FormatCommand(Command):
                 if ret:
                     any_errors = True
             if any_errors:
-                print("\nERROR: 1+ clang-format calls failed."
+                print_error("1+ clang-format calls failed."
                       " Ensure all files are staged.")
                 return 1
             else:
@@ -1858,12 +1510,13 @@ class FormatCommand(Command):
                 return 0
         else:
             print("- git-clang-format")
-            ret = shell_call([
+            cmd = [
                 sys.executable,
                 "third_party/clang-format/git-clang-format",
                 f"--binary={clang_format_binary}",
                 f"--commit={'origin/canary_experimental' if args['origin'] else 'HEAD'}",
-                ], throw_on_error=False)
+            ]
+            ret = shell_call(cmd, throw_on_error=False)
             if ret != 0:
                 print("\nFiles were formatted. Please stage the changes:")
                 print("  git status")
@@ -1875,37 +1528,6 @@ class FormatCommand(Command):
 
 
 # TODO(benvanik): merge into linter, or as lint --anal?
-class StyleCommand(Command):
-    """'style' command.
-    """
-
-    def __init__(self, subparsers, *args, **kwargs):
-        super(StyleCommand, self).__init__(
-            subparsers,
-            name="style",
-            help_short="Runs the style checker on all code.",
-            *args, **kwargs)
-
-    def execute(self, args, pass_args, cwd):
-        all_files = [file_path for file_path in find_xenia_source_files()
-                     if not file_path.endswith("_test.cc")]
-        print(f"- cpplint [{len(all_files)} files]")
-        ret = shell_call([
-            sys.executable,
-            "third_party/cpplint/cpplint.py",
-            "--output=vs7",
-            #"--linelength=80",
-            "--filter=-build/c++11,+build/include_alpha",
-            "--root=src",
-            ] + all_files, throw_on_error=False)
-        if ret:
-            print("\nERROR: 1+ cpplint calls failed.")
-            return 1
-        else:
-            print("\nStyle linting completed successfully.")
-            return 0
-
-
 # TODO(benvanik): merge into linter, or as lint --anal?
 class TidyCommand(Command):
     """'tidy' command.
@@ -1922,9 +1544,15 @@ class TidyCommand(Command):
             help="Applies suggested fixes, where possible.")
 
     def execute(self, args, pass_args, cwd):
-        # Run cmake configure to generate compile_commands.json for clang-tidy.
-        # Use Ninja generator which produces compile_commands.json by default.
-        run_cmake_configure()
+        # clang-tidy needs a compile_commands.json; CMake emits one when
+        # CMAKE_EXPORT_COMPILE_COMMANDS is on.
+        ret = subprocess.call([
+            "cmake", "-S", ".", "-B", "build",
+            "-G", "Ninja Multi-Config",
+            "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
+        ])
+        if ret != 0:
+            return ret
 
         if sys.platform == "darwin":
             platform_name = "darwin"
@@ -1961,62 +1589,50 @@ class TidyCommand(Command):
                 any_errors = True
 
         if any_errors:
-            print("\nERROR: 1+ clang-tidy calls failed.")
+            print_error("1+ clang-tidy calls failed.")
             return 1
         else:
             print("\nTidy completed successfully.")
             return 0
 
-class StubCommand(Command):
-    """'stub' command.
+class I18nCommand(Command):
+    """'i18n' command — regenerates assets/locale/xenia.pot from the wx UI
+    sources. Translators copy new msgids into each <lang>/xenia.po manually;
+    .mo compilation happens at build time and is not touched here.
     """
 
+    # Sources scanned for _()/wxTRANSLATE/wxPLURAL.
+    SOURCE_GLOBS = (
+        "src/xenia/ui/*_wx.cc",
+        "src/xenia/app/emulator_window.cc",
+    )
+
     def __init__(self, subparsers, *args, **kwargs):
-        super(StubCommand, self).__init__(
+        super(I18nCommand, self).__init__(
             subparsers,
-            name="stub",
-            help_short="Create new file(s) in the xenia source tree and run premake",
+            name="i18n",
+            help_short="Regenerates assets/locale/xenia.pot from source.",
             *args, **kwargs)
-        self.parser.add_argument(
-            "--file", default=None,
-            help="Generate a source file at the provided location in the source tree")
-        self.parser.add_argument(
-            "--class", default=None,
-            help="Generate a class pair (.cc/.h) at the provided location in the source tree")
 
     def execute(self, args, pass_args, cwd):
-        root = os.path.dirname(os.path.realpath(__file__))
-        source_root = os.path.join(root, os.path.normpath("src/xenia"))
+        tools_dir = os.path.join(self_path, "tools", "build")
+        locale_dir = os.path.join(self_path, "assets", "locale")
+        pot_path = os.path.join(locale_dir, "xenia.pot")
+        os.makedirs(locale_dir, exist_ok=True)
 
-        if args["class"]:
-            path = os.path.normpath(os.path.join(source_root, args["class"]))
-            target_dir = os.path.dirname(path)
-            class_name = os.path.basename(path)
+        print(f"- extracting strings -> {os.path.relpath(pot_path)}")
+        cmd = [sys.executable,
+               os.path.join(tools_dir, "extract_strings.py"),
+               pot_path]
+        cmd.extend(self.SOURCE_GLOBS)
+        ret = shell_call(cmd, throw_on_error=False)
+        if ret != 0:
+            print_error("extract_strings.py failed")
+            return ret
 
-            status = generate_source_class(path)
-            if status > 0:
-                return status
-
-            print(f"Created class '{class_name}' at {target_dir}")
-
-        elif args["file"]:
-            path = os.path.normpath(os.path.join(source_root, args["file"]))
-            target_dir = os.path.dirname(path)
-            file_name = os.path.basename(path)
-
-            status = generate_source_file(path)
-            if status > 0:
-                return status
-
-            print(f"Created file '{file_name}' at {target_dir}")
-
-        else:
-            print_error("Please specify a file/class to generate")
-            return 1
-
-        # Reconfigure to pick up the new source file.
-        run_cmake_configure()
+        print_status(ResultStatus.SUCCESS)
         return 0
+
 
 class DevenvCommand(Command):
     """'devenv' command.
@@ -2030,129 +1646,72 @@ class DevenvCommand(Command):
             *args, **kwargs)
         self.parser.add_argument(
             "--target-arch", type=normalize_target_arch, default=None,
-            help="Target architecture (arm64/aarch64, x64/amd64/x86_64/x86).")
+            help="Target architecture (arm64/aarch64/a64, x64/amd64/x86_64/x86). "
+                 "On Windows, non-native values enable cross-compilation into a "
+                 "separate build-vs-<arch>/ tree.")
+        self.parser.add_argument(
+            "--config", choices=["checked", "debug", "release"],
+            default="debug", type=str.lower,
+            help="Build configuration the IDE solution is pinned to. The VS "
+                 "dropdown is restricted to this single config; re-run xb "
+                 "devenv with a different --config to switch.")
 
     def execute(self, args, pass_args, cwd):
+        target_arch = args.get("target_arch")
         if sys.platform == "win32":
-            if not vs_version:
-                print_error("Visual Studio is not installed.");
-                return 1
-            print("Launching Visual Studio...")
-        elif has_bin("clion") or has_bin("clion.sh"):
+            return self._launch_visual_studio(target_arch, args["config"])
+        # Non-Windows: CLion is the only IDE we know how to launch
+        # automatically. macOS falls through to the manual-open message
+        # (the Xcode generator isn't supported).
+        if has_bin("clion") or has_bin("clion.sh"):
             print("Launching CLion...")
-            create_clion_workspace()
-        else:
-            print("IDE not detected. CMakeLists.txt is in the project root.")
-
-        target_arch = args.get("target_arch", None)
-
-        print("\n- running cmake configure...")
-        run_cmake_configure(target_arch=target_arch)
-
-        print("\n- launching devenv...")
-        if sys.platform == "win32":
-            # Generate a VS .sln for IDE use (normal builds still use Ninja)
-            is_native_arm64 = platform.machine() in ("ARM64", "aarch64")
-            # Determine the effective target architecture
-            if target_arch == "arm64":
-                vs_arch = "ARM64"
-            elif target_arch == "x64":
-                vs_arch = "x64"
-            elif is_native_arm64:
-                vs_arch = "ARM64"
-            else:
-                vs_arch = "x64"
-
-            is_cross = (vs_arch == "ARM64" and not is_native_arm64)
-            vs_build_dir = os.path.join(get_build_dir(target_arch), "vs-" + vs_arch.lower())
-
-            cmake_args = [
-                "cmake",
-                "-S", ".",
-                "-B", vs_build_dir,
-                "-A", vs_arch,
-                "-DXENIA_BUILD_TESTS=ON",
-            ]
-
-            if is_cross:
-                # Cross-compiling from x64 to ARM64.
-                # Use vswhere to find a VS installation with ARM64 C++ tools
-                # and force the correct generator/instance since CMake might
-                # otherwise pick a VS without ARM64 support.
-                vs_generator_map = {
-                    2019: "Visual Studio 16 2019",
-                    2022: "Visual Studio 17 2022",
-                }
-                try:
-                    vswhere_out = subprocess.check_output(
-                        "tools/vswhere/vswhere.exe"
-                        ' -version "[17,)" -latest -prerelease'
-                        " -requires Microsoft.VisualStudio.Component.VC.Tools.ARM64"
-                        " -format json -utf8"
-                        " -products"
-                        " Microsoft.VisualStudio.Product.Enterprise"
-                        " Microsoft.VisualStudio.Product.Professional"
-                        " Microsoft.VisualStudio.Product.Community"
-                        " Microsoft.VisualStudio.Product.BuildTools",
-                        encoding="utf-8",
-                    )
-                    arm64_vs_list = jsonloads(vswhere_out) if vswhere_out else []
-                except Exception:
-                    arm64_vs_list = []
-
-                if not arm64_vs_list:
-                    print_error(
-                        "No Visual Studio installation with ARM64 C++ build tools found.\n"
-                        "  Install the 'MSVC ARM64/ARM64EC build tools' component\n"
-                        "  via the Visual Studio Installer.")
-                    return 1
-
-                arm64_vs = arm64_vs_list[0]
-                arm64_vs_path = arm64_vs.get("installationPath", "")
-                arm64_vs_plv = int(arm64_vs.get("catalog", {}).get(
-                    "productLineVersion", VSVERSION_MINIMUM))
-
-                vs_generator = vs_generator_map.get(arm64_vs_plv)
-                toolset_parts = ["host=x64"]
-                if not vs_generator:
-                    latest_known = max(vs_generator_map.keys())
-                    vs_generator = vs_generator_map[latest_known]
-                    print(f"  Note: VS {arm64_vs_plv} detected with ARM64 tools.")
-                    print(f"  Using \"{vs_generator}\" generator with that instance.")
-                    vc_dir = os.path.join(arm64_vs_path, "MSBuild", "Microsoft", "VC")
-                    if os.path.isdir(vc_dir):
-                        toolsets = sorted(d for d in os.listdir(vc_dir) if d.startswith("v"))
-                        if toolsets:
-                            toolset_parts.insert(0, toolsets[-1])
-
-                cmake_args += [
-                    "-G", vs_generator,
-                    "-T", ",".join(toolset_parts),
-                    "-DCMAKE_SYSTEM_PROCESSOR=ARM64",
-                    f"-DCMAKE_GENERATOR_INSTANCE={arm64_vs_path}",
-                ]
-
-            ret = subprocess.call(cmake_args)
-            if ret == 0:
-                generate_version_h(vs_build_dir)
-            # VS 2026+ generates .slnx, older versions generate .sln
-            sln_path = os.path.join(vs_build_dir, "xenia.slnx")
-            if not os.path.exists(sln_path):
-                sln_path = os.path.join(vs_build_dir, "xenia.sln")
-            if ret != 0 or not os.path.exists(sln_path):
-                print_error(f"Failed to generate VS solution. Check cmake output above.")
+            show_reload_prompt = create_clion_workspace()
+            if run_cmake_configure(target_arch=target_arch) != 0:
                 return 1
-            print(f"Opening {sln_path} in Visual Studio...")
-            shell_call(["devenv", sln_path])
-        elif has_bin("clion"):
-            shell_call(["clion", "."])
-        elif has_bin("clion.sh"):
-            shell_call(["clion.sh", "."])
-        else:
-            print("No supported IDE found. Open the project root in your IDE.")
-            print("CMakeLists.txt and CMakePresets.json are in the project root.")
-        print("")
+            if show_reload_prompt:
+                print_box("Please run \"File ⇒ ↺ Reload CMake Project\" from inside the IDE!")
+            bin_name = "clion" if has_bin("clion") else "clion.sh"
+            shell_call([bin_name, "."])
+            return 0
+        print("No supported IDE found. Open the project root in your IDE.")
+        print("CMakeLists.txt and CMakePresets.json are in the project root.")
+        return 0
 
+    def _launch_visual_studio(self, target_arch=None, config="debug"):
+        """Configures a VS build tree under build-vs[-arch]/ pinned to a single
+        config, then launches devenv on the generated solution."""
+        if not vs_version:
+            print_error("Visual Studio is not installed.")
+            return 1
+        # Kept separate from build/ (Ninja Multi-Config) because CMake
+        # refuses to change generators on an existing tree — mixing the
+        # two workflows in one dir would force a full wipe each time.
+        is_native_arm64 = platform.machine() in ("ARM64", "aarch64", "arm64")
+        effective_arch = target_arch or ("arm64" if is_native_arm64 else "x64")
+        vs_arch = "ARM64" if effective_arch == "arm64" else "x64"
+        vs_build_dir = "build-vs" if effective_arch == ("arm64" if is_native_arm64 else "x64") else f"build-vs-{effective_arch}"
+        config_title = config.title()
+        print(f"Configuring Visual Studio build tree ({vs_arch}, {config_title}) in {vs_build_dir}...")
+        # -A <arch> without -G lets CMake pick whichever VS generator matches
+        # the installed toolchain (VS 2022, 2026, ...).
+        ret = subprocess.call([
+            "cmake", "-S", ".", "-B", vs_build_dir, "-A", vs_arch,
+            f"-DCMAKE_BUILD_TYPE={config_title}",
+            f"-DCMAKE_CONFIGURATION_TYPES={config_title}",
+        ])
+        if ret != 0:
+            print_error("cmake configure failed for the VS build tree")
+            return ret
+        generate_version_h(vs_build_dir)
+        # VS 2026+ emits xenia.slnx; older VS emits xenia.sln.
+        sln_path = os.path.join(vs_build_dir, "xenia.slnx")
+        if not os.path.exists(sln_path):
+            sln_path = os.path.join(vs_build_dir, "xenia.sln")
+        if not os.path.exists(sln_path):
+            print_error("cmake configured successfully but no .sln/.slnx was produced")
+            return 1
+        print(f"\n- launching devenv on {sln_path}...")
+        shell_call(["devenv", sln_path])
         return 0
 
 

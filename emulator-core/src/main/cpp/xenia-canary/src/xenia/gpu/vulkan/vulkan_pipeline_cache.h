@@ -139,8 +139,10 @@ class VulkanPipelineCache {
       Shader::HostVertexShaderType host_vertex_shader_type,
       uint32_t interpolator_mask, bool ps_param_gen_used) const;
   SpirvShaderTranslator::Modification GetCurrentPixelShaderModification(
-      const Shader& shader, uint32_t interpolator_mask,
-      uint32_t param_gen_pos) const;
+      const Shader& shader, uint32_t interpolator_mask, uint32_t param_gen_pos,
+      reg::RB_DEPTHCONTROL normalized_depth_control,
+      uint32_t normalized_color_mask,
+      bool apply_polygon_offset_in_shader) const;
 
   bool EnsureShadersTranslated(VulkanShader::VulkanTranslation* vertex_shader,
                                VulkanShader::VulkanTranslation* pixel_shader);
@@ -304,6 +306,8 @@ class VulkanPipelineCache {
     VkShaderModule tessellation_vertex_shader;   // VS for passing data to TCS.
     VkShaderModule tessellation_control_shader;  // TCS (hull shader).
     VkRenderPass render_pass;
+    // For dynamic rendering (VK_KHR_dynamic_rendering / Vulkan 1.3).
+    VulkanRenderTargetCache::RenderPassKey render_pass_key;
     // Priority for async compilation (higher = compiled sooner).
     // Pipelines that write to visible render targets get higher priority.
     uint8_t priority = 0;
@@ -395,6 +399,13 @@ class VulkanPipelineCache {
   VulkanRenderTargetCache& render_target_cache_;
   VkShaderStageFlags guest_shader_vertex_stages_;
 
+  // Cached device features for geometry shader creation.
+  unsigned int spirv_version_;
+  bool signed_zero_inf_nan_preserve_float32_;
+  bool denorm_flush_to_zero_float32_;
+  // Already combined with the spirv_disable_rounding_mode_rte cvar.
+  bool rounding_mode_rte_float32_;
+
   // Temporary storage for AnalyzeUcode calls on the processor thread.
   StringBuffer ucode_disasm_buffer_;
   // Reusable shader translator on the command processor thread.
@@ -429,6 +440,13 @@ class VulkanPipelineCache {
   // Empty depth-only pixel shader for writing to depth buffer using fragment
   // shader interlock when no Xenos pixel shader provided.
   VkShaderModule depth_only_fragment_shader_ = VK_NULL_HANDLE;
+
+  // Substitute depth-only pixel shaders that perform float24 conversion of the
+  // rasterizer's depth, bound for guest depth-only draws when in-PS float24
+  // conversion is active and the depth buffer is D24FS8. Mirrors the DXBC
+  // backend's float24_{truncate,round}_ps.
+  VkShaderModule float24_truncate_fragment_shader_ = VK_NULL_HANDLE;
+  VkShaderModule float24_round_fragment_shader_ = VK_NULL_HANDLE;
 
   // Tessellation shaders.
   // Vertex shaders for tessellation - pass indices/factors to TCS.
@@ -482,13 +500,10 @@ class VulkanPipelineCache {
   // boot.
   bool startup_loading_ = false;
 
-  // Deferred destruction of replaced shader modules and pipelines.
+  // Deferred destruction of pipelines.
   // Pipelines are only destroyed after the GPU submission that might reference
   // them has completed (tracked via submission numbers from command processor).
   void ProcessDeferredDestructions();
-  std::vector<VkShaderModule> deferred_destroy_shader_modules_;
-  // Pipelines pending destruction, paired with the submission number they were
-  // last potentially used in. Only destroyed when that submission completes.
   std::vector<std::pair<VkPipeline, uint64_t>> deferred_destroy_pipelines_;
   std::mutex deferred_destroy_mutex_;
 

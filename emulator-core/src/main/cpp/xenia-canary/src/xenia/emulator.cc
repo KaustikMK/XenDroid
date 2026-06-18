@@ -11,12 +11,12 @@
 
 #include "xenia/emulator.h"
 
+#include <algorithm>
+#if XE_PLATFORM_LINUX
+#include <fstream>
+#endif
 #include "config.h"
 #include "third_party/fmt/include/fmt/format.h"
-#include "third_party/tabulate/single_include/tabulate/tabulate.hpp"
-#include "third_party/zarchive/include/zarchive/zarchivecommon.h"
-#include "third_party/zarchive/include/zarchive/zarchivewriter.h"
-#include "third_party/zarchive/src/sha_256.h"
 #include "xenia/apu/audio_system.h"
 #include "xenia/base/assert.h"
 #include "xenia/base/byte_stream.h"
@@ -38,14 +38,17 @@
 #include "xenia/gpu/graphics_system.h"
 #include "xenia/hid/input_driver.h"
 #include "xenia/hid/input_system.h"
+#include "xenia/kernel/guest_scheduler.h"
 #include "xenia/kernel/kernel_state.h"
 #include "xenia/kernel/title_id_utils.h"
 #include "xenia/kernel/user_module.h"
 #include "xenia/kernel/xam/achievement_manager.h"
+#include "xenia/kernel/xam/ui/disc_swap_ui.h"
 #include "xenia/kernel/xam/xam_module.h"
 #include "xenia/kernel/xam/xdbf/spa_info.h"
 #include "xenia/kernel/xbdm/xbdm_module.h"
 #include "xenia/kernel/xboxkrnl/xboxkrnl_module.h"
+#include "xenia/kernel/xthread.h"
 #include "xenia/memory.h"
 #include "xenia/ui/file_picker.h"
 #include "xenia/ui/imgui_dialog.h"
@@ -59,6 +62,8 @@
 #include "xenia/vfs/devices/host_path_device.h"
 #include "xenia/vfs/devices/null_device.h"
 #include "xenia/vfs/devices/xcontent_container_device.h"
+#include "xenia/vfs/entry.h"
+#include "xenia/vfs/file.h"
 #include "xenia/vfs/virtual_file_system.h"
 
 #if XE_ARCH_AMD64
@@ -78,13 +83,34 @@ DEFINE_string(
     "module.",
     "General");
 
+DEFINE_CVar(launch_flags, 0,
+            "Launch flags passed from a title restart request. "
+            "Used internally for title-to-title launches.",
+            "General", true, uint32_t);
+
+DEFINE_CVar(launch_data, "",
+            "Hex-encoded launch data passed from a title restart request. "
+            "Used internally for title-to-title launches.",
+            "General", true, std::string);
+
+DEFINE_bool(dump_xex, false, "Dump the main XEX to current directory on launch",
+            "General");
+
 DEFINE_bool(allow_game_relative_writes, false,
             "Not useful to non-developers. Allows code to write to paths "
             "relative to game://. Used for "
             "generating test data to compare with original hardware. ",
             "General");
 
+DECLARE_string(gpu);
+DECLARE_string(apu);
+
 DECLARE_bool(allow_plugins);
+
+DECLARE_bool(mount_scratch);
+DECLARE_bool(mount_cache);
+DECLARE_bool(mount_memory_unit);
+DECLARE_bool(force_mount_devkit);
 
 DEFINE_int32(priority_class, 0,
              "Forces Xenia to use different process priority than default one. "
@@ -94,15 +120,6 @@ DEFINE_int32(priority_class, 0,
 
 namespace xe {
 using namespace xe::literals;
-
-Emulator::GameConfigLoadCallback::GameConfigLoadCallback(Emulator& emulator)
-    : emulator_(emulator) {
-  emulator_.AddGameConfigLoadCallback(this);
-}
-
-Emulator::GameConfigLoadCallback::~GameConfigLoadCallback() {
-  emulator_.RemoveGameConfigLoadCallback(this);
-}
 
 Emulator::Emulator(const std::filesystem::path& command_line,
                    const std::filesystem::path& storage_root,
@@ -163,7 +180,18 @@ Emulator::Emulator(const std::filesystem::path& command_line,
 #endif
 }
 
-Emulator::~Emulator() {
+Emulator::~Emulator() { Shutdown(); }
+
+void Emulator::Shutdown() {
+  XELOGI("Emulator::Shutdown: starting teardown");
+
+  // During relaunch, notify listeners before teardown so they can disconnect
+  // UI resources while subsystems are still alive. Skip during normal
+  // destructor — the UI loop may not be running.
+  if (relaunching_) {
+    on_before_shutdown();
+  }
+
   // Note that we delete things in the reverse order they were initialized.
 
   // Give the systems time to shutdown before we delete them.
@@ -174,19 +202,39 @@ Emulator::~Emulator() {
     audio_system_->Shutdown();
   }
 
-  input_system_.reset();
+  main_thread_ = nullptr;
+
+  // Keep input_system_ alive across relaunch — it's bound to the persistent
+  // window and SDL requires init/quit on the same thread.
+  if (!relaunching_) {
+    input_system_.reset();
+  }
   graphics_system_.reset();
   audio_system_.reset();
   audio_media_player_.reset();
 
   kernel_state_.reset();
   file_system_.reset();
+  patcher_.reset();
+  plugin_loader_.reset();
 
   processor_.reset();
-
   export_resolver_.reset();
+  memory_.reset();
 
   ExceptionHandler::Uninstall(Emulator::ExceptionCallbackThunk, this);
+
+  title_id_ = std::nullopt;
+  title_name_.clear();
+  title_version_.clear();
+  game_info_database_.reset();
+  paused_ = false;
+
+  XELOGI("Emulator::Shutdown: teardown complete");
+}
+
+uint32_t Emulator::main_thread_id() {
+  return main_thread_ ? main_thread_->thread_id() : 0;
 }
 
 X_STATUS Emulator::Setup(
@@ -200,8 +248,24 @@ X_STATUS Emulator::Setup(
         input_driver_factory) {
   X_STATUS result = X_STATUS_UNSUCCESSFUL;
 
-  display_window_ = display_window;
-  imgui_drawer_ = imgui_drawer;
+  // Store parameters for reuse across Shutdown/Setup cycles.
+  // Only overwrite if non-null so re-calls after Shutdown keep prior values.
+  if (display_window) {
+    display_window_ = display_window;
+  }
+  if (imgui_drawer) {
+    imgui_drawer_ = imgui_drawer;
+  }
+  require_cpu_backend_ = require_cpu_backend;
+  if (audio_system_factory) {
+    audio_system_factory_ = audio_system_factory;
+  }
+  if (graphics_system_factory) {
+    graphics_system_factory_ = graphics_system_factory;
+  }
+  if (input_driver_factory) {
+    input_driver_factory_ = input_driver_factory;
+  }
 
   // Initialize clock.
   // 360 uses a 50MHz clock.
@@ -214,6 +278,31 @@ X_STATUS Emulator::Setup(
   // Before we can set thread affinity we must enable the process to use all
   // logical processors.
   xe::threading::EnableAffinityConfiguration();
+
+#if XE_PLATFORM_LINUX
+  // Check if /dev/shm is mounted with noexec. The code cache uses shm_open
+  // with PROT_EXEC, which will fail with EPERM on noexec tmpfs mounts.
+  {
+    std::ifstream mounts("/proc/mounts");
+    std::string line;
+    while (std::getline(mounts, line)) {
+      if (line.find("/dev/shm") != std::string::npos &&
+          line.find("noexec") != std::string::npos) {
+        XELOGE(
+            "/dev/shm is mounted with noexec, which prevents the code cache "
+            "from allocating executable memory. Please remount it with: "
+            "sudo mount -o remount,exec /dev/shm");
+        xe::ShowSimpleMessageBox(
+            xe::SimpleMessageBoxType::Error,
+            "/dev/shm is mounted with noexec, which prevents Xenia from "
+            "allocating executable memory for the code cache.\n\n"
+            "Please remount it with:\n"
+            "  sudo mount -o remount,exec /dev/shm");
+        return X_STATUS_UNSUCCESSFUL;
+      }
+    }
+  }
+#endif
 
   XELOGI("{}: Initializing Memory...", __func__);
   // Create memory system first, as it is required for other systems.
@@ -246,7 +335,7 @@ X_STATUS Emulator::Setup(
 #endif  // XE_ARCH
     }
   }
-  if (!backend && !require_cpu_backend) {
+  if (!backend && !require_cpu_backend_) {
     backend.reset(new xe::cpu::backend::NullBackend());
   }
 
@@ -259,51 +348,37 @@ X_STATUS Emulator::Setup(
     return X_STATUS_UNSUCCESSFUL;
   }
 
-  XELOGI("{}: Initializing Audio...", __func__);
-  // Initialize the APU.
-  if (audio_system_factory) {
-    audio_system_ = audio_system_factory(processor_.get());
-    if (!audio_system_) {
-      XELOGE("{}: Cannot initalize audio_system!", __func__);
+  // Input system persists across relaunch — SDL requires init/quit on the
+  // same thread, so drivers are attached here on the emulator thread.
+  if (!input_system_) {
+    XELOGI("{}: Initializing HID...", __func__);
+    input_system_ = std::make_unique<xe::hid::InputSystem>(display_window_);
+    if (!input_system_) {
+      XELOGE("{}: Cannot initalize input_system!", __func__);
       return X_STATUS_NOT_IMPLEMENTED;
     }
-  }
-
-  XELOGI("{}: Initializing Graphics...", __func__);
-  // Initialize the GPU.
-  graphics_system_ = graphics_system_factory();
-  if (!graphics_system_) {
-    XELOGE("{}: Cannot initalize graphics_system!", __func__);
-    return X_STATUS_NOT_IMPLEMENTED;
-  }
-
-  XELOGI("{}: Initializing HID...", __func__);
-  // Initialize the HID.
-  input_system_ = std::make_unique<xe::hid::InputSystem>(display_window_);
-  if (!input_system_) {
-    XELOGE("{}: Cannot initalize input_system!", __func__);
-    return X_STATUS_NOT_IMPLEMENTED;
-  }
-  if (input_driver_factory) {
-    auto input_drivers = input_driver_factory(display_window_);
-    for (size_t i = 0; i < input_drivers.size(); ++i) {
-      input_system_->AddDriver(std::move(input_drivers[i]));
+    if (input_driver_factory_) {
+      auto input_drivers = input_driver_factory_(display_window_);
+      for (size_t i = 0; i < input_drivers.size(); ++i) {
+        input_system_->AddDriver(std::move(input_drivers[i]));
+      }
+    }
+    result = input_system_->Setup();
+    if (result) {
+      return result;
     }
   }
 
-  result = input_system_->Setup();
-  if (result) {
-    return result;
+  // Add inputSystem to UI (if imgui is enabled)
+  if (imgui_drawer_) {
+    imgui_drawer_->LoadInputSystem(input_system_.get());
   }
-
-  // Add inputSystem to UI
-  imgui_drawer_->LoadInputSystem(input_system_.get());
 
   XELOGI("{}: Initializing VFS...", __func__);
   // Bring up the virtual filesystem used by the kernel.
   file_system_ = std::make_unique<xe::vfs::VirtualFileSystem>();
 
-  patcher_ = std::make_unique<xe::patcher::Patcher>(storage_root_);
+  patcher_ = std::make_unique<xe::patcher::Patcher>(storage_root_ / "patches");
 
   XELOGI("{}: Initializing Kernel...", __func__);
   // Shared kernel state.
@@ -318,15 +393,42 @@ X_STATUS Emulator::Setup(
   plugin_loader_ = std::make_unique<xe::patcher::PluginLoader>(
       kernel_state_.get(), storage_root() / "plugins");
 
-  XELOGI("{}: Starting graphics_system...", __func__);
-  // Setup the core components.
-  result = graphics_system_->Setup(
-      processor_.get(), kernel_state_.get(),
-      display_window_ ? &display_window_->app_context() : nullptr,
-      display_window_ != nullptr);
-  if (result) {
-    XELOGE("{}: Failed to setup graphics_system!", __func__);
-    return result;
+  ExceptionHandler::Install(Emulator::ExceptionCallbackThunk, this);
+
+  return result;
+}
+
+X_STATUS Emulator::SetupSubsystems() {
+  X_STATUS result = X_STATUS_SUCCESS;
+
+  if (audio_system_factory_ && !audio_system_) {
+    XELOGI("{}: Initializing Audio...", __func__);
+    audio_system_ = audio_system_factory_(processor_.get());
+    if (!audio_system_) {
+      XELOGE("{}: Cannot initalize audio_system!", __func__);
+      return X_STATUS_NOT_IMPLEMENTED;
+    }
+  }
+
+  if (graphics_system_factory_ && !graphics_system_) {
+    XELOGI("{}: Initializing Graphics...", __func__);
+    graphics_system_ = graphics_system_factory_();
+    if (!graphics_system_) {
+      XELOGE("{}: Cannot initalize graphics_system!", __func__);
+      return X_STATUS_NOT_IMPLEMENTED;
+    }
+  }
+
+  if (graphics_system_) {
+    XELOGI("{}: Starting graphics_system...", __func__);
+    result = graphics_system_->Setup(
+        processor_.get(), kernel_state_.get(),
+        display_window_ ? &display_window_->app_context() : nullptr,
+        display_window_ != nullptr);
+    if (result) {
+      XELOGE("{}: Failed to setup graphics_system!", __func__);
+      return result;
+    }
   }
 
   if (audio_system_) {
@@ -341,10 +443,23 @@ X_STATUS Emulator::Setup(
     audio_media_player_->Setup();
   }
 
-  // Initialize emulator fallback exception handling last.
-  ExceptionHandler::Install(Emulator::ExceptionCallbackThunk, this);
-
+  active_gpu_backend_ = cvars::gpu;
+  active_apu_backend_ = cvars::apu;
   return result;
+}
+
+void Emulator::ShutdownSubsystems() {
+  // Dependents first: media player holds audio_system_, presenter holds the
+  // graphics_system_ provider.
+  audio_media_player_.reset();
+  if (audio_system_) {
+    audio_system_->Shutdown();
+    audio_system_.reset();
+  }
+  if (graphics_system_) {
+    graphics_system_->Shutdown();
+    graphics_system_.reset();
+  }
 }
 
 X_STATUS Emulator::TerminateTitle() {
@@ -533,6 +648,11 @@ Emulator::FileSignatureType Emulator::GetFileSignature(
 }
 
 X_STATUS Emulator::LaunchPath(const std::filesystem::path& path) {
+  // Remember for relaunch fallback
+  if (!path.empty()) {
+    last_launch_path_ = path;
+  }
+
   X_STATUS mount_result = X_STATUS_SUCCESS;
 
   switch (GetFileSignature(path)) {
@@ -622,7 +742,9 @@ X_STATUS Emulator::LaunchDiscImage(const std::filesystem::path& path) {
 
 X_STATUS Emulator::LaunchDiscArchive(const std::filesystem::path& path) {
   std::string module_path = FindLaunchModule();
+  XELOGI("LaunchDiscArchive: FindLaunchModule returned '{}'", module_path);
   X_STATUS result = CompleteLaunch(path, module_path);
+  XELOGI("LaunchDiscArchive: CompleteLaunch returned {:08X}", result);
 
   if (result == X_STATUS_NOT_FOUND && !cvars::launch_module.empty()) {
     return LaunchDefaultModule(path);
@@ -1009,20 +1131,39 @@ X_STATUS Emulator::ProcessContentPackageHeader(
   installation_info.content_size_ = header->content_metadata.content_size;
   installation_info.installation_state_ = InstallState::pending;
 
-  installation_info.icon_ = imgui_drawer_->LoadImGuiIcon(
-      std::span<const uint8_t>(header->content_metadata.title_thumbnail,
-                               header->content_metadata.title_thumbnail_size));
+  if (header->content_metadata.title_thumbnail_size > 0 &&
+      header->content_metadata.title_thumbnail_size <=
+          vfs::XContentMetadata::kThumbLengthV1) {
+    installation_info.icon_data_.assign(
+        header->content_metadata.title_thumbnail,
+        header->content_metadata.title_thumbnail +
+            header->content_metadata.title_thumbnail_size);
+  }
+
   return X_STATUS_SUCCESS;
 }
 
 X_STATUS Emulator::InstallContentPackage(
     const std::filesystem::path& path, ContentInstallEntry& installation_info) {
-  installation_info.installation_state_ = InstallState::preparing;
+  {
+    std::lock_guard<std::mutex> lock(*installation_info.mutex_);
+    installation_info.installation_state_ = InstallState::preparing;
+  }
+
+  // Check if installation was cancelled before starting
+  if (installation_info.cancelled_.load()) {
+    std::lock_guard<std::mutex> lock(*installation_info.mutex_);
+    installation_info.installation_state_ = InstallState::failed;
+    installation_info.installation_error_message_ = "Installation cancelled";
+    installation_info.installation_result_ = X_ERROR_CANCELLED;
+    return X_ERROR_CANCELLED;
+  }
 
   std::unique_ptr<vfs::XContentContainerDevice> device =
       vfs::XContentContainerDevice::CreateContentDevice("", path);
 
   if (!device || !device->Initialize()) {
+    std::lock_guard<std::mutex> lock(*installation_info.mutex_);
     installation_info.installation_state_ = InstallState::failed;
     installation_info.installation_error_message_ =
         "Device initialization failed!";
@@ -1040,6 +1181,7 @@ X_STATUS Emulator::InstallContentPackage(
   if (!std::filesystem::exists(content_root())) {
     const std::error_code ec = xe::filesystem::CreateFolder(content_root());
     if (ec) {
+      std::lock_guard<std::mutex> lock(*installation_info.mutex_);
       installation_info.installation_state_ = InstallState::failed;
       installation_info.installation_error_message_ = ec.message();
       installation_info.installation_result_ = X_STATUS_ACCESS_DENIED;
@@ -1048,7 +1190,8 @@ X_STATUS Emulator::InstallContentPackage(
   }
 
   const auto disk_space = std::filesystem::space(content_root());
-  if (disk_space.available < installation_info.content_size_ * 1.1f) {
+  if (disk_space.available < installation_info.content_size_.load() * 1.1f) {
+    std::lock_guard<std::mutex> lock(*installation_info.mutex_);
     installation_info.installation_state_ = InstallState::failed;
     installation_info.installation_error_message_ = "Insufficient disk space!";
     installation_info.installation_result_ = X_STATUS_DISK_FULL;
@@ -1062,6 +1205,7 @@ X_STATUS Emulator::InstallContentPackage(
     std::error_code error_code;
     std::filesystem::create_directories(installation_path, error_code);
     if (error_code) {
+      std::lock_guard<std::mutex> lock(*installation_info.mutex_);
       installation_info.installation_state_ = InstallState::failed;
       installation_info.installation_error_message_ =
           "Cannot Create Content Directory!";
@@ -1070,21 +1214,71 @@ X_STATUS Emulator::InstallContentPackage(
     }
   }
 
-  installation_info.content_size_ = device->data_size();
-  installation_info.installation_state_ = InstallState::installing;
+  installation_info.content_size_.store(device->data_size());
+  {
+    std::lock_guard<std::mutex> lock(*installation_info.mutex_);
+    installation_info.installation_state_ = InstallState::installing;
+  }
 
   vfs::VirtualFileSystem::ExtractContentHeader(device.get(), header_path);
 
+  // Lambda to handle cleanup - defined once, used in both cancellation paths
+  auto cleanup_and_fail = [&]() {
+    std::error_code ec;
+    bool cleanup_failed = false;
+
+    if (std::filesystem::exists(installation_path)) {
+      std::filesystem::remove_all(installation_path, ec);
+      if (ec) {
+        cleanup_failed = true;
+      }
+    }
+
+    if (std::filesystem::exists(header_path)) {
+      std::filesystem::remove(header_path, ec);
+      if (ec) {
+        cleanup_failed = true;
+      }
+    }
+
+    // Set state AFTER cleanup is done, so dialog doesn't pop up prematurely
+    std::lock_guard<std::mutex> lock(*installation_info.mutex_);
+    installation_info.installation_result_ = X_ERROR_CANCELLED;
+    installation_info.installation_error_message_ =
+        cleanup_failed ? "Installation cancelled (cleanup failed)"
+                       : "Installation cancelled";
+    installation_info.installation_state_ = InstallState::failed;
+  };
+
+  // Check for cancellation before extracting files
+  if (installation_info.cancelled_.load()) {
+    cleanup_and_fail();
+    return X_ERROR_CANCELLED;
+  }
+
   X_STATUS error_code = vfs::VirtualFileSystem::ExtractContentFiles(
       device.get(), installation_path,
-      installation_info.currently_installed_size_);
+      installation_info.currently_installed_size_,
+      [&installation_info]() { return installation_info.cancelled_.load(); });
+
+  // Check for cancellation after extraction
+  if (installation_info.cancelled_.load() || error_code == X_ERROR_CANCELLED) {
+    cleanup_and_fail();
+    return X_ERROR_CANCELLED;
+  }
+
   if (error_code != X_ERROR_SUCCESS) {
+    std::lock_guard<std::mutex> lock(*installation_info.mutex_);
     installation_info.installation_state_ = InstallState::failed;
     return error_code;
   }
 
-  installation_info.installation_state_ = InstallState::installed;
-  installation_info.currently_installed_size_ = installation_info.content_size_;
+  installation_info.currently_installed_size_.store(
+      installation_info.content_size_.load());
+  {
+    std::lock_guard<std::mutex> lock(*installation_info.mutex_);
+    installation_info.installation_state_ = InstallState::installed;
+  }
   kernel_state()->BroadcastNotification(kXNotificationLiveContentInstalled, 0);
 
   if (installation_info.content_type_ == XContentType::kProfile) {
@@ -1092,125 +1286,6 @@ X_STATUS Emulator::InstallContentPackage(
   }
 
   return error_code;
-}
-
-X_STATUS Emulator::ExtractZarchivePackage(
-    const std::filesystem::path& path,
-    const std::filesystem::path& extract_dir) {
-  std::unique_ptr<vfs::Device> device =
-      std::make_unique<vfs::DiscZarchiveDevice>("", path);
-  if (!device->Initialize()) {
-    XELOGE("Failed to initialize device");
-    return X_STATUS_INVALID_PARAMETER;
-  }
-
-  if (std::filesystem::exists(extract_dir)) {
-    // TODO(Gliniak): Popup
-    // Do you want to overwrite already existing data?
-  } else {
-    std::error_code error_code;
-    std::filesystem::create_directories(extract_dir, error_code);
-    if (error_code) {
-      return error_code.value();
-    }
-  }
-
-  uint64_t progress = 0;
-  return vfs::VirtualFileSystem::ExtractContentFiles(device.get(), extract_dir,
-                                                     progress);
-}
-
-X_STATUS Emulator::CreateZarchivePackage(
-    const std::filesystem::path& inputDirectory,
-    const std::filesystem::path& outputFile) {
-  std::vector<uint8_t> buffer;
-  buffer.resize(64 * 1024);
-
-  std::error_code ec;
-  PackContext packContext;
-  packContext.outputFilePath = outputFile;
-
-  ZArchiveWriter zWriter(
-      [](int32_t partIndex, void* ctx) {
-        PackContext* packContext = reinterpret_cast<PackContext*>(ctx);
-        packContext->currentOutputFile =
-            std::ofstream(packContext->outputFilePath, std::ios::binary);
-
-        if (!packContext->currentOutputFile.is_open()) {
-          XELOGI("Failed to create output file: {}\n",
-                 packContext->outputFilePath.string());
-          packContext->hasError = true;
-        }
-      },
-      [](const void* data, size_t length, void* ctx) {
-        PackContext* packContext = reinterpret_cast<PackContext*>(ctx);
-        packContext->currentOutputFile.write(
-            reinterpret_cast<const char*>(data), length);
-      },
-      &packContext);
-
-  if (packContext.hasError) {
-    return X_STATUS_UNSUCCESSFUL;
-  }
-
-  for (auto const& dirEntry :
-       std::filesystem::recursive_directory_iterator(inputDirectory)) {
-    std::filesystem::path pathEntry =
-        std::filesystem::relative(dirEntry.path(), inputDirectory, ec);
-
-    if (ec) {
-      XELOGI("Failed to get relative path {}\n", pathEntry.string());
-      return X_STATUS_UNSUCCESSFUL;
-    }
-
-    if (dirEntry.is_directory()) {
-      if (!zWriter.MakeDir(pathEntry.generic_string().c_str(), false)) {
-        XELOGI("Failed to create directory {}\n", pathEntry.string());
-        return X_STATUS_UNSUCCESSFUL;
-      }
-    } else if (dirEntry.is_regular_file()) {
-      // Don't pack itself to prevent infinite packing.
-      if (dirEntry == outputFile) {
-        continue;
-      }
-
-      XELOGI("Adding file: {}\n", pathEntry.string());
-
-      if (!zWriter.StartNewFile(pathEntry.generic_string().c_str())) {
-        XELOGI("Failed to create archive file {}\n", pathEntry.string());
-        return X_STATUS_UNSUCCESSFUL;
-      }
-
-      std::filesystem::path file_to_pack_path = inputDirectory / pathEntry;
-      FILE* file = xe::filesystem::OpenFile(file_to_pack_path, "rb");
-
-      if (!file) {
-        XELOGI("Failed to open input file {}\n", pathEntry.string());
-        return X_STATUS_UNSUCCESSFUL;
-      }
-
-      const uint64_t file_size = std::filesystem::file_size(file_to_pack_path);
-      uint64_t total_bytes_read = 0;
-
-      while (total_bytes_read < file_size) {
-        uint64_t bytes_read = fread(buffer.data(), 1, buffer.size(), file);
-
-        total_bytes_read += bytes_read;
-
-        zWriter.AppendData(buffer.data(), bytes_read);
-      }
-
-      fclose(file);
-    }
-
-    if (packContext.hasError) {
-      return X_STATUS_UNSUCCESSFUL;
-    }
-  }
-
-  zWriter.Finalize();
-
-  return X_STATUS_SUCCESS;
 }
 
 void Emulator::Pause() {
@@ -1371,29 +1446,323 @@ bool Emulator::RestoreFromFile(const std::filesystem::path& path) {
   return true;
 }
 
+void Emulator::RelaunchTitle(const std::string& host_path,
+                             const std::string& launch_module,
+                             uint32_t launch_flags,
+                             std::vector<uint8_t> launch_data) {
+  XELOGI(
+      "RelaunchTitle: starting full in-process relaunch, target={}, module={}",
+      host_path, launch_module);
+
+  // Tell WaitUntilExit not to fire on_exit when main thread dies.
+  relaunching_ = true;
+
+  // Stop the dispatch thread gracefully before force-terminating threads,
+  // otherwise TerminateThread corrupts the CV it's blocked on.
+  kernel_state_->ShutdownDispatchThread();
+
+  // Stop the GPU command processor before terminating guest threads so its
+  // worker can cleanly run ShutdownContext and free its Vulkan resources.
+  if (graphics_system_ && graphics_system_->command_processor()) {
+    graphics_system_->command_processor()->Shutdown();
+  }
+
+  // Force-terminate remaining threads.
+  {
+    auto threads =
+        kernel_state()->object_table()->GetObjectsByType<kernel::XThread>(
+            kernel::XObject::Type::Thread);
+    XELOGI("RelaunchTitle: terminating {} threads", threads.size());
+    for (auto thread : threads) {
+      thread->Terminate(0);
+    }
+  }
+
+  Shutdown();
+  Setup(nullptr, nullptr, require_cpu_backend_, nullptr, nullptr, nullptr);
+  MountStandardDrives();
+  SetupSubsystems();
+
+  // Populate launch data on the fresh xam module.
+  auto xam_new =
+      kernel_state_->GetKernelModule<kernel::xam::XamModule>("xam.xex");
+  if (xam_new) {
+    auto& ld = xam_new->loader_data();
+    ld.host_path =
+        host_path.empty() ? xe::path_to_utf8(command_line_) : host_path;
+    ld.launch_flags = launch_flags;
+    ld.launch_data = std::move(launch_data);
+    ld.launch_data_present = !ld.launch_data.empty();
+  }
+
+  // CompleteLaunch reads this cvar to determine the executable module.
+  cvars::launch_module = launch_module;
+
+  // Fall back to the initial launch path if host_path is empty (command-line
+  // launch rather than loader_data-driven).
+  auto launch_target =
+      host_path.empty() ? last_launch_path_ : xe::to_path(host_path);
+  XELOGI("RelaunchTitle: launching '{}'", xe::path_to_utf8(launch_target));
+  LaunchPath(launch_target);
+
+  relaunching_ = false;
+  XELOGI("RelaunchTitle: relaunch complete");
+}
+
+void Emulator::ResetTitle() {
+  XELOGI("ResetTitle: stopping title and resetting kernel");
+
+  relaunching_ = true;
+
+  kernel_state_->ShutdownDispatchThread();
+
+  // Stop the GPU command processor before terminating guest threads so its
+  // worker can cleanly run ShutdownContext and free its Vulkan resources.
+  if (graphics_system_ && graphics_system_->command_processor()) {
+    graphics_system_->command_processor()->Shutdown();
+  }
+
+  // Stop the dispatch thread before tearing down guest threads. Their fibers
+  // run on it, so terminating one from this host thread while the dispatcher is
+  // executing it would free the fiber out from under it. No-op if the scheduler
+  // never started.
+  kernel_state_->guest_scheduler()->Shutdown();
+
+  {
+    auto threads =
+        kernel_state()->object_table()->GetObjectsByType<kernel::XThread>(
+            kernel::XObject::Type::Thread);
+    XELOGI("ResetTitle: terminating {} threads", threads.size());
+    for (auto thread : threads) {
+      thread->Terminate(0);
+    }
+  }
+
+  Shutdown();
+  Setup(nullptr, nullptr, require_cpu_backend_, nullptr, nullptr, nullptr);
+  MountStandardDrives();
+
+  relaunching_ = false;
+  XELOGI("ResetTitle: complete");
+}
+
+void Emulator::MountStandardDrives() {
+  auto fs = file_system_.get();
+
+  if (cvars::mount_scratch) {
+    auto scratch_device = std::make_unique<xe::vfs::HostPathDevice>(
+        "\\SCRATCH", storage_root_ / "scratch", false);
+    if (!scratch_device->Initialize()) {
+      XELOGE("Unable to scan scratch path");
+    } else {
+      if (!fs->RegisterDevice(std::move(scratch_device))) {
+        XELOGE("Unable to register scratch path");
+      } else {
+        fs->RegisterSymbolicLink("scratch:", "\\SCRATCH");
+      }
+    }
+  }
+
+  if (cvars::mount_cache) {
+    auto cache0_device = std::make_unique<xe::vfs::HostPathDevice>(
+        "\\CACHE0", storage_root_ / "cache0", false);
+    if (!cache0_device->Initialize()) {
+      XELOGE("Unable to scan cache0 path");
+    } else {
+      if (!fs->RegisterDevice(std::move(cache0_device))) {
+        XELOGE("Unable to register cache0 path");
+      } else {
+        fs->RegisterSymbolicLink("cache0:", "\\CACHE0");
+      }
+    }
+
+    auto cache1_device = std::make_unique<xe::vfs::HostPathDevice>(
+        "\\CACHE1", storage_root_ / "cache1", false);
+    if (!cache1_device->Initialize()) {
+      XELOGE("Unable to scan cache1 path");
+    } else {
+      if (!fs->RegisterDevice(std::move(cache1_device))) {
+        XELOGE("Unable to register cache1 path");
+      } else {
+        fs->RegisterSymbolicLink("cache1:", "\\CACHE1");
+      }
+    }
+
+    // Some (older?) games try accessing cache:\ too
+    // NOTE: this must be registered _after_ the cache0/cache1 devices, due to
+    // substring/start_with logic inside VirtualFileSystem::ResolvePath, else
+    // accesses to those devices will go here instead
+    auto cache_device = std::make_unique<xe::vfs::HostPathDevice>(
+        "\\CACHE", storage_root_ / "cache", false);
+    if (!cache_device->Initialize()) {
+      XELOGE("Unable to scan cache path");
+    } else {
+      if (!fs->RegisterDevice(std::move(cache_device))) {
+        XELOGE("Unable to register cache path");
+      } else {
+        fs->RegisterSymbolicLink("cache:", "\\CACHE");
+      }
+    }
+  }
+
+  if (cvars::mount_memory_unit) {
+    auto mu_device = std::make_unique<xe::vfs::HostPathDevice>(
+        "\\MU", storage_root_ / "mu", false);
+    if (!mu_device->Initialize()) {
+      XELOGE("Unable to scan MU path");
+    } else {
+      if (!fs->RegisterDevice(std::move(mu_device))) {
+        XELOGE("Unable to register MU path");
+      } else {
+        fs->RegisterSymbolicLink("MU:", "\\MU");
+      }
+    }
+  }
+
+  if (cvars::force_mount_devkit) {
+    auto devkit_device =
+        std::make_unique<xe::vfs::HostPathDevice>("\\DEVKIT", "devkit", false);
+
+    if (!devkit_device->Initialize()) {
+      XELOGE("Unable to scan devkit path");
+    }
+
+    if (!fs->RegisterDevice(std::move(devkit_device))) {
+      XELOGE("Unable to register devkit path");
+    }
+
+    fs->RegisterSymbolicLink("DEVKIT:", "\\DEVKIT");
+    fs->RegisterSymbolicLink("e:", "\\DEVKIT");
+  }
+}
+
 const std::filesystem::path Emulator::GetNewDiscPath(
     std::string window_message) {
   std::filesystem::path path = "";
 
-  auto file_picker = xe::ui::FilePicker::Create();
-  file_picker->set_mode(ui::FilePicker::Mode::kOpen);
-  file_picker->set_type(ui::FilePicker::Type::kFile);
-  file_picker->set_multi_selection(false);
-  file_picker->set_title(!window_message.empty() ? window_message
-                                                 : "Select Content Package");
-  file_picker->set_extensions({
-      {"Supported Files", "*.iso;*.xex;*.xcp;*.*"},
-      {"Disc Image (*.iso)", "*.iso"},
-      {"Xbox Executable (*.xex)", "*.xex"},
-      {"All Files (*.*)", "*.*"},
-  });
+  uint32_t current_title_id = !title_id_.has_value() ? 0 : title_id_.value();
+  std::vector<TitleDisc> saved_discs;
 
-  if (file_picker->Show()) {
-    auto selected_files = file_picker->selected_files();
-    if (!selected_files.empty()) {
-      path = selected_files[0];
+  if (current_title_id != 0 && disc_provider_) {
+    saved_discs = disc_provider_(current_title_id);
+    // Sort discs alphanumerically by label.
+    std::sort(saved_discs.begin(), saved_discs.end(),
+              [](const TitleDisc& a, const TitleDisc& b) {
+                return a.label < b.label;
+              });
+  }
+
+  // Get the original game launch path from XAM loader data
+  std::filesystem::path initial_dir;
+  if (kernel_state_) {
+    auto xam =
+        kernel_state_->GetKernelModule<kernel::xam::XamModule>("xam.xex");
+    if (xam) {
+      const std::string& host_path = xam->loader_data().host_path;
+      if (!host_path.empty()) {
+        // Convert the stored host path to a filesystem path and get its parent
+        // directory
+        std::filesystem::path game_path = xe::to_path(host_path);
+        if (std::filesystem::exists(game_path)) {
+          initial_dir = game_path.parent_path();
+          XELOGI("Setting file picker initial directory to game directory: {}",
+                 initial_dir.string().c_str());
+        }
+      }
     }
   }
+
+  // Check if we need to show the disc selection dialog
+  bool show_error = window_message.find("ERROR:") != std::string::npos;
+  bool use_file_picker = false;
+
+  if (display_window_ && imgui_drawer_ &&
+      (saved_discs.size() > 1 || show_error)) {
+    // Convert saved_discs to DiscSwapUI format
+    std::vector<kernel::xam::ui::DiscSwapUI::DiscInfo> disc_infos;
+    for (const auto& disc : saved_discs) {
+      disc_infos.push_back({disc.label, disc.path});
+    }
+
+    // Variables to store dialog result (captured by close callback)
+    kernel::xam::ui::DiscSwapResult result =
+        kernel::xam::ui::DiscSwapResult::kCancelled;
+    std::filesystem::path selected_path;
+
+    // Create the dialog and set up the close callback to capture results
+    xe::threading::Fence fence;
+    display_window_->app_context().CallInUIThreadSynchronous([&, this]() {
+      auto* dialog = new kernel::xam::ui::DiscSwapUI(
+          imgui_drawer_, window_message, disc_infos, show_error);
+      dialog->set_close_callback([&result, &selected_path, dialog]() {
+        result = dialog->result();
+        selected_path = dialog->selected_path();
+      });
+      dialog->Then(&fence);
+    });
+
+    // Wait for the dialog to close
+    fence.Wait();
+
+    // Process the result
+    if (result == kernel::xam::ui::DiscSwapResult::kSelected) {
+      path = selected_path;
+      XELOGI("GetNewDiscPath: Selected disc from saved paths: {}",
+             path.string());
+      return path;
+    } else if (result == kernel::xam::ui::DiscSwapResult::kBrowse) {
+      use_file_picker = true;
+    } else {
+      // Cancelled - return empty path
+      return path;
+    }
+  } else {
+    // No saved discs or no display window - go straight to file picker
+    use_file_picker = true;
+  }
+
+  // Show file picker if needed
+  if (use_file_picker && display_window_) {
+    display_window_->app_context().CallInUIThreadSynchronous([&]() {
+      auto file_picker = xe::ui::FilePicker::Create();
+      file_picker->set_mode(ui::FilePicker::Mode::kOpen);
+      file_picker->set_type(ui::FilePicker::Type::kFile);
+      file_picker->set_multi_selection(false);
+
+      // Use the message without ERROR: prefix for the title
+      std::string picker_title = window_message;
+      if (show_error) {
+        size_t error_pos = picker_title.find("ERROR:");
+        if (error_pos != std::string::npos) {
+          picker_title = picker_title.substr(0, error_pos);
+        }
+      }
+      file_picker->set_title(!picker_title.empty() ? picker_title
+                                                   : "Select Content Package");
+
+      // Set the initial directory to the game's directory if available
+      if (!initial_dir.empty() && std::filesystem::exists(initial_dir)) {
+        file_picker->set_initial_directory(initial_dir);
+      }
+
+      file_picker->set_extensions({
+          {"Supported Files", "*;*.iso;*.xex;*.xcp"},
+          {"Disc Image (*.iso)", "*.iso"},
+          {"Xbox Executable (*.xex)", "*.xex"},
+          {"All Files", "*"},
+      });
+
+      if (file_picker->Show(display_window_)) {
+        auto selected_files = file_picker->selected_files();
+        if (!selected_files.empty()) {
+          path = selected_files[0];
+        }
+      }
+    });
+  } else if (!display_window_) {
+    XELOGE("Cannot show file picker: no display window available");
+  }
+
   return path;
 }
 
@@ -1401,7 +1770,44 @@ bool Emulator::ExceptionCallbackThunk(Exception* ex, void* data) {
   return reinterpret_cast<Emulator*>(data)->ExceptionCallback(ex);
 }
 
+// VEH-resume target for a crashed fiber. We can't yield from inside the
+// vectored exception handler, so we tell the OS to resume here, then the fiber
+// detaches from the scheduler and yields forever. Other fibers keep running,
+// only the crashed one is parked.
+[[noreturn]] static void HaltCrashedFiberThunk() {
+  auto* self = kernel::XThread::GetCurrentFiberThread();
+  if (self) {
+    self->guest_object<kernel::X_KTHREAD>()->thread_state =
+        kernel::KTHREAD_STATE_TERMINATED;
+    auto* scheduler = self->kernel_state()->guest_scheduler();
+    scheduler->ForgetThread(self);
+    while (true) {
+      scheduler->YieldToScheduler();  // never returns
+    }
+  }
+  // Defend against a missing TLS or scheduler, should never happen.
+  while (true) {
+    xe::threading::NanoSleep(int64_t(1'000'000'000));  // 1 second
+  }
+}
+
+// Parks a guest thread that faults during an in-process relaunch off the freed
+// code; teardown's pending cancel exits it at this NanoSleep.
+[[noreturn]] static void HaltDuringRelaunchThunk() {
+  while (true) {
+    xe::threading::NanoSleep(int64_t(1'000'000'000));
+  }
+}
+
 bool Emulator::ExceptionCallback(Exception* ex) {
+  // In-process relaunch/reset frees state under still-running guest threads;
+  // their faults are expected, so park them instead of crashing. The teardown
+  // thread isn't a guest thread, so its own faults still surface.
+  if (relaunching_ && kernel::XThread::IsInThread()) {
+    ex->set_resume_pc(reinterpret_cast<uint64_t>(&HaltDuringRelaunchThunk));
+    return true;
+  }
+
   // Check to see if the exception occurred in guest code.
   auto code_cache = processor()->backend()->code_cache();
   auto code_base = code_cache->execute_base_address();
@@ -1418,14 +1824,32 @@ bool Emulator::ExceptionCallback(Exception* ex) {
   }
 
   if (!(ex->pc() >= code_base && ex->pc() < code_end)) {
-    // Didn't occur in guest code. Let it pass.
+    // Not in JIT'd guest code. In host-thread mode let the OS default handler
+    // deal with it. In fiber mode the faulting thread is the shared dispatch
+    // loop, so if a fiber is current halt just that fiber to keep the
+    // dispatcher and the other fibers alive.
+    if (auto* fiber_self = kernel::XThread::GetCurrentFiberThread()) {
+      XELOGE(
+          "Host-side crash on fiber thread (handle 0x{:08X}, guest tid "
+          "0x{:08X}) at host PC 0x{:016X}. Halting fiber to keep the "
+          "dispatcher alive.",
+          fiber_self->handle(), fiber_self->thread_id(), ex->pc());
+      ex->set_resume_pc(reinterpret_cast<uint64_t>(&HaltCrashedFiberThunk));
+      return true;
+    }
     return false;
   }
 
-  // Within range: dump information into the log FIRST, then pause and eat
-  // the exception. Pause() can block on subsystem fences (it waits for the
-  // audio/XMA workers to ack), and a pause that hangs must not take the
-  // crash dump with it.
+  // Within range. Log the crash and suspend the faulting thread.
+  // Only pause the entire emulator if debugging is enabled. Pause() can block
+  // on subsystem fences (it waits for the audio/XMA workers to ack), so in
+  // normal runs we skip it and let the dump/suspend below handle the crash
+  // without risking a hang that would swallow the crash dump.
+  if (cvars::debug) {
+    Pause();
+  }
+
+  // Dump information into the log.
   auto current_thread = kernel::XThread::GetCurrentThread();
   assert_not_null(current_thread);
 
@@ -1436,9 +1860,12 @@ bool Emulator::ExceptionCallback(Exception* ex) {
 
   std::string crash_msg;
   crash_msg.append("==== CRASH DUMP ====\n");
-  crash_msg.append(fmt::format("Thread ID (Host: 0x{:08X} / Guest: 0x{:08X})\n",
-                               current_thread->thread()->system_id(),
-                               current_thread->thread_id()));
+  // Fiber-backed guest threads have no host thread, so report 0 for the host id
+  // and avoid null-dereferencing thread() inside the crash handler.
+  crash_msg.append(fmt::format(
+      "Thread ID (Host: 0x{:08X} / Guest: 0x{:08X})\n",
+      current_thread->thread() ? current_thread->thread()->system_id() : 0,
+      current_thread->thread_id()));
   crash_msg.append(
       fmt::format("Thread Handle: 0x{:08X}\n", current_thread->handle()));
   crash_msg.append(
@@ -1476,8 +1903,6 @@ bool Emulator::ExceptionCallback(Exception* ex) {
   }
   XELOGE("{}", crash_msg);
 
-  Pause();
-
   std::string crash_dlg = fmt::format(
       "The guest has crashed.\n\n"
       "Xenia has now paused itself.\n\n"
@@ -1491,7 +1916,13 @@ bool Emulator::ExceptionCallback(Exception* ex) {
     });
   }
 
-  // Now suspend ourself (we should be a guest thread).
+  // Halt the crashed thread without unwinding the rest of the emulator. Host
+  // mode suspends self. Fiber mode diverts the resume PC to a halt thunk, since
+  // calling Suspend here would yield from inside the exception handler.
+  if (current_thread->fiber()) {
+    ex->set_resume_pc(reinterpret_cast<uint64_t>(&HaltCrashedFiberThunk));
+    return true;
+  }
   current_thread->Suspend(nullptr);
 
   // We should not arrive here!
@@ -1502,13 +1933,21 @@ bool Emulator::ExceptionCallback(Exception* ex) {
 void Emulator::WaitUntilExit() {
   while (true) {
     if (main_thread_) {
-      xe::threading::Wait(main_thread_->thread(), false);
+      // Use wait_handle() rather than thread(): a fiber-backed main thread has
+      // no host thread, only an exit event.
+      xe::threading::Wait(main_thread_->wait_handle(), false);
     }
 
     if (restoring_) {
       restore_fence_.Wait();
+    } else if (relaunching_) {
+      // RelaunchTitle is running on another thread - wait for it to finish
+      // and set the new main_thread_, then loop back to wait on it.
+      while (relaunching_) {
+        xe::threading::Sleep(std::chrono::milliseconds(10));
+      }
     } else {
-      // Not restoring and the thread exited. We're finished.
+      // Not restoring/relaunching and the thread exited. We're finished.
       break;
     }
   }
@@ -1516,39 +1955,40 @@ void Emulator::WaitUntilExit() {
   on_exit();
 }
 
-void Emulator::AddGameConfigLoadCallback(GameConfigLoadCallback* callback) {
-  assert_not_null(callback);
-  // Game config load callbacks handling is entirely in the UI thread.
-  assert_true(!display_window_ ||
-              display_window_->app_context().IsInUIThread());
-  // Check if already added.
-  if (std::find(game_config_load_callbacks_.cbegin(),
-                game_config_load_callbacks_.cend(),
-                callback) != game_config_load_callbacks_.cend()) {
-    return;
-  }
-  game_config_load_callbacks_.push_back(callback);
-}
+std::string Emulator::RemountAndResolveLaunchPath(
+    const std::string& launch_path) {
+  // Normalize path separators for the platform
+  std::string normalized_path = launch_path;
+#if XE_PLATFORM_LINUX
+  // Convert backslashes to forward slashes for consistent paths on Linux
+  std::replace(normalized_path.begin(), normalized_path.end(), '\\', '/');
+#endif
 
-void Emulator::RemoveGameConfigLoadCallback(GameConfigLoadCallback* callback) {
-  assert_not_null(callback);
-  // Game config load callbacks handling is entirely in the UI thread.
-  assert_true(!display_window_ ||
-              display_window_->app_context().IsInUIThread());
-  auto it = std::find(game_config_load_callbacks_.cbegin(),
-                      game_config_load_callbacks_.cend(), callback);
-  if (it == game_config_load_callbacks_.cend()) {
-    return;
+  // Get the current game:\ symbolic link path
+  std::string symbolic_link_path;
+  if (!kernel_state_->file_system()->FindSymbolicLink(kDefaultGameSymbolicLink,
+                                                      symbolic_link_path)) {
+    return "";
   }
-  if (game_config_load_callback_loop_next_index_ != SIZE_MAX) {
-    // Actualize the next callback index after the erasure from the vector.
-    size_t existing_index =
-        size_t(std::distance(game_config_load_callbacks_.cbegin(), it));
-    if (game_config_load_callback_loop_next_index_ > existing_index) {
-      --game_config_load_callback_loop_next_index_;
-    }
-  }
-  game_config_load_callbacks_.erase(it);
+
+  std::filesystem::path file_path = symbolic_link_path;
+
+  // Remove previous symbolic links.
+  // Some titles can provide root within specific directory.
+  kernel_state_->file_system()->UnregisterSymbolicLink(
+      kDefaultPartitionSymbolicLink);
+  kernel_state_->file_system()->UnregisterSymbolicLink(
+      kDefaultGameSymbolicLink);
+
+  file_path /= std::filesystem::path(normalized_path);
+
+  // Re-register symbolic links to point to the parent directory of the module
+  kernel_state_->file_system()->RegisterSymbolicLink(
+      kDefaultPartitionSymbolicLink, xe::path_to_utf8(file_path.parent_path()));
+  kernel_state_->file_system()->RegisterSymbolicLink(
+      kDefaultGameSymbolicLink, xe::path_to_utf8(file_path.parent_path()));
+
+  return xe::path_to_utf8(file_path);
 }
 
 std::string Emulator::FindLaunchModule() {
@@ -1557,31 +1997,31 @@ std::string Emulator::FindLaunchModule() {
   auto xam = kernel_state()->GetKernelModule<kernel::xam::XamModule>("xam.xex");
 
   if (!xam->loader_data().launch_path.empty()) {
-    std::string symbolic_link_path;
-    if (kernel_state_->file_system()->FindSymbolicLink(kDefaultGameSymbolicLink,
-                                                       symbolic_link_path)) {
-      std::filesystem::path file_path = symbolic_link_path;
-      // Remove previous symbolic links.
-      // Some titles can provide root within specific directory.
-      kernel_state_->file_system()->UnregisterSymbolicLink(
-          kDefaultPartitionSymbolicLink);
-      kernel_state_->file_system()->UnregisterSymbolicLink(
-          kDefaultGameSymbolicLink);
-
-      file_path /= std::filesystem::path(xam->loader_data().launch_path);
-
-      kernel_state_->file_system()->RegisterSymbolicLink(
-          kDefaultPartitionSymbolicLink,
-          xe::path_to_utf8(file_path.parent_path()));
-      kernel_state_->file_system()->RegisterSymbolicLink(
-          kDefaultGameSymbolicLink, xe::path_to_utf8(file_path.parent_path()));
-
-      return xe::path_to_utf8(file_path);
+    std::string result =
+        RemountAndResolveLaunchPath(xam->loader_data().launch_path);
+    if (!result.empty()) {
+      return result;
     }
   }
 
   if (!cvars::launch_module.empty()) {
-    return path + cvars::launch_module;
+    std::string launch_module = cvars::launch_module;
+#if XE_PLATFORM_LINUX
+    // Convert backslashes to forward slashes for consistent paths on Linux
+    std::replace(launch_module.begin(), launch_module.end(), '\\', '/');
+#endif
+
+    // If the module is in a subdirectory, remount game:\ to that subdirectory
+    std::filesystem::path module_path(launch_module);
+    if (module_path.has_parent_path() && module_path.parent_path() != ".") {
+      std::string result = RemountAndResolveLaunchPath(launch_module);
+      if (!result.empty()) {
+        return result;
+      }
+    }
+
+    // No subdirectory, just return as guest path
+    return path + launch_module;
   }
 
   return path + "default.xex";
@@ -1685,29 +2125,11 @@ X_STATUS Emulator::CompleteLaunch(const std::filesystem::path& path,
   if (module->title_id()) {
     auto title_id = fmt::format("{:08X}", module->title_id());
 
-    // Load the per-game configuration file and make sure updates are handled
-    // by the callbacks.
-    config::LoadGameConfig(title_id);
-    // The GPU caches parsed enums (occlusion_query / readback_resolve) that
-    // the file-load path doesn't refresh - drop them so per-game overrides
-    // take effect.
-    gpu::InvalidateConfigModeCaches();
-    assert_true(game_config_load_callback_loop_next_index_ == SIZE_MAX);
-    game_config_load_callback_loop_next_index_ = 0;
-    while (game_config_load_callback_loop_next_index_ <
-           game_config_load_callbacks_.size()) {
-      game_config_load_callbacks_[game_config_load_callback_loop_next_index_++]
-          ->PostGameConfigLoad();
-    }
-    game_config_load_callback_loop_next_index_ = SIZE_MAX;
-
     const auto db = kernel_state_->module_xdbf(module);
 
     game_info_database_ =
         std::make_unique<kernel::util::GameInfoDatabase>(db.get());
     kernel_state_->xam_state()->LoadSpaInfo(db.get());
-
-    kernel_state_->xam_state()->user_tracker()->AddTitleToPlayedList();
 
     if (game_info_database_->IsValid()) {
       title_name_ = game_info_database_->GetTitleName(static_cast<XLanguage>(
@@ -1716,129 +2138,105 @@ X_STATUS Emulator::CompleteLaunch(const std::filesystem::path& path,
       XELOGI("Title name: {}", title_name_);
 
       // Show achievments data
-      tabulate::Table table;
-      table.format().multi_byte_characters(true);
-      table.add_row({"ID", "Title", "Description", "Type", "Gamerscore"});
-
       const std::vector<kernel::util::GameInfoDatabase::Achievement>
           achievement_list = game_info_database_->GetAchievements();
-      for (const kernel::util::GameInfoDatabase::Achievement& entry :
-           achievement_list) {
-        const std::string type = GetAchievementTypeName(
-            kernel::xam::GetAchievementType(entry.flags));
-
-        table.add_row({fmt::format("{}", entry.id), entry.label,
-                       entry.description, type,
-                       fmt::format("{}", entry.gamerscore)});
+      {
+        std::string body;
+        for (const kernel::util::GameInfoDatabase::Achievement& entry :
+             achievement_list) {
+          body += fmt::format("  [{}] {} ({}g) — {}: {}\n", entry.id,
+                              entry.label, entry.gamerscore,
+                              GetAchievementTypeName(
+                                  kernel::xam::GetAchievementType(entry.flags)),
+                              entry.description);
+        }
+        XELOGI("-- ACHIEVEMENTS ({}) --\n{}", achievement_list.size(), body);
       }
-      XELOGI("\n-------------------- ACHIEVEMENTS --------------------\n{}",
-             table.str());
 
       const std::vector<kernel::util::GameInfoDatabase::Property>
           properties_list = game_info_database_->GetProperties();
-
-      // 4D5307DC SPA contains a lot of properties, limit properties to log.
-      const auto properties_list_limit =
-          properties_list | std::views::take(150);
-
-      table = tabulate::Table();
-      table.format().multi_byte_characters(true);
-      table.add_row({"ID", "Name", "Matchmaking", "Data Size"});
-
-      for (const kernel::util::GameInfoDatabase::Property& entry :
-           properties_list_limit) {
-        std::string label =
-            string_util::remove_eol(string_util::trim(entry.description));
-
-        table.add_row({fmt::format("{:08X}", entry.id), label,
-                       entry.is_matchmaking ? "True" : "False",
-                       fmt::format("{}", entry.data_size)});
+      {
+        // 4D5307DC SPA contains a lot of properties, limit to log.
+        const auto properties_list_limit =
+            properties_list | std::views::take(150);
+        std::string body;
+        for (const kernel::util::GameInfoDatabase::Property& entry :
+             properties_list_limit) {
+          body += fmt::format(
+              "  {:08X} [{} bytes{}] {}\n", entry.id, entry.data_size,
+              entry.is_matchmaking ? ", matchmaking" : "",
+              string_util::remove_eol(string_util::trim(entry.description)));
+        }
+        XELOGI("-- PROPERTIES ({}{}) --\n{}", properties_list_limit.size(),
+               properties_list.size() > properties_list_limit.size()
+                   ? fmt::format(" of {}", properties_list.size())
+                   : "",
+               body);
       }
-
-      std::string properties_totals;
-
-      if (properties_list.size() > properties_list_limit.size()) {
-        properties_totals =
-            fmt::format("\nProperties: {}/{}", properties_list_limit.size(),
-                        properties_list.size());
-      }
-
-      XELOGI("\n-------------------- PROPERTIES --------------------{}\n{}",
-             properties_totals.c_str(), table.str());
 
       const std::vector<kernel::util::GameInfoDatabase::Context> contexts_list =
           game_info_database_->GetContexts();
-
-      table = tabulate::Table();
-      table.format().multi_byte_characters(true);
-      table.add_row(
-          {"ID", "Name", "Matchmaking", "Default Value", "Max Value"});
-
-      for (const kernel::util::GameInfoDatabase::Context& entry :
-           contexts_list) {
-        std::string label =
-            string_util::remove_eol(string_util::trim(entry.description));
-
-        table.add_row({fmt::format("{:08X}", entry.id), label,
-                       entry.is_matchmaking ? "True" : "False",
-                       fmt::format("{}", entry.default_value),
-                       fmt::format("{}", entry.max_value)});
+      {
+        std::string body;
+        for (const kernel::util::GameInfoDatabase::Context& entry :
+             contexts_list) {
+          body += fmt::format(
+              "  {:08X} [default={}, max={}{}] {}\n", entry.id,
+              entry.default_value, entry.max_value,
+              entry.is_matchmaking ? ", matchmaking" : "",
+              string_util::remove_eol(string_util::trim(entry.description)));
+        }
+        XELOGI("-- CONTEXTS ({}) --\n{}", contexts_list.size(), body);
       }
-      XELOGI("\n-------------------- CONTEXTS --------------------\n{}",
-             table.str());
 
       const std::vector<kernel::util::GameInfoDatabase::StatsView> stats_views =
           game_info_database_->GetStatsViews();
-
-      // 4D5307EA SPA contains a lot of stats, limit views to log.
-      const auto stats_views_limit = stats_views | std::views::take(100);
-
-      table = tabulate::Table();
-      table.format().multi_byte_characters(true);
-      table.add_row({"ID", "View Type", "Name", "Skilled", "Arbitrated",
-                     "Hidden", "Team View", "Online Only"});
-
-      for (const kernel::util::GameInfoDatabase::StatsView& entry :
-           stats_views_limit) {
-        const std::string name =
-            string_util::remove_eol(string_util::trim(entry.view.name));
-
-        const std::string view_type =
-            kernel::xam::GetViewTypeName(entry.view.view_type);
-
-        table.add_row({fmt::format("{:08X}", entry.view.id), view_type, name,
-                       entry.view.skilled ? "True" : "False",
-                       entry.view.arbitrated ? "True" : "False",
-                       entry.view.hidden ? "True" : "False",
-                       entry.view.team_view ? "True" : "False",
-                       entry.view.online_only ? "True" : "False"});
+      {
+        // 4D5307EA SPA contains a lot of stats, limit to log.
+        const auto stats_views_limit = stats_views | std::views::take(100);
+        std::string body;
+        for (const kernel::util::GameInfoDatabase::StatsView& entry :
+             stats_views_limit) {
+          std::string flags;
+          auto add = [&](bool b, const char* tag) {
+            if (b) {
+              if (!flags.empty()) {
+                flags += ",";
+              }
+              flags += tag;
+            }
+          };
+          add(entry.view.skilled, "skilled");
+          add(entry.view.arbitrated, "arbitrated");
+          add(entry.view.hidden, "hidden");
+          add(entry.view.team_view, "team");
+          add(entry.view.online_only, "online_only");
+          body += fmt::format(
+              "  {:08X} [{}{}{}] {}\n", entry.view.id,
+              kernel::xam::GetViewTypeName(entry.view.view_type),
+              flags.empty() ? "" : ", ", flags,
+              string_util::remove_eol(string_util::trim(entry.view.name)));
+        }
+        XELOGI("-- STATS VIEWS ({}{}) --\n{}", stats_views_limit.size(),
+               stats_views.size() > stats_views_limit.size()
+                   ? fmt::format(" of {}", stats_views.size())
+                   : "",
+               body);
       }
-
-      std::string stats_view_totals;
-
-      if (stats_views.size() > stats_views_limit.size()) {
-        stats_view_totals = fmt::format(
-            "\nViews: {}/{}", stats_views_limit.size(), stats_views.size());
-      }
-      XELOGI("\n-------------------- STATS VIEWS --------------------{}\n{}",
-             stats_view_totals.c_str(), table.str());
 
       const std::vector<kernel::util::GameInfoDatabase::PresenceMode>
           presence_modes = game_info_database_->GetPresenceModes();
-
-      table = tabulate::Table();
-      table.format().multi_byte_characters(true);
-      table.add_row({"Context Value", "Contexts Count", "Properties Count"});
-
-      for (const kernel::util::GameInfoDatabase::PresenceMode& entry :
-           presence_modes) {
-        table.add_row(
-            {fmt::format("{}", entry.context_value),
-             fmt::format("{}", entry.property_bag.contexts.size()),
-             fmt::format("{}", entry.property_bag.properties.size())});
+      {
+        std::string body;
+        for (const kernel::util::GameInfoDatabase::PresenceMode& entry :
+             presence_modes) {
+          body += fmt::format("  ctx={}: {} contexts, {} properties\n",
+                              entry.context_value,
+                              entry.property_bag.contexts.size(),
+                              entry.property_bag.properties.size());
+        }
+        XELOGI("-- PRESENCE MODES ({}) --\n{}", presence_modes.size(), body);
       }
-      XELOGI("\n-------------------- PRESENCE MODES --------------------\n{}",
-             table.str());
 
       auto icon_block = game_info_database_->GetIcon();
       if (!icon_block.empty()) {

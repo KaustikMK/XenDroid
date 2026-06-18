@@ -18,6 +18,8 @@
 #include "xenia/base/cvar.h"
 #include "xenia/base/logging.h"
 #include "xenia/base/profiling.h"
+#include "xenia/base/threading.h"
+#include "xenia/config.h"
 #include "xenia/gpu/gpu_flags.h"
 #include "xenia/gpu/graphics_system.h"
 #include "xenia/gpu/packet_disassembler.h"
@@ -26,6 +28,7 @@
 #include "xenia/gpu/xenos_zpd_report.h"
 #include "xenia/kernel/kernel_state.h"
 #include "xenia/kernel/user_module.h"
+
 #if !defined(NDEBUG)
 
 #define XE_ENABLE_GPU_REG_WRITE_LOGGING 1
@@ -48,9 +51,10 @@ DEFINE_bool(
     "of the guest thread that wrote the new read position.",
     "GPU");
 
-DEFINE_bool(clear_memory_page_state, false,
-            "Refresh state of memory pages to enable gpu written data. (Use "
-            "for 'Team Ninja' Games to fix missing character models)",
+DEFINE_bool(clear_memory_page_state, true,
+            "Refresh state of memory pages to enable gpu written data. "
+            "Uses mostly lock-free double-buffering for minimal overhead. "
+            "(Disable for minor performance boost, but may break rendering)",
             "GPU");
 
 DEFINE_bool(
@@ -65,6 +69,8 @@ DEFINE_string(
     occlusion_query, "fast",
     "Controls hardware occlusion query behavior for EVENT_WRITE_ZPD.\n"
     "Used for effects like lens flares, object culling, and auto-exposure.\n"
+    "Titles that use QueryBatch are not currently supported and fall back to\n"
+    "fake mode, regardless of this setting.\n"
     " fake: Write a fake result without asking the GPU. Safe for most games,\n"
     "       though some effects may look slightly wrong.\n"
     " fast: Ask the GPU but don't wait for the answer. Writes a cached\n"
@@ -78,23 +84,41 @@ DEFINE_string(
     "GPU");
 
 DEFINE_string(
-    readback_resolve, "none",
+    readback_resolve, "fast",
     "Controls CPU readback of render-to-texture resolve results.\n"
-    " fast: Read from previous frame (1 frame delay, no GPU stall, slight "
-    "performance hit)\n"
+    " fast: Read from previous frame, copy every frame (default)\n"
+    " some: Read from previous frame, skip copy on cache hit\n"
     " full: Wait for GPU to finish (accurate but slow, GPU-CPU sync stall)\n"
     " none: Disable readback completely (some games render better without it)",
     "GPU");
 
-UPDATE_from_string(readback_resolve, 2025, 12, 4, 21, "fast");
+DEFINE_bool(
+    precise_interpolation, true,
+    "Manually interpolate pixel shader inputs with barycentric coordinates to "
+    "exactly match the guest and avoid hardware interpolation precision "
+    "differences. Fixes noise artifacts in games like Perfect Dark and Tenchu "
+    "Z "
+    "that do exact equality comparisons on interpolated values. Requires "
+    "fragment shader barycentric support (VK_KHR_fragment_shader_barycentric "
+    "on "
+    "Vulkan, SV_Barycentrics on Direct3D 12).",
+    "GPU");
 
 DEFINE_bool(
-    readback_memexport, false,
+    readback_memexport, true,
     "Read data written by memory export in shaders on the CPU. "
-    "This may be needed in some games (but many only access exported data on "
-    "the GPU, and this flag isn't needed to handle such behavior), but causes "
-    "mid-frame synchronization, so it has a huge performance impact.",
+    "This is needed in some games but many only access exported data on "
+    "the GPU, so can be disabled for minor optimization. When "
+    "combined with readback_memexport_fast, performance impact is minimal.",
     "GPU");
+
+DEFINE_bool(readback_memexport_fast, true,
+            "Use fast (double-buffered, 1 frame delayed) readback for "
+            "memexport instead\n"
+            "of immediate GPU sync. Removes main performance penalty when "
+            "readback_memexport\n"
+            "is enabled at the expense of accuracy.",
+            "GPU");
 
 namespace xe {
 namespace gpu {
@@ -109,6 +133,9 @@ void SaveGPUSetting(GPUSetting setting, uint64_t value) {
     case GPUSetting::ReadbackMemexport:
       OVERRIDE_bool(readback_memexport, static_cast<bool>(value));
       break;
+    case GPUSetting::ReadbackMemexportFast:
+      OVERRIDE_bool(readback_memexport_fast, static_cast<bool>(value));
+      break;
   }
 }
 
@@ -118,8 +145,11 @@ bool GetGPUSetting(GPUSetting setting) {
       return cvars::clear_memory_page_state;
     case GPUSetting::ReadbackMemexport:
       return cvars::readback_memexport;
+    case GPUSetting::ReadbackMemexportFast:
+      return cvars::readback_memexport_fast;
+    default:
+      return false;
   }
-  return false;
 }
 
 // Both mode getters are called on the GPU command processor's per-packet/
@@ -133,6 +163,8 @@ std::atomic<int> zpd_mode_cache{-1};
 ReadbackResolveMode ParseReadbackResolveMode(const std::string& mode) {
   if (mode == "full") {
     return ReadbackResolveMode::kFull;
+  } else if (mode == "some") {
+    return ReadbackResolveMode::kSome;
   } else if (mode == "none") {
     return ReadbackResolveMode::kDisabled;
   } else {
@@ -141,16 +173,32 @@ ReadbackResolveMode ParseReadbackResolveMode(const std::string& mode) {
   }
 }
 
+ReadbackResolveMode ParseReadbackResolveMode() {
+  return ParseReadbackResolveMode(cvars::readback_resolve);
+}
+
+void SetReadbackResolveCvar(const std::string& mode) {
+  OVERRIDE_string(readback_resolve, mode);
+  readback_resolve_mode_cache.store(int(ParseReadbackResolveMode(mode)),
+                                    std::memory_order_relaxed);
+}
+
 ZPDMode ParseZPDMode(const std::string& mode) {
   if (mode == "fake") {
     return ZPDMode::kFake;
   } else if (mode == "strict") {
     return ZPDMode::kStrict;
+  } else if (mode == "fast") {
+    return ZPDMode::kFast;
   } else if (mode == "fast-alt") {
     return ZPDMode::kFastAlt;
+  } else {
+    // Default to "fake" for any unrecognized value.
+    return ZPDMode::kFake;
   }
-  return ZPDMode::kFast;
 }
+
+ZPDMode ParseZPDMode() { return ParseZPDMode(cvars::occlusion_query); }
 }  // namespace
 
 ReadbackResolveMode GetReadbackResolveMode() {
@@ -177,7 +225,7 @@ ZPDMode GetZPDMode() {
   return ZPDMode(cached);
 }
 
-void SetZPDMode(const std::string& mode) {
+static void SetZPDModeCvar(const std::string& mode) {
   OVERRIDE_string(occlusion_query, mode);
   zpd_mode_cache.store(int(ParseZPDMode(mode)), std::memory_order_relaxed);
 }
@@ -207,6 +255,10 @@ CommandProcessor::CommandProcessor(GraphicsSystem* graphics_system,
       write_ptr_index_event_(xe::threading::Event::CreateAutoResetEvent(false)),
       write_ptr_index_(0) {
   assert_not_null(write_ptr_index_event_);
+  // Parse and cache readback resolve mode once
+  cached_readback_resolve_mode_ = ParseReadbackResolveMode();
+  // Parse and cache ZPD mode once.
+  cached_zpd_mode_ = ParseZPDMode();
 }
 
 CommandProcessor::~CommandProcessor() = default;
@@ -247,6 +299,12 @@ bool CommandProcessor::Initialize() {
 }
 
 void CommandProcessor::Shutdown() {
+  // Already stopped if drained early during relaunch (stopped again at
+  // teardown).
+  if (!worker_thread_) {
+    return;
+  }
+
   EndTracing();
 
   worker_running_ = false;
@@ -351,6 +409,97 @@ void CommandProcessor::CallInThread(std::function<void()> fn) {
 
 void CommandProcessor::ClearCaches() {}
 
+void CommandProcessor::InvalidateGpuMemory() {}
+
+void CommandProcessor::ClearReadbackBuffers() {}
+
+void CommandProcessor::SetReadbackResolveMode(ReadbackResolveMode mode) {
+  if (cached_readback_resolve_mode_ == mode) {
+    return;
+  }
+  // Update cached value
+  cached_readback_resolve_mode_ = mode;
+  // Update cvar string for UI display
+  const char* mode_str = "fast";
+  switch (mode) {
+    case ReadbackResolveMode::kDisabled:
+      mode_str = "none";
+      break;
+    case ReadbackResolveMode::kSome:
+      mode_str = "some";
+      break;
+    case ReadbackResolveMode::kFull:
+      mode_str = "full";
+      break;
+    default:
+      break;
+  }
+  SetReadbackResolveCvar(mode_str);
+
+  // Save to per-game config if a title is loaded
+  uint32_t title_id = kernel_state_ ? kernel_state_->title_id() : 0;
+  if (title_id != 0) {
+    toml::table config_table = config::LoadGameConfig(title_id);
+
+    if (!config_table.contains("GPU")) {
+      config_table.insert("GPU", toml::table{});
+    }
+
+    auto* gpu_table = config_table["GPU"].as_table();
+    if (gpu_table) {
+      gpu_table->insert_or_assign("readback_resolve", mode_str);
+    }
+
+    config::SaveGameConfig(title_id, config_table);
+  }
+}
+
+void CommandProcessor::SetZPDMode(ZPDMode mode) {
+  if (cached_zpd_mode_ == mode) {
+    return;
+  }
+  // Close any active query segment before the mode changes so that a
+  // BeginQuery recorded under the old mode gets a matching EndQuery.
+  // Without this, switching to kFake mid-frame would cause EndRenderPass
+  // to skip CloseQuerySegment, leaving the query dangling.
+  if (zpd_active_segment_.segment_active) {
+    CloseQuerySegment();
+  }
+  cached_zpd_mode_ = mode;
+  const char* mode_str = "fake";
+  switch (mode) {
+    case ZPDMode::kFast:
+      mode_str = "fast";
+      break;
+    case ZPDMode::kFastAlt:
+      mode_str = "fast-alt";
+      break;
+    case ZPDMode::kStrict:
+      mode_str = "strict";
+      break;
+    default:
+      break;
+  }
+  SetZPDModeCvar(mode_str);
+
+  // Save to per-game config if a title is loaded.
+  uint32_t title_id = kernel_state_ ? kernel_state_->title_id() : 0;
+  if (title_id != 0) {
+    toml::table config_table = config::LoadGameConfig(title_id);
+
+    if (!config_table.contains("GPU")) {
+      config_table.insert("GPU", toml::table{});
+    }
+
+    auto* gpu_table = config_table["GPU"].as_table();
+    if (gpu_table) {
+      gpu_table->insert_or_assign("occlusion_query", mode_str);
+    }
+
+    config::SaveGameConfig(title_id, config_table);
+  }
+}
+
 void CommandProcessor::SetDesiredSwapPostEffect(
     SwapPostEffect swap_post_effect) {
   if (swap_post_effect_desired_ == swap_post_effect) {
@@ -410,6 +559,64 @@ void CommandProcessor::FrameStatsEndSwap(uint64_t begin_ns) {
     s = FrameTimeStats();
     s.last_swap_ns = keep_swap;
     s.last_report_ns = now;
+  }
+}
+
+void CommandProcessor::ThrottlePresentation() {
+  // Host frame rate limiting based on framerate_limit cvar.
+  const uint32_t framerate_limit = cvars::framerate_limit;
+
+  if (framerate_limit == 0) {
+    // No host frame limiting
+    return;
+  }
+
+  const double target_duration_ms =
+      1000.0 / static_cast<double>(framerate_limit);
+  const uint64_t tick_freq = Clock::guest_tick_frequency();
+
+  const uint64_t target_duration_ticks = static_cast<uint64_t>(
+      target_duration_ms * static_cast<double>(tick_freq) / 1000.0);
+
+  // Spin until target duration has elapsed
+  while (true) {
+    const uint64_t current_time = Clock::QueryGuestTickCount();
+    const uint64_t time_delta = current_time - last_swap_time_;
+
+    if (time_delta >= target_duration_ticks) {
+      // If we've fallen behind by more than 2 frames, reset to catch up
+      if (time_delta > target_duration_ticks * 2) {
+        last_swap_time_ = current_time;
+      } else {
+        last_swap_time_ += target_duration_ticks;
+      }
+      return;
+    }
+
+    const double elapsed_ms = static_cast<double>(time_delta) /
+                              (static_cast<double>(tick_freq) / 1000.0);
+
+    const double remaining_ms = target_duration_ms - elapsed_ms;
+#if XE_PLATFORM_WIN32
+    // Sleep 90% of remaining, spin the rest for accuracy
+    const uint64_t sleep_ns =
+        static_cast<uint64_t>(remaining_ms * 1000000.0 * 0.90);
+    if (sleep_ns > 0) {
+      xe::threading::NanoSleep(sleep_ns);
+    }
+#elif XE_PLATFORM_MAC
+    // Darwin's nanosleep oversleeps by 100-500us; NanoSleepPrecise spins the
+    // tail so 60Hz targets don't miss their frame budget.
+    const uint64_t sleep_ns = static_cast<uint64_t>(remaining_ms * 1000000.0);
+    if (sleep_ns > 0) {
+      xe::threading::NanoSleepPrecise(sleep_ns);
+    }
+#else
+    const uint64_t sleep_ns = static_cast<uint64_t>(remaining_ms * 1000000.0);
+    if (sleep_ns > 0) {
+      xe::threading::NanoSleep(sleep_ns);
+    }
+#endif
   }
 }
 
@@ -538,6 +745,12 @@ bool CommandProcessor::SetupContext() {
 }
 
 void CommandProcessor::ShutdownContext() { ResetZPDState(); }
+
+uint32_t CommandProcessor::GuestReadPtrOffset(int32_t offset) const {
+  return uint32_t(reader_.read_ptr() -
+                  reinterpret_cast<uintptr_t>(memory_->physical_membase()) +
+                  offset);
+}
 
 void CommandProcessor::InitializeRingBuffer(uint32_t ptr, uint32_t size_log2) {
   read_ptr_index_ = 0;
@@ -1054,10 +1267,18 @@ bool CommandProcessor::BeginZPDReport(uint32_t report_address) {
     if (zpd_active_segment_.end_record) {
       EndZPDReport(zpd_active_segment_.end_record, true);
     } else {
+      if (cvars::occlusion_query_log) {
+        XELOGI(
+            "ZPD: BeginZPDReport forcing close without end record "
+            "handle={}",
+            zpd_active_segment_.report_handle);
+      }
+
       carried_from_slot_base = zpd_active_segment_.slot_base;
 
       auto dying_report =
           logical_zpd_reports_.find(zpd_active_segment_.report_handle);
+      // Carry prior delta forward so the slot doesn't briefly look occluded.
       if (dying_report != logical_zpd_reports_.end() &&
           dying_report->second.has_cached_delta) {
         carried_cached_delta = dying_report->second.cached_delta;
@@ -1069,7 +1290,11 @@ bool CommandProcessor::BeginZPDReport(uint32_t report_address) {
         // EndSubmission -> CloseQuerySegment does not re-enter and
         // issue a second EndQuery on the same slot.
         zpd_active_segment_.segment_active = false;
-        DiscardZPDQuery();
+        if (DiscardZPDQuery()) {
+          zpd_stats_.segments_ended++;
+        } else {
+          zpd_stats_.failed++;
+        }
       }
       logical_zpd_reports_.erase(zpd_active_segment_.report_handle);
       zpd_active_segment_ = {};
@@ -1095,6 +1320,7 @@ bool CommandProcessor::BeginZPDReport(uint32_t report_address) {
   PendingZPDSlot pending_slot = GetPendingZPDSlot(slot_base, end_record);
 
   if (pending_slot.report_handle != kInvalidReportHandle) {
+    zpd_stats_.same_slot_reuse++;
     if (GetZPDMode() == ZPDMode::kFast || GetZPDMode() == ZPDMode::kFastAlt) {
       if (pending_slot.has_cached_delta) {
         carried_cached_delta = pending_slot.cached_delta;
@@ -1117,6 +1343,7 @@ bool CommandProcessor::BeginZPDReport(uint32_t report_address) {
         if (!wait_succeeded) {
           if (pending_slot.cached_delta != 0) {
             carried_cached_delta = pending_slot.cached_delta;
+            has_carried_cached_delta = true;
             carried_from_slot_base = slot_base;
           }
           break;
@@ -1129,7 +1356,7 @@ bool CommandProcessor::BeginZPDReport(uint32_t report_address) {
     }
   }
 
-  // Bump slot sequence - invalidates pending writes from prior lifetime.
+  // Bump slot sequence — invalidates pending writes from prior lifetime.
   uint64_t slot_sequence_id = ++zpd_slot_sequences_[slot_base];
 
   // By default, BEGIN drops the cached value so an orphaned END doesn't replay
@@ -1172,6 +1399,7 @@ bool CommandProcessor::BeginZPDReport(uint32_t report_address) {
   zpd_active_segment_.segment_pending_begin = true;
   zpd_active_segment_.logical_active = true;
 
+  zpd_stats_.logical_begun++;
   OpenQuerySegment(true);
   return true;
 }
@@ -1200,6 +1428,12 @@ bool CommandProcessor::EndZPDReport(uint32_t report_address,
 
   if (!report_record_base) {
     logical_zpd_reports_.erase(report_handle);
+    if (cvars::occlusion_query_log) {
+      XELOGI(
+          "ZPD: EndZPDReport dropping handle={} with unknown record "
+          "base forced={}",
+          report_handle, guest_forced_end);
+    }
     zpd_active_segment_ = {};
     return false;
   }
@@ -1257,9 +1491,6 @@ bool CommandProcessor::EndZPDReport(uint32_t report_address,
   bool has_cross_slot_end =
       stored_end_record && stored_end_record != report_record_base;
   if (has_cross_slot_end) {
-    // The guest ended a different ZPD record than the one opened by BEGIN.
-    // Preserve the prior running slot value in the stored END record before
-    // writing the actual END selected by the packet.
     WriteZPDReport(0, stored_end_record, 0, begin_value, false);
   }
 
@@ -1267,9 +1498,8 @@ bool CommandProcessor::EndZPDReport(uint32_t report_address,
     bool write_begin = begin_record && report_record_base &&
                        begin_record != report_record_base;
     // Unknown still means visible in fast mode. Reusing cached zeroes can help
-    // flares stop shining through walls (545107FC, 454108D4, 4D5307D2), but it
-    // also tends to break occlusion culling (4D5308AB, 4D530805), so only do it
-    // in the alternate fast path.
+    // flares stop shining through walls, but it also tends to break occlusion
+    // culling, so only do it in the alternate fast path.
     uint32_t speculative = cached_delta;
     if (!resolved_immediately) {
       speculative = 1;
@@ -1295,6 +1525,7 @@ bool CommandProcessor::EndZPDReport(uint32_t report_address,
     }
   }
 
+  zpd_stats_.logical_ended++;
   zpd_active_segment_ = {};
   return true;
 }
@@ -1308,8 +1539,8 @@ void CommandProcessor::OpenQuerySegment(bool can_close_submission) {
 
   EnsureZPDQueryResources();
 
-  // Resource setup failed. Drop the logical report and fall back to fake mode.
   if (!IsZPDQueryPoolReady()) {
+    zpd_stats_.failed++;
     zpd_force_fake_fallback_ = true;
     logical_zpd_reports_.erase(zpd_active_segment_.report_handle);
     zpd_active_segment_ = {};
@@ -1327,6 +1558,7 @@ void CommandProcessor::OpenQuerySegment(bool can_close_submission) {
     case QueryOpenResult::kDeferred:
       return;
     case QueryOpenResult::kPoolExhausted: {
+      zpd_stats_.pool_exhausted++;
       if (GetZPDMode() == ZPDMode::kFast || GetZPDMode() == ZPDMode::kFastAlt) {
         // Fast mode favors forward progress over accuracy. Keep a minimal
         // accumulated value instead of waiting for a slot to become available.
@@ -1338,15 +1570,18 @@ void CommandProcessor::OpenQuerySegment(bool can_close_submission) {
         zpd_active_segment_.segment_pending_begin = false;
         return;
       }
+      zpd_stats_.failed++;
       return;
     }
     case QueryOpenResult::kFailed:
     default:
+      zpd_stats_.failed++;
       return;
   }
 
   zpd_active_segment_.segment_active = true;
   zpd_active_segment_.segment_pending_begin = false;
+  zpd_stats_.segments_begun++;
 }
 
 // Closes the active host segment without ending the logical report.
@@ -1362,6 +1597,7 @@ void CommandProcessor::CloseQuerySegment() {
     zpd_active_segment_.segment_active = false;
     zpd_active_segment_.segment_pending_begin =
         zpd_active_segment_.logical_active;
+    zpd_stats_.failed++;
     return;
   }
 
@@ -1380,6 +1616,7 @@ void CommandProcessor::CloseQuerySegment() {
 
   zpd_active_segment_.segment_pending_begin =
       zpd_active_segment_.logical_active;
+  zpd_stats_.segments_ended++;
 }
 
 void CommandProcessor::OnZPDQueryResolved(ReportHandle report_handle,
@@ -1468,6 +1705,11 @@ void CommandProcessor::PumpPendingRetire() {
        kStrictZPDRetireDeadlineMs);
   if (deadline_exceeded ||
       zpd_pending_retire_stalls_ >= kStrictZPDRetireMaxStalls) {
+    if (cvars::occlusion_query_log) {
+      XELOGI("ZPD: PumpPendingRetire {} handle={}, abandoning",
+             deadline_exceeded ? "deadline exceeded" : "stall limit reached",
+             handle_to_await);
+    }
     // Write the cached delta to guest memory to avoid a sudden occlusion flash.
     if (IsZPDReportCurrent(logical_report->second)) {
       uint32_t fallback_delta = logical_report->second.cached_delta
@@ -1513,13 +1755,17 @@ void CommandProcessor::CommitZPDReport(ZPDReport& report,
   // the correct begin_value.
   uint32_t saturated_delta = XenosZPDReport::SaturateSampleCount(delta_value);
   uint32_t end_value = report.begin_value + saturated_delta;
+  if (saturated_delta > UINT32_MAX - report.begin_value) {
+    zpd_stats_.counter_wraps++;
+  }
   zpd_slot_values_[report.slot_base] = end_value;
 }
 
 bool CommandProcessor::IsZPDReportCurrent(const ZPDReport& report) const {
-  auto it = zpd_slot_sequences_.find(report.slot_base);
-  uint64_t current_sequence = it != zpd_slot_sequences_.end() ? it->second : 0;
-  return current_sequence == report.slot_sequence_id;
+  auto seq_it = zpd_slot_sequences_.find(report.slot_base);
+  uint64_t current_seq =
+      seq_it != zpd_slot_sequences_.end() ? seq_it->second : 0;
+  return current_seq == report.slot_sequence_id;
 }
 
 uint32_t CommandProcessor::NormalizeSampleCount(uint64_t samples) const {
@@ -1533,6 +1779,7 @@ uint32_t CommandProcessor::NormalizeSampleCount(uint64_t samples) const {
 
   return static_cast<uint32_t>(std::min<uint64_t>(normalized, UINT32_MAX));
 }
+
 #define COMMAND_PROCESSOR CommandProcessor
 #include "pm4_command_processor_implement.h"
 }  // namespace gpu

@@ -16,9 +16,6 @@
 #include "xenia/ui/imgui_drawer.h"
 #include "xenia/ui/presenter.h"
 
-DEFINE_int32(window_size_x, 1280, "Xenia window width", "UI");
-DEFINE_int32(window_size_y, 720, "Xenia window height", "UI");
-
 namespace xe {
 namespace ui {
 
@@ -245,7 +242,6 @@ void Window::SetFullscreen(bool new_fullscreen) {
   if (!CanApplyState()) {
     return;
   }
-
   WindowDestructionReceiver destruction_receiver(this);
   ApplyNewFullscreen();
   if (destruction_receiver.IsWindowDestroyedOrStateInapplicable()) {
@@ -496,7 +492,6 @@ void Window::OnMonitorUpdate(MonitorUpdateEvent& e) {
 
 bool Window::OnActualSizeUpdate(
     uint32_t new_physical_width, uint32_t new_physical_height,
-    WindowResizeAction cause_action,
     WindowDestructionReceiver& destruction_receiver) {
   if (actual_physical_width_ == new_physical_width &&
       actual_physical_height_ == new_physical_height) {
@@ -506,13 +501,10 @@ bool Window::OnActualSizeUpdate(
   actual_physical_height_ = new_physical_height;
   // The listeners may reference the presenter, update the presenter first.
   if (presenter_surface_) {
-    // Update variable only if window isn't in fullscreen mode.
-    if (!fullscreen_ && cause_action == WindowResizeAction::kManual) {
-      // Write new window size only if we know that window is present.
-      OVERRIDE_int32(window_size_x, SizeToLogical(new_physical_width));
-      OVERRIDE_int32(window_size_y, SizeToLogical(new_physical_height));
-    }
-
+    // Update surface size for surfaces that cache dimensions (e.g., Wayland).
+    // This must be done before OnSurfaceResizeFromUIThread so the presenter
+    // gets the correct size when it queries the surface.
+    presenter_surface_->SetSize(new_physical_width, new_physical_height);
     presenter_->OnSurfaceResizeFromUIThread();
   }
   UISetupEvent e(this);
@@ -633,6 +625,19 @@ void Window::OnMouseUp(MouseEvent& e,
   PropagateEventThroughInputListeners(
       [&e](auto listener) {
         listener->OnMouseUp(e);
+        return e.is_handled();
+      },
+      destruction_receiver);
+  if (destruction_receiver.IsWindowDestroyed()) {
+    return;
+  }
+}
+
+void Window::OnMouseDoubleClick(
+    MouseEvent& e, WindowDestructionReceiver& destruction_receiver) {
+  PropagateEventThroughInputListeners(
+      [&e](auto listener) {
+        listener->OnMouseDoubleClick(e);
         return e.is_handled();
       },
       destruction_receiver);

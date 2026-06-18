@@ -46,6 +46,8 @@ class Processor;
 namespace xe {
 namespace kernel {
 
+class GuestScheduler;
+
 constexpr fourcc_t kKernelSaveSignature = make_fourcc("KRNL");
 
 static constexpr const uint16_t kBaseKernelBuildVersion = 1888;
@@ -182,6 +184,8 @@ class KernelState {
 
   xam::XamState* xam_state() const { return xam_state_.get(); }
 
+  GuestScheduler* guest_scheduler() const { return guest_scheduler_.get(); }
+
   SystemManagementController* smc() const { return smc_.get(); }
 
   xam::AchievementManager* achievement_manager() const {
@@ -261,6 +265,15 @@ class KernelState {
   // Terminates a title: Unloads all modules, and kills all guest threads.
   // This DOES NOT RETURN if called from a guest thread!
   void TerminateTitle();
+
+  // Handles a game-requested exit to the dashboard: hands off to the host UI
+  // when it registered a handler, otherwise terminates the title.
+  // This DOES NOT RETURN.
+  void ExitToDashboard();
+
+  // Gracefully stops the dispatch thread. Call before force-terminating
+  // threads to avoid corrupting the CV it's blocked on.
+  void ShutdownDispatchThread();
 
   void RegisterThread(XThread* thread);
   void UnregisterThread(XThread* thread);
@@ -352,6 +365,7 @@ class KernelState {
   cpu::Processor* processor_;
   vfs::VirtualFileSystem* file_system_;
   std::unique_ptr<xam::XamState> xam_state_;
+  std::unique_ptr<GuestScheduler> guest_scheduler_;
   std::unique_ptr<SystemManagementController> smc_;
   std::unique_ptr<XmpVolumePatch> xmp_volume_patch_;
   std::unique_ptr<XConfig> xconfig_;

@@ -480,6 +480,30 @@ class DeferredCommandList {
     args.value = value;
   }
 
+  // Debug marker support for PIX/RenderDoc annotation.
+  void BeginDebugMarker(const char* label_name) {
+    size_t label_len = std::strlen(label_name);
+    uint8_t* args_ptr = reinterpret_cast<uint8_t*>(WriteCommand(
+        Command::kBeginDebugMarker, sizeof(DebugMarkerHeader) + label_len + 1));
+    auto& args = *reinterpret_cast<DebugMarkerHeader*>(args_ptr);
+    args.label_length = static_cast<uint32_t>(label_len);
+    std::memcpy(args_ptr + sizeof(DebugMarkerHeader), label_name,
+                label_len + 1);
+  }
+
+  void EndDebugMarker() { WriteCommand(Command::kEndDebugMarker, 0); }
+
+  void InsertDebugMarker(const char* label_name) {
+    size_t label_len = std::strlen(label_name);
+    uint8_t* args_ptr = reinterpret_cast<uint8_t*>(
+        WriteCommand(Command::kInsertDebugMarker,
+                     sizeof(DebugMarkerHeader) + label_len + 1));
+    auto& args = *reinterpret_cast<DebugMarkerHeader*>(args_ptr);
+    args.label_length = static_cast<uint32_t>(label_len);
+    std::memcpy(args_ptr + sizeof(DebugMarkerHeader), label_name,
+                label_len + 1);
+  }
+
  private:
   enum class Command {
     kD3DClearDepthStencilView,
@@ -521,6 +545,9 @@ class DeferredCommandList {
     kSetPipelineStateHandle,
     kD3DSetSamplePositions,
     kD3DWriteBufferImmediate,
+    kBeginDebugMarker,
+    kEndDebugMarker,
+    kInsertDebugMarker,
   };
 
   struct CommandHeader {
@@ -663,6 +690,11 @@ class DeferredCommandList {
   struct D3DWriteBufferImmediateArguments {
     D3D12_GPU_VIRTUAL_ADDRESS dest;
     UINT value;
+  };
+
+  struct DebugMarkerHeader {
+    uint32_t label_length;
+    // Followed by null-terminated label string.
   };
 
   void* WriteCommand(Command command, size_t arguments_size_bytes);

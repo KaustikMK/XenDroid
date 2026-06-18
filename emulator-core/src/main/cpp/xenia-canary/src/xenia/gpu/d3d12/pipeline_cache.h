@@ -32,12 +32,15 @@
 #include "xenia/base/threading.h"
 #include "xenia/gpu/d3d12/d3d12_render_target_cache.h"
 #include "xenia/gpu/d3d12/d3d12_shader.h"
+#include "xenia/gpu/d3d12/dxc_compiler.h"
 #include "xenia/gpu/dxbc_shader_translator.h"
 #include "xenia/gpu/gpu_flags.h"
+#include "xenia/gpu/hlsl_shader_translator.h"
 #include "xenia/gpu/primitive_processor.h"
 #include "xenia/gpu/register_file.h"
 #include "xenia/gpu/registers.h"
 #include "xenia/gpu/shader_storage.h"
+#include "xenia/gpu/shader_translator.h"
 #include "xenia/gpu/xenos.h"
 #include "xenia/ui/d3d12/d3d12_api.h"
 
@@ -93,7 +96,8 @@ class PipelineCache {
       uint32_t interpolator_mask) const;
   DxbcShaderTranslator::Modification GetCurrentPixelShaderModification(
       const Shader& shader, uint32_t interpolator_mask, uint32_t param_gen_pos,
-      reg::RB_DEPTHCONTROL normalized_depth_control) const;
+      reg::RB_DEPTHCONTROL normalized_depth_control,
+      bool apply_polygon_offset_in_shader) const;
 
   // If draw_util::IsRasterizationPotentiallyDone is false, the pixel shader
   // MUST be made nullptr BEFORE calling this!
@@ -102,18 +106,30 @@ class PipelineCache {
       D3D12Shader::D3D12Translation* pixel_shader,
       const PrimitiveProcessor::ProcessingResult& primitive_processing_result,
       reg::RB_DEPTHCONTROL normalized_depth_control,
-      uint32_t normalized_color_mask,
+      uint32_t normalized_color_mask, bool apply_polygon_offset_in_shader,
       uint32_t bound_depth_and_color_render_target_bits,
       const uint32_t* bound_depth_and_color_render_targets_formats,
       void** pipeline_handle_out, ID3D12RootSignature** root_signature_out);
 
   // Returns a pipeline with deferred creation by its handle. May return nullptr
   // if failed to create the pipeline or still being created asynchronously.
+  // While async creation is in progress this may be a placeholder pipeline
+  // (real vertex shader, no-op pixel shader) that the creation thread swaps for
+  // the real one when ready - check IsPlaceholderPipeline if that matters.
   ID3D12PipelineState* GetD3D12PipelineByHandle(void* handle) const {
     return reinterpret_cast<const Pipeline*>(handle)->state.load(
         std::memory_order_acquire);
   }
+  bool IsPlaceholderPipeline(void* handle) const {
+    return reinterpret_cast<const Pipeline*>(handle)->is_placeholder.load(
+        std::memory_order_acquire);
+  }
   ID3D12PipelineState* AwaitD3D12PipelineByHandle(void* handle);
+  // Waits until the real (non-placeholder) pipeline for the handle is ready,
+  // returning it (or nullptr if its creation failed). Needed by occlusion
+  // queries, where the no-op placeholder would skip the guest shader's pixel
+  // kills and miscount.
+  ID3D12PipelineState* AwaitRealD3D12PipelineByHandle(void* handle);
 
   ID3D12RootSignature* GetRootSignatureByHandle(void* handle) const {
     return reinterpret_cast<const Pipeline*>(handle)
@@ -282,7 +298,7 @@ class PipelineCache {
                           uint64_t data_hash);
 
   // Can be called from multiple threads.
-  bool TranslateAnalyzedShader(DxbcShaderTranslator& translator,
+  bool TranslateAnalyzedShader(ShaderTranslator& translator,
                                D3D12Shader::D3D12Translation& translation,
                                IDxbcConverter* dxbc_converter = nullptr,
                                IDxcUtils* dxc_utils = nullptr,
@@ -305,7 +321,7 @@ class PipelineCache {
       D3D12Shader::D3D12Translation* pixel_shader,
       const PrimitiveProcessor::ProcessingResult& primitive_processing_result,
       reg::RB_DEPTHCONTROL normalized_depth_control,
-      uint32_t normalized_color_mask,
+      uint32_t normalized_color_mask, bool depth_bias_in_pixel_shader,
       uint32_t bound_depth_and_color_render_target_bits,
       const uint32_t* bound_depth_and_color_render_target_formats,
       PipelineRuntimeDescription& runtime_description_out,
@@ -320,8 +336,17 @@ class PipelineCache {
                                        std::vector<uint32_t>& shader_out);
   const std::vector<uint32_t>& GetGeometryShader(GeometryShaderKey key);
 
+  // DXIL geometry shader generation via HLSL.
+  static std::string CreateHlslGeometryShaderSource(GeometryShaderKey key);
+  const std::vector<uint8_t>* GetDxilGeometryShader(GeometryShaderKey key);
+
+  // When as_placeholder is true, builds a hot-swap placeholder PSO: the real
+  // vertex shader with the no-op placeholder pixel shader, so the pixel shader
+  // does not need to be translated yet. Only valid with a fixed (bindless)
+  // root signature.
   ID3D12PipelineState* CreateD3D12Pipeline(
-      const PipelineRuntimeDescription& runtime_description);
+      const PipelineRuntimeDescription& runtime_description,
+      bool as_placeholder = false);
 
   D3D12CommandProcessor& command_processor_;
   const RegisterFile& register_file_;
@@ -330,15 +355,23 @@ class PipelineCache {
 
   // Temporary storage for AnalyzeUcode calls on the processor thread.
   StringBuffer ucode_disasm_buffer_;
-  // Reusable shader translator for the processor thread.
-  // Background creation threads have their own translators to avoid contention.
-  std::unique_ptr<DxbcShaderTranslator> shader_translator_;
 
   // Command processor thread DXIL conversion/disassembly interfaces, if DXIL
   // disassembly is enabled.
   IDxbcConverter* dxbc_converter_ = nullptr;
   IDxcUtils* dxc_utils_ = nullptr;
   IDxcCompiler* dxc_compiler_ = nullptr;
+
+  // DXIL shader compilation via HLSL generation and DXC.
+  // When available, this enables SM 6.x features like barycentric
+  // interpolation.
+  std::unique_ptr<DxcCompiler> dxc_shader_compiler_;
+  std::unique_ptr<HlslShaderTranslator> hlsl_shader_translator_;
+
+  // Real ROV depth-only pixel shader for pixel-shader-less draws under ROV,
+  // generated once at init. Empty if not ROV or generation failed (falls back
+  // to the no-op placeholder_ps).
+  std::vector<uint8_t> depth_only_rov_pixel_shader_;
 
   // Ucode hash -> shader.
   std::unordered_map<uint64_t, D3D12Shader*, xe::hash::IdentityHasher<uint64_t>>
@@ -367,17 +400,26 @@ class PipelineCache {
       bindless_sampler_layout_map_;
 
   // Geometry shaders for Xenos primitive types not supported by Direct3D 12.
+  // DXBC (SM 5.1) geometry shaders.
   std::unordered_map<GeometryShaderKey, std::vector<uint32_t>,
                      GeometryShaderKey::Hasher>
       geometry_shaders_;
-
-  // Empty depth-only pixel shader for writing to depth buffer via ROV when no
-  // Xenos pixel shader provided.
-  std::vector<uint8_t> depth_only_pixel_shader_;
+  // DXIL (SM 6.x) geometry shaders compiled from HLSL.
+  std::unordered_map<GeometryShaderKey, std::vector<uint8_t>,
+                     GeometryShaderKey::Hasher>
+      dxil_geometry_shaders_;
+  // Guards both geometry shader caches: CreateD3D12Pipeline runs on several
+  // creation threads, and on the processor thread when it builds a placeholder.
+  // Entries are never erased, so references returned by the getters stay valid.
+  std::mutex geometry_shader_mutex_;
 
   struct Pipeline {
-    // nullptr if creation has failed or still pending.
+    // nullptr if creation has failed or still pending. May hold a placeholder
+    // pipeline (see is_placeholder) until the real one is swapped in.
     std::atomic<ID3D12PipelineState*> state{nullptr};
+    // True while state holds a hot-swap placeholder pipeline, before the
+    // creation thread swaps in the real one.
+    std::atomic<bool> is_placeholder{false};
     PipelineRuntimeDescription description;
     // For background creation: stores the untranslated shaders.
     // Background thread translates both VS and PS together, then creates the
@@ -404,7 +446,7 @@ class PipelineCache {
   // translates desc.pixel_shader when pending shaders are null (for pipelines
   // loaded from cache).
   void EnsurePipelineShadersTranslated(
-      Pipeline* pipeline, DxbcShaderTranslator& translator,
+      Pipeline* pipeline, ShaderTranslator& translator,
       StringBuffer& ucode_disasm_buffer, IDxbcConverter* dxbc_converter,
       IDxcUtils* dxc_utils, IDxcCompiler* dxc_compiler, bool use_try_claim,
       bool handle_non_placeholder);
@@ -459,6 +501,14 @@ class PipelineCache {
   // creation_request_cond_ when set.
   size_t creation_threads_shutdown_from_ = SIZE_MAX;
   std::vector<std::unique_ptr<xe::threading::Thread>> creation_threads_;
+
+  // Placeholder pipelines replaced by their real counterpart on a creation
+  // thread, paired with the submission they may still be referenced by. Real
+  // releases happen in ProcessDeferredDestructions once the GPU has passed it.
+  void ProcessDeferredDestructions();
+  std::mutex deferred_destroy_mutex_;
+  std::vector<std::pair<ID3D12PipelineState*, uint64_t>>
+      deferred_destroy_pipelines_;
 };
 inline bool PipelineCache::PipelineDescription::operator==(
     const PipelineDescription& other) const {

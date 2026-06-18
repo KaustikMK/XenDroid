@@ -145,6 +145,21 @@ class D3D12TextureCache final : public TextureCache {
     assert_true(IsDrawResolutionScaled());
     GetCurrentScaledResolveBuffer().SetUAVBarrierPending();
   }
+  // Accessors for scaled resolve range info (for readback resolve path).
+  uint64_t GetCurrentScaledResolveRangeStartScaled() const {
+    return scaled_resolve_current_range_start_scaled_;
+  }
+  uint64_t GetCurrentScaledResolveRangeLengthScaled() const {
+    return scaled_resolve_current_range_length_scaled_;
+  }
+  // Returns the ID3D12Resource for the current scaled resolve buffer.
+  ID3D12Resource* GetCurrentScaledResolveBufferResource() {
+    return GetCurrentScaledResolveBuffer().resource();
+  }
+  // Returns the buffer index (gigabyte offset) for the current scaled resolve.
+  size_t GetCurrentScaledResolveBufferIndexPublic() const {
+    return GetCurrentScaledResolveBufferIndex();
+  }
 
   // Returns the ID3D12Resource of the front buffer texture (in
   // NON_PIXEL_SHADER_RESOURCE state), or nullptr in case of failure, and writes
@@ -803,6 +818,11 @@ class D3D12TextureCache final : public TextureCache {
   // Load pipelines for resolution-scaled resolve targets.
   std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, kLoadShaderCount>
       load_pipelines_scaled_;
+
+  // Mip generation for scaled resolve textures.
+  Microsoft::WRL::ComPtr<ID3D12RootSignature> mip_gen_root_signature_;
+  Microsoft::WRL::ComPtr<ID3D12PipelineState> mip_gen_pipeline_;
+  Microsoft::WRL::ComPtr<ID3D12PipelineState> mip_gen_3d_pipeline_;
 
   std::vector<SRVDescriptorCachePage> srv_descriptor_cache_;
   uint32_t srv_descriptor_cache_allocated_;

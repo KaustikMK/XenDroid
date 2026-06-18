@@ -23,10 +23,34 @@
 #include "xenia/ui/window.h"
 #include "xenia/ui/windowed_app_context.h"
 
-DEFINE_uint32(custom_internal_display_resolution_x, 0,
+DEFINE_uint32(internal_display_resolution, 8,
+              "Allow games that support different resolutions to render "
+              "in a specific resolution.\n"
+              "This is not guaranteed to work with all games or improve "
+              "performance.\n"
+              "   0=640x480\n"
+              "   1=640x576\n"
+              "   2=720x480\n"
+              "   3=720x576\n"
+              "   4=800x600\n"
+              "   5=848x480\n"
+              "   6=1024x768\n"
+              "   7=1152x864\n"
+              "   8=1280x720 (Default)\n"
+              "   9=1280x768\n"
+              "   10=1280x960\n"
+              "   11=1280x1024\n"
+              "   12=1360x768\n"
+              "   13=1440x900\n"
+              "   14=1680x1050\n"
+              "   15=1920x540\n"
+              "   16=1920x1080\n"
+              "   17=internal_display_resolution_x/y",
+              "Console");
+DEFINE_uint32(internal_display_resolution_x, 1280,
               "Custom width. See internal_display_resolution. Range 1-1920.",
               "Video");
-DEFINE_uint32(custom_internal_display_resolution_y, 0,
+DEFINE_uint32(internal_display_resolution_y, 720,
               "Custom height. See internal_display_resolution. Range 1-1080.\n",
               "Video");
 
@@ -71,6 +95,21 @@ X_STATUS GraphicsSystem::Setup(cpu::Processor* processor,
   scaled_aspect_x_ = 16;
   scaled_aspect_y_ = 9;
 
+  auto custom_res_x = cvars::internal_display_resolution_x;
+  auto custom_res_y = cvars::internal_display_resolution_y;
+  if (!custom_res_x || custom_res_x > 1920 || !custom_res_y ||
+      custom_res_y > 1080) {
+    OVERRIDE_PERSIST_uint32(internal_display_resolution_x,
+                            internal_display_resolution_entries[8].first);
+    OVERRIDE_PERSIST_uint32(internal_display_resolution_y,
+                            internal_display_resolution_entries[8].second);
+    config::SaveConfig();
+    xe::FatalError(fmt::format(
+        "Invalid custom resolution specified: {}x{}\n"
+        "Width must be between 1-1920.\nHeight must be between 1-1080.",
+        custom_res_x, custom_res_y));
+  }
+
   if (with_presentation && provider_) {
     // Safe if either the UI thread call or the presenter creation fails.
 #if !XE_PLATFORM_xendroid
@@ -113,28 +152,12 @@ X_STATUS GraphicsSystem::Setup(cpu::Processor* processor,
       kernel::object_ref<kernel::XHostThread>(new kernel::XHostThread(
           kernel_state_, 128 * 1024, 0,
           [this]() {
-            uint64_t normalized_framerate_limit =
-                std::max<uint64_t>(0, cvars::framerate_limit);
-
-            // If VSYNC is enabled, but frames are not limited,
-            // lock framerate at default value of 60
-            if (normalized_framerate_limit == 0 && cvars::vsync) {
-              normalized_framerate_limit = 60;
-            }
-
-            const double vsync_duration_d =
-                cvars::vsync
-                    ? std::max<double>(5.0,
-                                       1000.0 / static_cast<double>(
-                                                    normalized_framerate_limit))
-                    : 1.0;
             uint64_t last_frame_time = Clock::QueryGuestTickCount();
-    // Sleep for 90% of the vblank duration on Windows, spin for 10%
+    // Sleep for 90% of the vblank duration on Windows/macOS, spin for 10%
     // Linux uses full sleep duration due to scheduler quantum issues
-#if XE_PLATFORM_WIN32
+#if XE_PLATFORM_WIN32 || XE_PLATFORM_MAC
             constexpr double duration_scalar = 0.90;
-#endif
-#if XE_PLATFORM_LINUX
+#elif XE_PLATFORM_LINUX
             constexpr double duration_scalar = 1.0;
 #endif
 
@@ -146,59 +169,53 @@ X_STATUS GraphicsSystem::Setup(cpu::Processor* processor,
                 continue;
               }
 
-              register_file()->values[XE_GPU_REG_D1MODE_V_COUNTER] +=
-                  GetResolution().second;
+              // Read guest_display_refresh_cap cvar each frame to allow
+              // runtime changes
+              // true: Fire vblanks at fixed rate (50Hz PAL, 60Hz NTSC)
+              // false: Fire vblanks limited by framerate_limit or 1ms
+              // Note: framerate_limit is handled separately at IssueSwap for
+              // host presentation throttling
+              bool refresh_cap_enabled = cvars::guest_display_refresh_cap;
 
-#if XE_PLATFORM_WIN32
-              if (cvars::vsync) {
-                const uint64_t current_time = Clock::QueryGuestTickCount();
+              if (refresh_cap_enabled) {
+                const uint32_t vblank_hz = GetGuestVblankRateHz();
+                const uint64_t sleep_ns = static_cast<uint64_t>(
+                    (1000000000.0 / static_cast<double>(vblank_hz)) *
+                    duration_scalar);
+
+#if XE_PLATFORM_WIN32 || XE_PLATFORM_MAC
+                // Windows/macOS: time-gating + 90% sleep + 10% spin
                 const uint64_t tick_freq = Clock::guest_tick_frequency();
+                const uint64_t target_duration_ticks = tick_freq / vblank_hz;
+                const uint64_t current_time = Clock::QueryGuestTickCount();
                 const uint64_t time_delta = current_time - last_frame_time;
-                const double elapsed_d =
-                    static_cast<double>(time_delta) /
-                    (static_cast<double>(tick_freq) / 1000.0);
-                if (elapsed_d >= vsync_duration_d) {
-                  last_frame_time = current_time;
 
+                if (time_delta >= target_duration_ticks) {
+                  // If we've fallen behind by more than 2 frames, reset
+                  if (time_delta > target_duration_ticks * 2) {
+                    last_frame_time = current_time;
+                  } else {
+                    last_frame_time += target_duration_ticks;
+                  }
                   MarkVblank();
-                  const uint64_t estimated_nanoseconds = static_cast<uint64_t>(
-                      (vsync_duration_d * 1000000.0) *
-                      duration_scalar);  // 1000 microseconds = 1 ms
-
-                  threading::NanoSleep(estimated_nanoseconds);
+#if XE_PLATFORM_MAC
+                  threading::NanoSleepPrecise(sleep_ns);
+#else
+                  threading::NanoSleep(sleep_ns);
+#endif
                 }
-              }
-
-              if (!cvars::vsync) {
+#elif XE_PLATFORM_LINUX
+                // Linux: simplified timing to avoid oversleeping
                 MarkVblank();
-                if (normalized_framerate_limit > 0) {
-                  // framerate_limit is over 0, vsync disabled
-                  //  - No VSYNC + limited frames defined by user
-                  uint64_t framerate_limited_sleep_time =
-                      1000000000 / normalized_framerate_limit;
-                  xe::threading::NanoSleep(framerate_limited_sleep_time);
-                } else {
-                  // framerate_limit is 0, vsync disabled
-                  //  - No VSYNC + unlimited frames
-                  xe::threading::Sleep(std::chrono::milliseconds(1));
-                }
-              }
+                threading::NanoSleep(sleep_ns);
 #endif
-#if XE_PLATFORM_LINUX
-              // Linux: Use simplified timing logic to avoid oversleeping
-              MarkVblank();
-
-              if (cvars::vsync || normalized_framerate_limit > 0) {
-                uint64_t sleep_duration_ns =
-                    static_cast<uint64_t>(vsync_duration_d * 1000000.0);
-                if (!cvars::vsync && normalized_framerate_limit > 0) {
-                  sleep_duration_ns = 1000000000 / normalized_framerate_limit;
-                }
-                threading::NanoSleep(sleep_duration_ns);
               } else {
-                xe::threading::Sleep(std::chrono::milliseconds(1));
+                // Unlimited mode (guest_display_refresh_cap=false) - fire
+                // vblanks as fast as possible Host presentation is separately
+                // throttled by framerate_limit
+                MarkVblank();
+                threading::Sleep(std::chrono::milliseconds(1));
               }
-#endif
             }
             return 0;
           },
@@ -277,15 +294,47 @@ uint32_t GraphicsSystem::ReadRegister(uint32_t addr) {
   uint32_t r = (addr & 0xFFFF) / 4;
 
   switch (r) {
-    case 0x0F00:  // RB_EDRAM_TIMING
+    case XE_GPU_REG_RB_EDRAM_TIMING:
       return 0x08100748;
-    case 0x0F01:  // RB_BC_CONTROL
+    case XE_GPU_REG_RB_BC_CONTROL:
       return 0x0000200E;
-    case 0x1951:  // interrupt status
-      return 1;   // vblank
-    case 0x1961:  // AVIVO_D1MODE_VIEWPORT_SIZE
-                  // Screen res - 1280x720
-                  // maximum [width(0x0FFF), height(0x0FFF)]
+    case XE_GPU_REG_D1MODE_V_COUNTER: {
+      // Free-running scanline counter, like Xenos drives off the pixel clock.
+      // Cycles 0..(total_lines-1) every frame, including the vertical-blank
+      // region above the 720 active lines reported by D1MODE_VIEWPORT_SIZE
+      // below. Total ~= active + 4% blanking (720p60 -> 750, 576p50 -> 625).
+      // Period is measured from the MarkVblank cadence, so V_COUNTER stays
+      // coupled to whatever vblank rate is actually in effect (50Hz, 60Hz,
+      // or uncapped ~1ms) — matching how silicon raises vblank IRQs from
+      // V_COUNTER crossings.
+      const uint32_t vblank_hz = GetGuestVblankRateHz();
+      const uint32_t total_lines = (vblank_hz == 50) ? 625u : 750u;
+      uint64_t period = vblank_period_ticks_.load(std::memory_order_acquire);
+      if (!period) {
+        // Pre-first-vblank bootstrap: assume the configured rate.
+        period = Clock::guest_tick_frequency() / vblank_hz;
+        if (!period) {
+          return 0;
+        }
+      }
+      const uint64_t last =
+          last_vblank_guest_tick_.load(std::memory_order_acquire);
+      if (!last) {
+        return 0;
+      }
+      const uint64_t now = Clock::QueryGuestTickCount();
+      uint64_t delta = (now > last) ? (now - last) : 0;
+      if (delta >= period) {
+        // Reader outran the next vblank (stall, paused, etc.); park on the
+        // last line until MarkVblank advances the anchor.
+        delta = period - 1;
+      }
+      return static_cast<uint32_t>((delta * total_lines) / period);
+    }
+    case XE_GPU_REG_D1MODE_VBLANK_VLINE_STATUS:
+      return 1;  // vblank
+    case XE_GPU_REG_D1MODE_VIEWPORT_SIZE:
+      // 1280x720, [width(0x0FFF), height(0x0FFF)].
       return 0x050002D0;
     default:
       if (!register_file()->IsValidRegister(r)) {
@@ -339,6 +388,15 @@ void GraphicsSystem::DispatchInterruptCallback(uint32_t source, uint32_t cpu) {
 void GraphicsSystem::MarkVblank() {
   SCOPE_profile_cpu_f("gpu");
 
+  // Capture vblank cadence so D1MODE_V_COUNTER tracks the actual rate
+  // (50Hz, 60Hz, or uncapped ~1ms), not just the configured one.
+  const uint64_t now = Clock::QueryGuestTickCount();
+  const uint64_t prev =
+      last_vblank_guest_tick_.exchange(now, std::memory_order_acq_rel);
+  if (prev && now > prev) {
+    vblank_period_ticks_.store(now - prev, std::memory_order_release);
+  }
+
   // Increment vblank counter (so the game sees us making progress).
   command_processor_->increment_counter();
 
@@ -351,6 +409,11 @@ void GraphicsSystem::MarkVblank() {
 void GraphicsSystem::ClearCaches() {
   command_processor_->CallInThread(
       [&]() { command_processor_->ClearCaches(); });
+}
+
+void GraphicsSystem::InvalidateGpuMemory() {
+  command_processor_->CallInThread(
+      [&]() { command_processor_->InvalidateGpuMemory(); });
 }
 
 void GraphicsSystem::InitializeShaderStorage(
@@ -425,23 +488,14 @@ bool GraphicsSystem::Restore(ByteStream* stream) {
   return command_processor_->Restore(stream);
 }
 
-std::pair<uint32_t, uint32_t> GraphicsSystem::GetResolution() const {
-  if (!kernel_state_) {
-    return {1280, 720};
+std::pair<uint16_t, uint16_t> GraphicsSystem::GetInternalDisplayResolution() {
+  if (cvars::internal_display_resolution >=
+      internal_display_resolution_entries.size()) {
+    return {cvars::internal_display_resolution_x,
+            cvars::internal_display_resolution_y};
   }
-
-  if (cvars::custom_internal_display_resolution_x != 0 &&
-      cvars::custom_internal_display_resolution_y != 0) {
-    return {cvars::custom_internal_display_resolution_x,
-            cvars::custom_internal_display_resolution_y};
-  }
-
-  const auto resolution =
-      kernel::Resolution(kernel_state()->xconfig()->ReadSetting<uint32_t>(
-          kernel::XCONFIG_USER_CATEGORY,
-          kernel::XCONFIG_USER_AV_COMPOSITE_SCREENSZ));
-
-  return {resolution.width_, resolution.height_};
+  return internal_display_resolution_entries
+      [cvars::internal_display_resolution];
 }
 
 }  // namespace gpu

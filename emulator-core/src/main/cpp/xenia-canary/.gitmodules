@@ -29,9 +29,6 @@
 [submodule "third_party/cxxopts"]
 	path = third_party/cxxopts
 	url = https://github.com/jarro2783/cxxopts.git
-[submodule "third_party/SDL2"]
-	path = third_party/SDL2
-	url = https://github.com/libsdl-org/SDL.git
 [submodule "third_party/utfcpp"]
 	path = third_party/utfcpp
 	url = https://github.com/nemtrif/utfcpp.git
@@ -66,9 +63,6 @@
 [submodule "third_party/glslang"]
 	path = third_party/glslang
 	url = https://github.com/KhronosGroup/glslang.git
-[submodule "third_party/SPIRV-Tools"]
-	path = third_party/SPIRV-Tools
-	url = https://github.com/KhronosGroup/SPIRV-Tools.git
 [submodule "third_party/VulkanMemoryAllocator"]
 	path = third_party/VulkanMemoryAllocator
 	url = https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator.git
@@ -78,12 +72,6 @@
 [submodule "third_party/zarchive"]
 	path = third_party/zarchive
 	url = https://github.com/exzap/ZArchive.git
-[submodule "third_party/tabulate"]
-	path = third_party/tabulate
-	url = https://github.com/p-ranav/tabulate.git
-[submodule "third_party/rapidcsv"]
-	path = third_party/rapidcsv
-	url = https://github.com/d99kris/rapidcsv.git
 [submodule "third_party/zlib-ng"]
 	path = third_party/zlib-ng
 	url = https://github.com/zlib-ng/zlib-ng.git
@@ -97,9 +85,48 @@
 [submodule "third_party/cpplint"]
 	path = third_party/cpplint
 	url = https://github.com/cpplint/cpplint.git
+[submodule "third_party/miniaudio"]
+	path = third_party/miniaudio
+	url = https://github.com/mackron/miniaudio.git
 [submodule "third_party/DirectX-Headers"]
 	path = third_party/DirectX-Headers
 	url = https://github.com/microsoft/DirectX-Headers.git
+[submodule "third_party/metal-cpp"]
+	path = third_party/metal-cpp
+	url = https://github.com/bkaradzic/metal-cpp.git
+	branch = metal-cpp_26
+[submodule "third_party/asio"]
+	path = third_party/asio
+	url = https://github.com/chriskohlhoff/asio.git
 [submodule "third_party/xbyak_aarch64"]
 	path = third_party/xbyak_aarch64
 	url = https://github.com/fujitsu/xbyak_aarch64.git
+[submodule "third_party/SPIRV-Headers"]
+	path = third_party/SPIRV-Headers
+	url = https://github.com/KhronosGroup/SPIRV-Headers.git
+	branch = vulkan-sdk-1.4.341
+[submodule "third_party/SPIRV-Tools"]
+	path = third_party/SPIRV-Tools
+	url = https://github.com/KhronosGroup/SPIRV-Tools.git
+	branch = vulkan-sdk-1.4.341
+[submodule "third_party/SPIRV-Cross"]
+	path = third_party/SPIRV-Cross
+	url = https://github.com/KhronosGroup/SPIRV-Cross.git
+	branch = vulkan-sdk-1.4.341
+[submodule "third_party/wxWidgets"]
+	path = third_party/wxWidgets
+	url = https://github.com/wxWidgets/wxWidgets.git
+	branch = v3.3.2
+[submodule "third_party/MoltenVK"]
+	path = third_party/MoltenVK
+	url = https://github.com/KhronosGroup/MoltenVK.git
+[submodule "third_party/cereal"]
+	path = third_party/cereal
+	url = https://github.com/USCiLab/cereal.git
+[submodule "third_party/SDL3"]
+	path = third_party/SDL3
+	url = https://github.com/libsdl-org/SDL.git
+	ignore = dirty
+[submodule "third_party/boost_context/context"]
+	path = third_party/boost_context/context
+	url = https://github.com/boostorg/context.git

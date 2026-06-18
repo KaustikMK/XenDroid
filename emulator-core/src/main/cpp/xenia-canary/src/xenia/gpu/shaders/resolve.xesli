@@ -55,8 +55,8 @@ push_const_end_xe
         byte_buffer_align16_declare_xe
   #endif
   #ifdef XE_RESOLVE_COPY_EDRAM_BYTE_BUFFER_DECLARE_MACRO
-    XE_RESOLVE_COPY_EDRAM_BYTE_BUFFER_DECLARE_MACRO(xe_resolve_edram, set=0,
-                                                    binding=0, t0, space0)
+    XE_RESOLVE_COPY_EDRAM_BYTE_BUFFER_DECLARE_MACRO(xe_resolve_edram, 0, 0,
+                                                    t0, space0, 2)
   #endif
   #define XE_RESOLVE_COPY_EDRAM_BINDING \
       byte_buffer_binding_xe(xe_resolve_edram, buffer(2))
@@ -212,14 +212,6 @@ uint XeResolveEdramPixelStrideBytes(XeResolveInfo resolve_info) {
                                                       bytes_per_block_log2));
     #endif
   }
-
-  #define kXenosCopySampleSelect_0 0u
-  #define kXenosCopySampleSelect_1 1u
-  #define kXenosCopySampleSelect_2 2u
-  #define kXenosCopySampleSelect_3 3u
-  #define kXenosCopySampleSelect_01 4u
-  #define kXenosCopySampleSelect_23 5u
-  #define kXenosCopySampleSelect_0123 6u
 
   uint XeResolveFirstSampleIndex(uint sample_select) {
     uint sample_index;
@@ -627,8 +619,22 @@ uint XeResolveEdramPixelStrideBytes(XeResolveInfo resolve_info) {
           pixel_1 += msaa_resolve_pixel_1;
         }
       }
-      pixel_0 *= exp_bias;
-      pixel_1 *= exp_bias;
+      // For k_2_10_10_10_FLOAT, only apply exp_bias to RGB (7e3 float), not
+      // alpha (2-bit fixed-point [0, 1]) - unless the destination format can
+      // store alpha > 1.0 (float formats), in which case apply to all channels
+      // as the game expects the expanded range.
+      dont_flatten_xe if ((resolve_info.edram_format ==
+                               kXenosColorRenderTargetFormat_2_10_10_10_FLOAT ||
+                           resolve_info.edram_format ==
+                               kXenosColorRenderTargetFormat_2_10_10_10_FLOAT_AS_16_16_16_16) &&
+                          resolve_info.dest_format != kXenosFormat_16_16_16_16_FLOAT &&
+                          resolve_info.dest_format != kXenosFormat_32_32_32_32_FLOAT) {
+        pixel_0.xyz *= exp_bias;
+        pixel_1.xyz *= exp_bias;
+      } else {
+        pixel_0 *= exp_bias;
+        pixel_1 *= exp_bias;
+      }
       dont_flatten_xe if (resolve_info.dest_swap) {
         pixel_0 = pixel_0.bgra;
         pixel_1 = pixel_1.bgra;
@@ -694,10 +700,26 @@ uint XeResolveEdramPixelStrideBytes(XeResolveInfo resolve_info) {
           pixel_3 += msaa_resolve_pixel_3;
         }
       }
-      pixel_0 *= exp_bias;
-      pixel_1 *= exp_bias;
-      pixel_2 *= exp_bias;
-      pixel_3 *= exp_bias;
+      // For k_2_10_10_10_FLOAT, only apply exp_bias to RGB (7e3 float), not
+      // alpha (2-bit fixed-point [0, 1]) - unless the destination format can
+      // store alpha > 1.0 (float formats), in which case apply to all channels
+      // as the game expects the expanded range.
+      dont_flatten_xe if ((resolve_info.edram_format ==
+                               kXenosColorRenderTargetFormat_2_10_10_10_FLOAT ||
+                           resolve_info.edram_format ==
+                               kXenosColorRenderTargetFormat_2_10_10_10_FLOAT_AS_16_16_16_16) &&
+                          resolve_info.dest_format != kXenosFormat_16_16_16_16_FLOAT &&
+                          resolve_info.dest_format != kXenosFormat_32_32_32_32_FLOAT) {
+        pixel_0.xyz *= exp_bias;
+        pixel_1.xyz *= exp_bias;
+        pixel_2.xyz *= exp_bias;
+        pixel_3.xyz *= exp_bias;
+      } else {
+        pixel_0 *= exp_bias;
+        pixel_1 *= exp_bias;
+        pixel_2 *= exp_bias;
+        pixel_3 *= exp_bias;
+      }
       dont_flatten_xe if (resolve_info.dest_swap) {
         pixel_0 = pixel_0.bgra;
         pixel_1 = pixel_1.bgra;

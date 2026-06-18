@@ -16,7 +16,7 @@
 #include "xenia/ui/window.h"
 
 #if XE_PLATFORM_WIN32
-#include "xenia/ui/window_win.h"
+#include "xenia/ui/surface_win.h"
 #endif
 
 // On Windows, InvalidateRect causes WM_PAINT to be sent quite quickly, so
@@ -1085,6 +1085,12 @@ Presenter::PaintMode Presenter::GetDesiredPaintModeFromUIThread(
   if (!cvars::host_present_from_non_ui_thread) {
     return PaintMode::kUIThreadOnRequest;
   }
+  if (surface_ && surface_->GetType() == Surface::kTypeIndex_WaylandWindow) {
+    // Wayland connections aren't thread-safe — GTK dispatches wl_display from
+    // the UI thread, so the GPU thread must not call vkQueuePresentKHR (which
+    // dispatches the same display) concurrently.
+    return PaintMode::kUIThreadOnRequest;
+  }
   if (surface_paint_connection_has_implicit_vsync_) {
     // Don't be causing host vertical sync CPU waits in the thread generating
     // the guest output.
@@ -1214,7 +1220,10 @@ void Presenter::UpdateSurfaceMonitorFromUIThread(
 #if XE_PLATFORM_WIN32
   HMONITOR surface_new_win32_monitor = nullptr;
   if (surface_) {
-    HWND hwnd = static_cast<const Win32Window*>(window_)->hwnd();
+    HWND hwnd = nullptr;
+    if (surface_->GetType() == Surface::kTypeIndex_Win32Hwnd) {
+      hwnd = static_cast<const Win32HwndSurface*>(surface_)->hwnd();
+    }
     // The HWND may be non-existent if the window has been closed and destroyed
     // (the HWND, not the xe::ui::Window) already.
     if (hwnd) {
@@ -1388,6 +1397,19 @@ void Presenter::WaitForUITickFromUIThread() {
     }
     dxgi_ui_tick_signal_condition_.wait(dxgi_ui_tick_lock);
   }
+#elif XE_PLATFORM_LINUX
+  // Without this, ImGui draws run uncapped (~3000 fps) when a dialog is open.
+  if (!AreUITicksNeededFromUIThread()) {
+    return;
+  }
+  auto now = std::chrono::steady_clock::now();
+  auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
+      now - linux_ui_tick_last_paint_time_);
+  constexpr auto frame_time = std::chrono::microseconds(16667);
+  if (elapsed < frame_time) {
+    std::this_thread::sleep_for(frame_time - elapsed);
+  }
+  linux_ui_tick_last_paint_time_ = std::chrono::steady_clock::now();
 #endif  // XE_PLATFORM
 }
 

@@ -30,7 +30,10 @@ class Surface {
     // Android.
     kTypeIndex_AndroidNativeWindow,
     // GNU/Linux.
+    kTypeIndex_WaylandWindow,
     kTypeIndex_XcbWindow,
+    // macOS.
+    kTypeIndex_MacNSView,
     // Windows.
     kTypeIndex_Win32Hwnd,
   };
@@ -38,7 +41,9 @@ class Surface {
   enum : TypeFlags {
     kTypeFlag_AndroidNativeWindow = TypeFlags(1)
                                     << kTypeIndex_AndroidNativeWindow,
+    kTypeFlag_WaylandWindow = TypeFlags(1) << kTypeIndex_WaylandWindow,
     kTypeFlag_XcbWindow = TypeFlags(1) << kTypeIndex_XcbWindow,
+    kTypeFlag_MacNSView = TypeFlags(1) << kTypeIndex_MacNSView,
     kTypeFlag_Win32Hwnd = TypeFlags(1) << kTypeIndex_Win32Hwnd,
   };
 
@@ -68,6 +73,11 @@ class Surface {
     height_out = height;
     return true;
   }
+
+  // Updates the cached size for surfaces that don't query size dynamically.
+  // Called by the window when resizing. Default implementation is a no-op
+  // for surfaces that query their size dynamically (e.g., XCB, Win32).
+  virtual void SetSize(uint32_t width, uint32_t height) {}
 
  protected:
   Surface() = default;

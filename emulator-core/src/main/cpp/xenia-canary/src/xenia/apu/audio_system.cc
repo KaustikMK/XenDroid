@@ -51,7 +51,6 @@ AudioSystem::AudioSystem(cpu::Processor* processor)
     : memory_(processor->memory()),
       processor_(processor),
       worker_running_(false) {
-  std::memset(clients_, 0, sizeof(clients_));
   queued_frames_ = std::clamp(cvars::apu_max_queued_frames,
                               static_cast<uint32_t>(kMinimumQueuedFrames),
                               static_cast<uint32_t>(kMaximumQueuedFrames));
@@ -143,13 +142,17 @@ void AudioSystem::WorkerThreadMain() {
     if (result.first == xe::threading::WaitResult::kSuccess) {
       auto index = result.second;
 
-      auto global_lock = global_critical_region_.Acquire();
-      uint32_t client_callback = clients_[index].callback;
-      uint32_t client_callback_arg = clients_[index].wrapped_callback_arg;
-      global_lock.unlock();
-      if (wake_n < 96 || (wake_n & 0xFF) == 0) {
-        XELOGI("AudioWorker exec #{} callback={:08X}", wake_n,
-               client_callback);
+      // UnregisterClient waits on this after clearing in_use.
+      std::lock_guard<std::mutex> cb_lk(clients_[index].callback_mutex);
+
+      uint32_t client_callback = 0;
+      uint32_t client_callback_arg = 0;
+      {
+        auto global_lock = global_critical_region_.Acquire();
+        if (clients_[index].in_use) {
+          client_callback = clients_[index].callback;
+          client_callback_arg = clients_[index].wrapped_callback_arg;
+        }
       }
 
       if (client_callback) {
@@ -256,7 +259,14 @@ X_STATUS AudioSystem::RegisterClient(uint32_t callback, uint32_t callback_arg,
   uint32_t ptr = memory()->SystemHeapAlloc(0x4);
   xe::store_and_swap<uint32_t>(memory()->TranslateVirtual(ptr), callback_arg);
 
-  clients_[index] = {driver, callback, callback_arg, ptr, true};
+  clients_[index].driver = driver;
+  clients_[index].callback = callback;
+  clients_[index].callback_arg = callback_arg;
+  clients_[index].wrapped_callback_arg = ptr;
+  clients_[index].in_use = true;
+  clients_[index].frames_submitted.store(0);
+  clients_[index].frames_processed.store(0);
+  clients_[index].frames_dropped.store(0);
   XELOGI("AudioSystem::RegisterClient: client {} registered successfully",
          index);
 
@@ -285,22 +295,65 @@ void AudioSystem::SubmitFrame(size_t index, float* samples) {
     // callback will never fire, causing the semaphore to leak.
     if (index < kMaximumClientCount && clients_[index].driver) {
       static float silence[apu::AudioDriver::kFrameSamplesMax] = {0};
+      clients_[index].frames_dropped++;
       (clients_[index].driver)->SubmitFrame(silence);
+    } else if (index < kMaximumClientCount) {
+      // Tick the semaphore so the worker doesn't stall on a dead client.
+      client_semaphores_[index]->Release(1, nullptr);
     }
     return;
   }
+  clients_[index].frames_submitted++;
+  clients_[index].frames_processed++;
   (clients_[index].driver)->SubmitFrame(samples);
+}
+
+bool AudioSystem::GetClientPerformance(size_t index,
+                                       ClientPerformance* out_perf) {
+  if (index >= kMaximumClientCount || !out_perf) {
+    return false;
+  }
+
+  if (!clients_[index].in_use) {
+    return false;
+  }
+
+  out_perf->frames_submitted = clients_[index].frames_submitted.load();
+  out_perf->frames_processed = clients_[index].frames_processed.load();
+  out_perf->frames_dropped = clients_[index].frames_dropped.load();
+  return true;
 }
 
 void AudioSystem::UnregisterClient(size_t index) {
   SCOPE_profile_cpu_f("apu");
   XELOGI("AudioSystem::UnregisterClient: client {}", index);
 
-  auto global_lock = global_critical_region_.Acquire();
   assert_true(index < kMaximumClientCount);
-  DestroyDriver(clients_[index].driver);
-  memory()->SystemHeapFree(clients_[index].wrapped_callback_arg);
-  clients_[index] = {0};
+  AudioDriver* driver_to_destroy;
+  {
+    auto global_lock = global_critical_region_.Acquire();
+    XELOGI(
+        "AudioSystem::UnregisterClient: index={}, driver={:p}", index,
+        index < kMaximumClientCount ? (void*)clients_[index].driver : nullptr);
+    driver_to_destroy = clients_[index].driver;
+    // Leak wrapped_callback_arg: in-flight callback may hold this pointer.
+    clients_[index].driver = nullptr;
+    clients_[index].callback = 0;
+    clients_[index].callback_arg = 0;
+    clients_[index].wrapped_callback_arg = 0;
+    clients_[index].in_use = false;
+    clients_[index].frames_submitted.store(0);
+    clients_[index].frames_processed.store(0);
+    clients_[index].frames_dropped.store(0);
+  }
+
+  // Wait for any in-flight callback; can't hold global lock (callback
+  // re-enters).
+  {
+    std::lock_guard<std::mutex> lk(clients_[index].callback_mutex);
+  }
+
+  DestroyDriver(driver_to_destroy);
 
   // Drain the semaphore of its count.
   auto client_semaphore = client_semaphores_[index].get();

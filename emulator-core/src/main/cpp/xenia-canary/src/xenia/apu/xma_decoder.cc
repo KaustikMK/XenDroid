@@ -73,6 +73,8 @@ DEFINE_string(
     "yet finished.\n",
     "APU");
 
+UPDATE_from_string(xma_decoder, 2026, 2, 16, 12, "old");
+
 namespace xe {
 namespace apu {
 
@@ -158,6 +160,8 @@ X_STATUS XmaDecoder::Setup(kernel::KernelState* kernel_state) {
       contexts_[i] = new XmaContextOld();
     } else if (cvars::xma_decoder == "new") {
       contexts_[i] = new XmaContextNew();
+    } else if (cvars::xma_decoder == "fake") {
+      contexts_[i] = new XmaContextFake();
     } else {
       contexts_[i] = new XmaContextNew();
     }

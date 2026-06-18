@@ -9,21 +9,26 @@
 
 #include <cstdlib>
 
-#include "xenia/base/console.h"
-#include "xenia/base/cvar.h"
-#include "xenia/base/main_win.h"
+#include <wx/wx.h>
+
 #include "xenia/base/platform_win.h"
 
 #include "xenia/kernel/kernel_state.cc"
-#include "xenia/ui/windowed_app.h"
-#include "xenia/ui/windowed_app_context_win.h"
+#include "xenia/ui/windowed_app_wx.h"
 
 #include "version.h"
 
 #include <Psapi.h>
 
-DEFINE_bool(enable_console, false, "Open a console window with the main window",
-            "Logging");
+// DirectX 12 Agility SDK opt-in. d3d12.dll reads these exports at startup and
+// loads D3D12Core.dll from the D3D12 subfolder next to the exe. Keep the
+// version in sync with the Agility SDK bundled by the build.
+extern "C" {
+__declspec(dllexport) extern const UINT D3D12SDKVersion = 619;
+}
+extern "C" {
+__declspec(dllexport) extern const char* D3D12SDKPath = ".\\D3D12\\";
+}
 
 static uintptr_t g_xenia_exe_base = 0;
 static size_t g_xenia_exe_size = 0;
@@ -133,32 +138,20 @@ const char* HostExceptionReport::GetFormattedAddress(uintptr_t address) {
   char (&current_buffer)[128] =
       formatted_addresses[address_format_ring_index++ % 16];
 
-  /* if (address >= g_xenia_exe_base &&
-       address - g_xenia_exe_base < g_xenia_exe_size) {
-     uintptr_t offset = address - g_xenia_exe_base;
+  HMODULE hmod_for = probe_for_module((void*)address);
 
-     sprintf_s(current_buffer, "xenia_canary.exe+%llX", offset);
-   } else */
-  {
-    HMODULE hmod_for = probe_for_module((void*)address);
+  if (hmod_for) {
+    char tmp_module_name[MAX_PATH + 1];
+    GetModuleFileNameA(hmod_for, tmp_module_name, sizeof(tmp_module_name));
 
-    if (hmod_for) {
-      // get the module filename, then chomp off all but the actual file name
-      // (full path is obtained)
-      char tmp_module_name[MAX_PATH + 1];
-      GetModuleFileNameA(hmod_for, tmp_module_name, sizeof(tmp_module_name));
+    size_t search_back = strlen(tmp_module_name);
+    while (tmp_module_name[--search_back] != '\\');
 
-      size_t search_back = strlen(tmp_module_name);
-      // hunt backwards for the last sep
-      while (tmp_module_name[--search_back] != '\\');
+    sprintf_s(current_buffer, "%s+%llX", tmp_module_name + search_back + 1,
+              address - reinterpret_cast<uintptr_t>(hmod_for));
 
-      // MessageBoxA(nullptr, tmp_module_name, "ffds", MB_OK);
-      sprintf_s(current_buffer, "%s+%llX", tmp_module_name + search_back + 1,
-                address - reinterpret_cast<uintptr_t>(hmod_for));
-
-    } else {
-      sprintf_s(current_buffer, "0x%llX", address);
-    }
+  } else {
+    sprintf_s(current_buffer, "0x%llX", address);
   }
   return current_buffer;
 }
@@ -221,11 +214,9 @@ static bool exception_pointers_handler(HostExceptionReport* report) {
 
 static bool exception_win32_error_handle(HostExceptionReport* report) {
   if (!report->last_win32_error) {
-    return false;  // no error, nothing to do
+    return false;
   }
-  // todo: formatmessage
   char win32_error_buf[512];
-  // its ok if we dont free statusmsg, we're exiting anyway
   char* statusmsg = nullptr;
   FormatMessageA(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM |
                      FORMAT_MESSAGE_IGNORE_INSERTS,
@@ -241,7 +232,6 @@ static bool exception_ntstatus_error_handle(HostExceptionReport* report) {
   if (!report->last_ntstatus) {
     return false;
   }
-  // todo: formatmessage
   char win32_error_buf[512];
 
   sprintf_s(win32_error_buf, "Last NTSTATUS: 0x%X (%s)\n",
@@ -263,8 +253,6 @@ static bool exception_cerror_handle(HostExceptionReport* report) {
 }
 
 static bool thread_name_handle(HostExceptionReport* report) {
-  // ll GetThreadDescription(HANDLE hThread, PWSTR *ppszThreadDescription)
-
   FARPROC description_getter =
       GetProcAddress(GetModuleHandleA("kernel32.dll"), "GetThreadDescription");
 
@@ -307,6 +295,15 @@ LONG _UnhandledExceptionFilter(_EXCEPTION_POINTERS* ExceptionInfo) {
 
   return EXCEPTION_CONTINUE_SEARCH;
 }
+
+// XeniaWxApp owns OnInit / OnExit. Cvar/logging init and command-line parsing
+// happen in XeniaWxApp::OnInit after the WindowedApp is constructed and can
+// supply its positional options.
+wxIMPLEMENT_APP_NO_MAIN(xe::ui::XeniaWxApp);
+
+DEFINE_bool(enable_console, false, "Open a console window with the main window",
+            "Logging");
+
 int WINAPI wWinMain(HINSTANCE hinstance, HINSTANCE hinstance_prev,
                     LPWSTR command_line, int show_cmd) {
   MODULEINFO modinfo;
@@ -317,49 +314,16 @@ int WINAPI wWinMain(HINSTANCE hinstance, HINSTANCE hinstance_prev,
   g_xenia_exe_base = reinterpret_cast<uintptr_t>(hinstance);
   g_xenia_exe_size = modinfo.SizeOfImage;
 
-  int result;
   SetUnhandledExceptionFilter(_UnhandledExceptionFilter);
-  {
-    xe::ui::Win32WindowedAppContext app_context(hinstance, show_cmd);
-    // TODO(Triang3l): Initialize creates a window. Set DPI awareness via the
-    // manifest.
-    if (!app_context.Initialize()) {
-      return EXIT_FAILURE;
-    }
 
-    std::unique_ptr<xe::ui::WindowedApp> app =
-        xe::ui::GetWindowedAppCreator()(app_context);
-
-    if (!xe::ParseWin32LaunchArguments(false, app->GetPositionalOptionsUsage(),
-                                       app->GetPositionalOptions(), nullptr)) {
-      return EXIT_FAILURE;
-    }
-
-    // Initialize COM on the UI thread with the apartment-threaded concurrency
-    // model, so dialogs can be used.
-    if (FAILED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED))) {
-      return EXIT_FAILURE;
-    }
-
-    xe::InitializeWin32App(app->GetName());
-
-    if (app->OnInitialize()) {
-      // TODO(Triang3l): Rework this, need to initialize the console properly,
-      // disable has_console_attached_ by default in windowed apps, and attach
-      // only if needed.
-      if (cvars::enable_console) {
-        xe::AttachConsole();
-      }
-      result = app_context.RunMainMessageLoop();
-    } else {
-      result = EXIT_FAILURE;
-    }
-
-    app->InvokeOnDestroy();
+  // Initialize COM on the UI thread (apartment-threaded) so dialogs work.
+  if (FAILED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED))) {
+    return EXIT_FAILURE;
   }
 
-  // Logging may still be needed in the destructors.
-  xe::ShutdownWin32App();
+  // command_line is intentionally null — ParseWin32LaunchArguments reads
+  // GetCommandLineW() directly inside XeniaWxApp::OnInit.
+  int result = wxEntry(hinstance, hinstance_prev, nullptr, show_cmd);
 
   CoUninitialize();
 

@@ -12,9 +12,11 @@
 #include "xenia/base/clock.h"
 #include "xenia/base/platform.h"
 #include "xenia/cpu/processor.h"
+#include "xenia/kernel/guest_scheduler.h"
 #include "xenia/kernel/util/shim_utils.h"
 #include "xenia/kernel/xboxkrnl/xboxkrnl_private.h"
 #include "xenia/kernel/xsemaphore.h"
+#include "xenia/kernel/xthread.h"
 #include "xenia/kernel/xtimer.h"
 #include "xenia/xbox.h"
 
@@ -88,6 +90,33 @@ object_ref<T> LookupNamedObject(KernelState* kernel_state,
   return nullptr;
 }
 
+enum CreateThreadFlags : uint32_t {
+  ThreadInitiallySuspended = 0x00000001,
+  SystemThread = 0x00000002,
+  PriorityClass1 = 0x00000020,
+  PriorityClass2 = 0x00000040,
+  ReturnKThreadPtr = 0x00000080,
+  AffinityCpu0 = 0x01000000,
+  AffinityCpu1 = 0x02000000,
+  AffinityCpu2 = 0x04000000,
+  AffinityCpu3 = 0x08000000,
+  AffinityCpu4 = 0x10000000,
+  AffinityCpu5 = 0x20000000,
+};
+
+inline const std::map<uint32_t, std::string> ex_thread_flag_map = {
+    {ThreadInitiallySuspended, "Thread Initially Suspended"},
+    {SystemThread, "Guest Created System Thread"},
+    {PriorityClass1, "Thread Priority Class 1"},
+    {PriorityClass2, "Thread Priority Class 2"},
+    {ReturnKThreadPtr, "Return Kthread Ptr"},
+    {AffinityCpu0, "Thread Starts At Cpu 1"},
+    {AffinityCpu1, "Thread Starts At Cpu 2"},
+    {AffinityCpu2, "Thread Starts At Cpu 3"},
+    {AffinityCpu3, "Thread Starts At Cpu 4"},
+    {AffinityCpu4, "Thread Starts At Cpu 5"},
+    {AffinityCpu5, "Thread Starts At Cpu 6"}};
+
 uint32_t ExCreateThread(xe::be<uint32_t>* handle_ptr, uint32_t stack_size,
                         xe::be<uint32_t>* thread_id_ptr,
                         uint32_t xapi_thread_startup, uint32_t start_address,
@@ -103,17 +132,25 @@ uint32_t ExCreateThread(xe::be<uint32_t>* handle_ptr, uint32_t stack_size,
   // LPVOID   StartContext,
   // DWORD    CreationFlags // 0x80?
 
-  auto kernel_state_var = kernel_state();
-  // xenia_assert((creation_flags & 2) == 0);  // creating system thread?
-  if (creation_flags & 2) {
-    XELOGE("Guest is creating a system thread!");
-  }
+  std::string summary = "ExCreateThread Active:";
+  uint32_t unused_flag = creation_flags;
 
-  uint32_t thread_process = (creation_flags & 2)
-                                ? kernel_state_var->GetSystemProcess()
-                                : kernel_state_var->GetTitleProcess();
+  for (const auto& entry : ex_thread_flag_map) {
+    if (creation_flags & entry.first) {
+      summary += fmt::format(" {},", entry.second);
+      unused_flag &= ~entry.first;
+    }
+  }
+  if (unused_flag) {
+    summary += fmt::format(" Unk flag: {:08X}", unused_flag);
+  }
+  XELOGD("{}", summary);
+
+  uint32_t thread_process = (creation_flags & SystemThread)
+                                ? kernel_state()->GetSystemProcess()
+                                : kernel_state()->GetTitleProcess();
   X_KPROCESS* target_process =
-      kernel_state_var->memory()->TranslateVirtual<X_KPROCESS*>(thread_process);
+      kernel_state()->memory()->TranslateVirtual<X_KPROCESS*>(thread_process);
   // Inherit default stack size
   uint32_t actual_stack_size = stack_size;
 
@@ -138,7 +175,7 @@ uint32_t ExCreateThread(xe::be<uint32_t>* handle_ptr, uint32_t stack_size,
 
   if (XSUCCEEDED(result)) {
     if (handle_ptr) {
-      if (creation_flags & 0x80) {
+      if (creation_flags & ReturnKThreadPtr) {
         *handle_ptr = thread->guest_object();
       } else {
         *handle_ptr = thread->handle();
@@ -451,8 +488,12 @@ DECLARE_XBOXKRNL_EXPORT3(KeDelayExecutionThread, kThreading, kImplemented,
                          kBlocking, kHighFrequency);
 
 dword_result_t NtYieldExecution_entry() {
-  xe::threading::MaybeYield();
-  return 0;
+  if (GuestScheduler::enabled() && XThread::GetCurrentFiberThread()) {
+    kernel_state()->guest_scheduler()->YieldCurrentThread();
+  } else {
+    xe::threading::MaybeYield();
+  }
+  return X_STATUS_SUCCESS;
 }
 DECLARE_XBOXKRNL_EXPORT2(NtYieldExecution, kThreading, kImplemented,
                          kHighFrequency);
@@ -781,6 +822,7 @@ dword_result_t NtReleaseSemaphore_entry(dword_t sem_handle,
     bool success =
         sem->ReleaseSemaphore((int32_t)release_count, &previous_count);
     if (!success) {
+      // Releasing would exceed the semaphore's maximum count
       XELOGW(
           "NtReleaseSemaphore: release_count={} would exceed maximum (current "
           "count={})",
@@ -850,7 +892,7 @@ dword_result_t NtReleaseMutant_entry(dword_t mutant_handle,
   auto mutant =
       kernel_state()->object_table()->LookupObject<XMutant>(mutant_handle);
   if (mutant) {
-    mutant->ReleaseMutant(priority_increment, abandon, wait);
+    result = mutant->ReleaseMutant(priority_increment, abandon, wait);
   } else {
     result = X_STATUS_INVALID_HANDLE;
   }
@@ -1380,8 +1422,11 @@ uint32_t xeNtQueueApcThread(uint32_t thread_handle, uint32_t apc_routine,
     return X_STATUS_UNSUCCESSFUL;
   }
   // no-op, just meant to awaken a sleeping alertable thread to process real
-  // apcs
-  thread->thread()->QueueUserCallback([]() {});
+  // apcs. A fiber-backed thread has no host thread; cooperative alertable
+  // wake-on-APC is handled by the scheduler in a later stage.
+  if (thread->thread()) {
+    thread->thread()->QueueUserCallback([]() {});
+  }
   return X_STATUS_SUCCESS;
 }
 dword_result_t NtQueueApcThread_entry(dword_t thread_handle,

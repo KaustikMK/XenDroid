@@ -31,6 +31,7 @@ class MenuItem {
     kSeparator,
     kNormal,  // Root menu
     kString,  // Menu is just a string
+    kCheck,   // Checkable item with on/off state
   };
 
   static std::unique_ptr<MenuItem> Create(Type type);
@@ -40,6 +41,11 @@ class MenuItem {
   static std::unique_ptr<MenuItem> Create(Type type, const std::string& text,
                                           const std::string& hotkey,
                                           std::function<void()> callback);
+  // Creates a checkable item. `on_toggle` is invoked with the new checked
+  // state every time the user clicks the item.
+  static std::unique_ptr<MenuItem> CreateCheck(
+      const std::string& text, bool initially_checked,
+      std::function<void(bool)> on_toggle);
 
   virtual ~MenuItem();
 
@@ -57,13 +63,20 @@ class MenuItem {
   void AddChild(std::unique_ptr<MenuItem> child_item);
   void AddChild(MenuItemPtr child_item);
   void RemoveChild(MenuItem* child_item);
-  MenuItem* child(size_t index);
+  MenuItem* child(size_t index) const;
+  size_t child_count() const { return children_.size(); }
 
   virtual void SetEnabled(bool enabled) {}
+  // Sets the checked state of a kCheck item. No-op for other types and does
+  // not invoke the toggle callback.
+  virtual void SetChecked(bool checked) { checked_ = checked; }
+  bool IsChecked() const { return checked_; }
 
  protected:
   MenuItem(Type type, const std::string& text, const std::string& hotkey,
            std::function<void()> callback);
+  MenuItem(Type type, const std::string& text, bool initially_checked,
+           std::function<void(bool)> on_toggle);
 
   virtual void OnChildAdded(MenuItem* child_item) {}
   virtual void OnChildRemoved(MenuItem* child_item) {}
@@ -71,15 +84,20 @@ class MenuItem {
   // This MenuItem may be destroyed as a result of the callback, don't do
   // anything with it after the call.
   void OnSelected();
+  // For kCheck — flips checked_ and invokes the toggle callback with the new
+  // value. Same destruction caveat as OnSelected.
+  void OnToggled();
 
   Type type_;
   MenuItem* parent_item_;
   std::vector<MenuItemPtr> children_;
   std::string text_;
   std::string hotkey_;
+  bool checked_ = false;
 
  private:
   std::function<void()> callback_;
+  std::function<void(bool)> toggle_callback_;
 };
 
 }  // namespace ui

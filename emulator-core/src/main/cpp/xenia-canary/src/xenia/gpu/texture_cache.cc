@@ -319,12 +319,10 @@ uint32_t TextureCache::GuestToHostSwizzle(uint32_t guest_swizzle,
 void TextureCache::RequestTextures(uint32_t used_texture_mask) {
   const auto& regs = register_file();
 
-  if (texture_became_outdated_.exchange(false, std::memory_order_acquire)) {
-    // A texture has become outdated - make sure whether textures are outdated
-    // is rechecked in this draw and in subsequent ones to reload the new data
-    // if needed.
-    ResetTextureBindings();
-  }
+  // Clear the aggregate flag, but invalidate only actually used outdated
+  // bindings below to avoid resyncing all slots on unrelated texture updates.
+  texture_became_outdated_.exchange(false, std::memory_order_acquire);
+  InvalidateUsedOutdatedBindings(used_texture_mask);
 
   // Update the texture keys and the textures.
   uint32_t bindings_changed = 0;
@@ -341,6 +339,8 @@ void TextureCache::RequestTextures(uint32_t used_texture_mask) {
     xenos::xe_gpu_texture_fetch_t fetch = regs.GetTextureFetch(index);
     TextureKey old_key = binding.key;
     uint8_t old_swizzled_signs = binding.swizzled_signs;
+    const bool binding_was_outdated =
+        old_key.is_valid && IsBindingOutdatedForUse(binding);
     BindingInfoFromFetchConstant(fetch, binding.key, &binding.swizzled_signs);
     texture_bindings_in_sync_ |= index_bit;
     if (!binding.key.is_valid) {
@@ -383,6 +383,10 @@ void TextureCache::RequestTextures(uint32_t used_texture_mask) {
         if (key_changed || !any_sign_was_not_signed) {
           binding.texture = FindOrCreateTexture(binding.key);
           load_unsigned_data = true;
+        } else if (binding_was_outdated && binding.texture != nullptr) {
+          // Fetch constants unchanged but watched guest memory changed - force
+          // a data upload against the same Texture*.
+          load_unsigned_data = true;
         }
       } else {
         binding.texture = nullptr;
@@ -393,6 +397,8 @@ void TextureCache::RequestTextures(uint32_t used_texture_mask) {
           signed_key.signed_separate = 1;
           binding.texture_signed = FindOrCreateTexture(signed_key);
           load_signed_data = true;
+        } else if (binding_was_outdated && binding.texture_signed != nullptr) {
+          load_signed_data = true;
         }
       } else {
         binding.texture_signed = nullptr;
@@ -402,6 +408,8 @@ void TextureCache::RequestTextures(uint32_t used_texture_mask) {
       // be different.
       if (key_changed) {
         binding.texture = FindOrCreateTexture(binding.key);
+        load_unsigned_data = true;
+      } else if (binding_was_outdated && binding.texture != nullptr) {
         load_unsigned_data = true;
       }
       binding.texture_signed = nullptr;
@@ -418,6 +426,55 @@ void TextureCache::RequestTextures(uint32_t used_texture_mask) {
 
   if (bindings_changed) {
     UpdateTextureBindingsImpl(bindings_changed);
+  }
+}
+
+bool TextureCache::AnyUsedTextureRequestWorkPending(
+    uint32_t used_texture_mask) const {
+  if (!used_texture_mask) {
+    return false;
+  }
+  // Any used slot that is out of sync needs work.
+  if (used_texture_mask & ~texture_bindings_in_sync_) {
+    return true;
+  }
+  // Any in-sync slot whose backing texture data is outdated also needs work.
+  uint32_t used_in_sync = used_texture_mask & texture_bindings_in_sync_;
+  uint32_t index = 0;
+  while (xe::bit_scan_forward(used_in_sync, &index)) {
+    used_in_sync = xe::clear_lowest_bit(used_in_sync);
+    const TextureBinding& binding = texture_bindings_[index];
+    if (binding.key.is_valid && IsBindingOutdatedForUse(binding)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool TextureCache::IsBindingOutdatedForUse(
+    const TextureBinding& binding) const {
+  auto is_texture_outdated = [](const Texture* texture) {
+    return texture && (texture->base_outdated_lockless() ||
+                       texture->mips_outdated_lockless());
+  };
+  return is_texture_outdated(binding.texture) ||
+         is_texture_outdated(binding.texture_signed);
+}
+
+// Clears the in-sync bit for used slots whose backing texture data is stale so
+// the main RequestTextures loop reprocesses them (re-binding the same Texture*
+// with fresh data uploaded via LoadTexturesData). Only used-and-outdated slots
+// are touched; non-used and clean slots keep their cached state.
+void TextureCache::InvalidateUsedOutdatedBindings(uint32_t used_texture_mask) {
+  uint32_t used_in_sync = used_texture_mask & texture_bindings_in_sync_;
+  uint32_t index = 0;
+  while (xe::bit_scan_forward(used_in_sync, &index)) {
+    uint32_t index_bit = UINT32_C(1) << index;
+    used_in_sync = xe::clear_lowest_bit(used_in_sync);
+    const TextureBinding& binding = texture_bindings_[index];
+    if (IsBindingOutdatedForUse(binding)) {
+      texture_bindings_in_sync_ &= ~index_bit;
+    }
   }
 }
 
@@ -913,13 +970,21 @@ void TextureCache::BindingInfoFromFetchConstant(
   }
   if (fetch.dimension == xenos::DataDimension::k1D) {
     bool is_invalid_1d = false;
-    // TODO(Triang3l): Support long 1D textures.
+    // Handle wide 1D textures (> 8192 wide) by mapping them to a 2D grid.
+    // The shader will convert 1D coordinates to 2D using the original width
+    // from the fetch constant.
     if (width_minus_1 >= xenos::kTexture2DCubeMaxWidthHeight) {
-      XELOGE(
-          "1D texture is too wide ({}) - ignoring! Report the game to Xenia "
-          "developers",
-          width_minus_1 + 1);
-      is_invalid_1d = true;
+      uint32_t total_width = width_minus_1 + 1;
+      uint32_t row_width = xenos::kTexture2DCubeMaxWidthHeight;
+      uint32_t num_rows = (total_width + row_width - 1) / row_width;
+      width_minus_1 = row_width - 1;
+      height_minus_1 = num_rows - 1;
+      // Disable mipmaps for wide 1D textures. The shader's coordinate remapping
+      // assumes base-level dimensions (num_rows), but at mip level N, the 2D
+      // texture becomes (8192 >> N) x (num_rows >> N), which breaks the mapping
+      // when num_rows >> N becomes 1 while the shader still expects multiple
+      // rows. Mipmaps are rarely used with 1D lookup textures anyway.
+      mip_max_level = 0;
     }
     assert_false(fetch.tiled);
     if (fetch.tiled) {

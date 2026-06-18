@@ -10,10 +10,13 @@
 #include "xenia/kernel/user_module.h"
 
 #include "xenia/base/byte_stream.h"
+#include "xenia/base/filesystem.h"
 #include "xenia/base/logging.h"
 #include "xenia/base/xxhash.h"
 #include "xenia/cpu/elf_module.h"
 #include "xenia/emulator.h"
+
+DECLARE_bool(dump_xex);
 
 namespace xe {
 namespace kernel {
@@ -156,6 +159,16 @@ X_STATUS UserModule::LoadFromMemory(const void* addr, const size_t length) {
     // Runtime takes ownership.
     auto xex_module =
         std::make_unique<cpu::XexModule>(processor, kernel_state());
+    if (cvars::dump_xex) {
+      auto dump_name = name_ + ".xex";
+      auto dump_file = xe::filesystem::OpenFile(dump_name, "wb");
+      if (dump_file) {
+        fwrite(addr, 1, length, dump_file);
+        fclose(dump_file);
+        XELOGI("Dumped XEX '{}' ({} bytes)", dump_name, length);
+      }
+    }
+
     if (!xex_module->Load(name_, path_, addr, length)) {
       return X_STATUS_UNSUCCESSFUL;
     }
@@ -764,20 +777,29 @@ void UserModule::Dump() {
       case XEX_HEADER_SYSTEM_FLAGS: {
         sb.AppendFormat("  XEX_HEADER_SYSTEM_FLAGS: {:08X}\n",
                         static_cast<uint32_t>(opt_header.value));
-
+        uint32_t unused_flag = opt_header.value;
         for (const auto& entry : xex2_system_flags_map) {
           if (opt_header.value & entry.first) {
             sb.AppendFormat("    {}\n", entry.second);
+            unused_flag &= ~entry.first;
           }
+        }
+        if (unused_flag) {
+          sb.AppendFormat("    Unk flag: {:08X}\n", unused_flag);
         }
       } break;
       case XEX_HEADER_SYSTEM_FLAGS_32: {
         sb.AppendFormat("  XEX_HEADER_SYSTEM_FLAGS_32: {:08X}\n",
                         static_cast<uint32_t>(opt_header.value));
+        uint32_t unused_flag = opt_header.value;
         for (const auto& entry : xex2_system_flags_32_map) {
           if (opt_header.value & entry.first) {
             sb.AppendFormat("    {}\n", entry.second);
+            unused_flag &= ~entry.first;
           }
+        }
+        if (unused_flag) {
+          sb.AppendFormat("    Unk flag: {:08X}\n", unused_flag);
         }
       } break;
       case XEX_HEADER_SYSTEM_FLAGS_64: {

@@ -138,6 +138,16 @@ class VulkanRenderTargetCache final : public RenderTargetCache {
     return last_update_framebuffer_;
   }
 
+  // For VK_KHR_dynamic_rendering: fills in attachment info structures.
+  // Returns the number of color attachments (may be less than max if trailing
+  // slots are unused). depth_attachment and stencil_attachment are filled if
+  // depth is used (check key.depth_and_color_used & 0b1).
+  void GetLastUpdateRenderingAttachments(
+      VkRenderingAttachmentInfo* color_attachments,
+      uint32_t* color_attachment_count_out,
+      VkRenderingAttachmentInfo* depth_attachment,
+      VkRenderingAttachmentInfo* stencil_attachment) const;
+
   // Using R16G16[B16A16]_SNORM, which are -1...1, not the needed -32...32.
   // Persistent data doesn't depend on this, so can be overriden by per-game
   // configuration.
@@ -160,6 +170,12 @@ class VulkanRenderTargetCache final : public RenderTargetCache {
     return depth_unorm24_vulkan_format_supported_ && cvars::vulkan_depth_unorm24;
   }
   bool depth_float24_round() const { return depth_float24_round_; }
+  bool depth_float24_convert_in_pixel_shader() const {
+    return depth_float24_convert_in_pixel_shader_;
+  }
+  bool gamma_render_target_as_unorm16() const {
+    return gamma_render_target_as_unorm16_;
+  }
 
   bool msaa_2x_attachments_supported() const {
     return msaa_2x_attachments_supported_;
@@ -274,6 +290,9 @@ class VulkanRenderTargetCache final : public RenderTargetCache {
   TraceWriter& trace_writer_;
 
   Path path_ = Path::kHostRenderTargets;
+
+  // Cached SPIR-V version based on device capabilities.
+  unsigned int spirv_version_;
 
   // Accessible in fragment and compute shaders.
   VkDescriptorSetLayout descriptor_set_layout_storage_buffer_ = VK_NULL_HANDLE;
@@ -871,6 +890,7 @@ class VulkanRenderTargetCache final : public RenderTargetCache {
 
   bool depth_unorm24_vulkan_format_supported_ = false;
   bool depth_float24_round_ = false;
+  bool depth_float24_convert_in_pixel_shader_ = false;
 
   bool msaa_2x_attachments_supported_ = false;
   bool msaa_2x_no_attachments_supported_ = false;

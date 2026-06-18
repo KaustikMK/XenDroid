@@ -90,10 +90,12 @@ class ImGuiDrawer : public WindowInputListener, public UIDrawer {
     return GetIO().Fonts->Fonts[1];
   }
 
+  bool HasOpenDialogs() const { return !dialogs_.empty(); }
   void LoadInputSystem(hid::InputSystem* input_system);
   void SetGuideButtonAction(std::function<void(uint8_t)> func);
 
-  bool IsAnyDialogOpen() const { return !dialogs_.empty(); };
+  // Post a callback to be executed after the current frame completes
+  void PostDeferredCallback(std::function<void()> callback);
 
  protected:
   void OnKeyDown(KeyEvent& e) override;
@@ -168,10 +170,17 @@ class ImGuiDrawer : public WindowInputListener, public UIDrawer {
   // anything.
   bool reset_mouse_position_after_next_frame_ = false;
 
+  uint32_t mouse_buttons_held_ = 0;
+
   double frame_time_tick_frequency_;
   uint64_t last_frame_time_ticks_;
 
   bool are_notifications_enabled_ = true;
+
+  // Store original style for proper scaling (ScaleAllSizes is cumulative)
+  ImGuiStyle base_style_;
+  bool base_style_initialized_ = false;
+  float last_combined_scale_ = 0.f;
 };
 
 }  // namespace ui

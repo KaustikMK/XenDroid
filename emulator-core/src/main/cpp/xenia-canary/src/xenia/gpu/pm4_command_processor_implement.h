@@ -5,6 +5,80 @@
 #endif
 
 using namespace xe::gpu::xenos;
+
+// Helper function to get constant type name for debug markers.
+inline const char* GetConstantTypeName(uint32_t type) {
+  switch (type) {
+    case 0:
+      return "ALU";
+    case 1:
+      return "FETCH";
+    case 2:
+      return "BOOL";
+    case 3:
+      return "LOOP";
+    case 4:
+      return "REGISTERS";
+    default:
+      return "UNKNOWN";
+  }
+}
+
+// Helper function to get event name for debug markers.
+inline const char* GetEventName(uint32_t event) {
+  switch (event) {
+    case 0:
+      return "VS_DEALLOC";
+    case 1:
+      return "PS_DEALLOC";
+    case 2:
+      return "VS_DONE_TS";
+    case 3:
+      return "PS_DONE_TS";
+    case 4:
+      return "CACHE_FLUSH_TS";
+    case 5:
+      return "CONTEXT_DONE";
+    case 6:
+      return "CACHE_FLUSH";
+    case 7:
+      return "VIZQUERY_START";
+    case 8:
+      return "VIZQUERY_END";
+    case 9:
+      return "SC_WAIT_WC";
+    case 10:
+      return "MPASS_PS_CP_REFETCH";
+    case 11:
+      return "MPASS_PS_RST_START";
+    case 12:
+      return "MPASS_PS_INCR_START";
+    case 13:
+      return "RST_PIX_CNT";
+    case 14:
+      return "RST_VTX_CNT";
+    case 15:
+      return "TILE_FLUSH";
+    case 20:
+      return "CACHE_FLUSH_AND_INV_TS";
+    case 21:
+      return "ZPASS_DONE";
+    case 22:
+      return "CACHE_FLUSH_AND_INV";
+    case 23:
+      return "PERFCOUNTER_START";
+    case 24:
+      return "PERFCOUNTER_STOP";
+    case 25:
+      return "SCREEN_EXT_INIT";
+    case 26:
+      return "SCREEN_EXT_RPT";
+    case 27:
+      return "VS_FETCH_DONE_TS";
+    default:
+      return "UNKNOWN";
+  }
+}
 void COMMAND_PROCESSOR::ExecuteIndirectBuffer(uint32_t ptr,
                                               uint32_t count) XE_RESTRICT {
   SCOPE_profile_cpu_f("gpu");
@@ -307,7 +381,8 @@ bool COMMAND_PROCESSOR::ExecutePacket() {
   }
   else {
   handle_bad_packet:
-    trace_writer_.WritePacketStart(uint32_t(reader_.read_ptr() - 4), 1);
+    trace_writer_.WritePacketStart(COMMAND_PROCESSOR::GuestReadPtrOffset(-4),
+                                   1);
     trace_writer_.WritePacketEnd();
     return true;
   }
@@ -334,7 +409,8 @@ bool COMMAND_PROCESSOR::ExecutePacketType0(uint32_t packet) XE_RESTRICT {
 
   if (COMMAND_PROCESSOR::GetCurrentRingReadCount() >=
       count * sizeof(uint32_t)) {
-    trace_writer_.WritePacketStart(uint32_t(reader_.read_ptr() - 4), 1 + count);
+    trace_writer_.WritePacketStart(COMMAND_PROCESSOR::GuestReadPtrOffset(-4),
+                                   1 + count);
 
     uint32_t base_index = (packet & 0x7FFF);
     uint32_t write_one_reg = (packet >> 15) & 0x1;
@@ -357,7 +433,7 @@ XE_NOINLINE
 bool COMMAND_PROCESSOR::ExecutePacketType1(uint32_t packet) XE_RESTRICT {
   // Type-1 packet.
   // Contains two registers of data. Type-0 should be more common.
-  trace_writer_.WritePacketStart(uint32_t(reader_.read_ptr() - 4), 3);
+  trace_writer_.WritePacketStart(COMMAND_PROCESSOR::GuestReadPtrOffset(-4), 3);
   uint32_t reg_index_1 = packet & 0x7FF;
   uint32_t reg_index_2 = (packet >> 11) & 0x7FF;
   uint32_t reg_data_1 = reader_.ReadAndSwap<uint32_t>();
@@ -371,7 +447,7 @@ bool COMMAND_PROCESSOR::ExecutePacketType1(uint32_t packet) XE_RESTRICT {
 bool COMMAND_PROCESSOR::ExecutePacketType2(uint32_t packet) XE_RESTRICT {
   // Type-2 packet.
   // No-op. Do nothing.
-  trace_writer_.WritePacketStart(uint32_t(reader_.read_ptr() - 4), 1);
+  trace_writer_.WritePacketStart(COMMAND_PROCESSOR::GuestReadPtrOffset(-4), 1);
   trace_writer_.WritePacketEnd();
   return true;
 }
@@ -399,9 +475,10 @@ bool COMMAND_PROCESSOR::ExecutePacketType3(uint32_t packet) XE_RESTRICT {
       count * sizeof(uint32_t)) {
     // To handle nesting behavior when tracing we special case indirect buffers.
     if (opcode == PM4_INDIRECT_BUFFER) {
-      trace_writer_.WritePacketStart(uint32_t(reader_.read_ptr() - 4), 2);
+      trace_writer_.WritePacketStart(COMMAND_PROCESSOR::GuestReadPtrOffset(-4),
+                                     2);
     } else {
-      trace_writer_.WritePacketStart(uint32_t(reader_.read_ptr() - 4),
+      trace_writer_.WritePacketStart(COMMAND_PROCESSOR::GuestReadPtrOffset(-4),
                                      1 + count);
     }
 
@@ -526,22 +603,38 @@ bool COMMAND_PROCESSOR::ExecutePacketType3(uint32_t packet) XE_RESTRICT {
 
       case PM4_SET_BIN_MASK_LO: {
         uint32_t value = reader_.ReadAndSwap<uint32_t>();
+        if (COMMAND_PROCESSOR::debug_markers_enabled()) {
+          COMMAND_PROCESSOR::InsertDebugMarker("PM4_SET_BIN_MASK_LO: 0x%08X",
+                                               value);
+        }
         bin_mask_ = (bin_mask_ & 0xFFFFFFFF00000000ull) | value;
         result = true;
       } break;
       case PM4_SET_BIN_MASK_HI: {
         uint32_t value = reader_.ReadAndSwap<uint32_t>();
+        if (COMMAND_PROCESSOR::debug_markers_enabled()) {
+          COMMAND_PROCESSOR::InsertDebugMarker("PM4_SET_BIN_MASK_HI: 0x%08X",
+                                               value);
+        }
         bin_mask_ =
             (bin_mask_ & 0xFFFFFFFFull) | (static_cast<uint64_t>(value) << 32);
         result = true;
       } break;
       case PM4_SET_BIN_SELECT_LO: {
         uint32_t value = reader_.ReadAndSwap<uint32_t>();
+        if (COMMAND_PROCESSOR::debug_markers_enabled()) {
+          COMMAND_PROCESSOR::InsertDebugMarker("PM4_SET_BIN_SELECT_LO: 0x%08X",
+                                               value);
+        }
         bin_select_ = (bin_select_ & 0xFFFFFFFF00000000ull) | value;
         result = true;
       } break;
       case PM4_SET_BIN_SELECT_HI: {
         uint32_t value = reader_.ReadAndSwap<uint32_t>();
+        if (COMMAND_PROCESSOR::debug_markers_enabled()) {
+          COMMAND_PROCESSOR::InsertDebugMarker("PM4_SET_BIN_SELECT_HI: 0x%08X",
+                                               value);
+        }
         bin_select_ = (bin_select_ & 0xFFFFFFFFull) |
                       (static_cast<uint64_t>(value) << 32);
         result = true;
@@ -550,6 +643,11 @@ bool COMMAND_PROCESSOR::ExecutePacketType3(uint32_t packet) XE_RESTRICT {
         assert_true(count == 2);
         uint64_t val_hi = reader_.ReadAndSwap<uint32_t>();
         uint64_t val_lo = reader_.ReadAndSwap<uint32_t>();
+        if (COMMAND_PROCESSOR::debug_markers_enabled()) {
+          COMMAND_PROCESSOR::InsertDebugMarker("PM4_SET_BIN_MASK: 0x%08X%08X",
+                                               uint32_t(val_hi),
+                                               uint32_t(val_lo));
+        }
         bin_mask_ = (val_hi << 32) | val_lo;
         result = true;
       } break;
@@ -557,12 +655,21 @@ bool COMMAND_PROCESSOR::ExecutePacketType3(uint32_t packet) XE_RESTRICT {
         assert_true(count == 2);
         uint64_t val_hi = reader_.ReadAndSwap<uint32_t>();
         uint64_t val_lo = reader_.ReadAndSwap<uint32_t>();
+        if (COMMAND_PROCESSOR::debug_markers_enabled()) {
+          COMMAND_PROCESSOR::InsertDebugMarker("PM4_SET_BIN_SELECT: 0x%08X%08X",
+                                               uint32_t(val_hi),
+                                               uint32_t(val_lo));
+        }
         bin_select_ = (val_hi << 32) | val_lo;
         result = true;
       } break;
       case PM4_CONTEXT_UPDATE: {
         assert_true(count == 1);
         uint32_t value = reader_.ReadAndSwap<uint32_t>();
+        if (COMMAND_PROCESSOR::debug_markers_enabled()) {
+          COMMAND_PROCESSOR::InsertDebugMarker("PM4_CONTEXT_UPDATE: 0x%08X",
+                                               value);
+        }
         XELOGGPU("GPU context update = {:08X}", value);
         assert_true(value == 0);
         result = true;
@@ -572,6 +679,10 @@ bool COMMAND_PROCESSOR::ExecutePacketType3(uint32_t packet) XE_RESTRICT {
         // This opcode is used by 5454084E while going / being ingame.
         assert_true(count == 1);
         uint32_t value = reader_.ReadAndSwap<uint32_t>();
+        if (COMMAND_PROCESSOR::debug_markers_enabled()) {
+          COMMAND_PROCESSOR::InsertDebugMarker("PM4_WAIT_FOR_IDLE: 0x%08X",
+                                               value);
+        }
         XELOGGPU("GPU wait for idle = {:08X}", value);
         result = true;
         break;
@@ -628,6 +739,9 @@ XE_NOINLINE
 bool COMMAND_PROCESSOR::ExecutePacketType3_ME_INIT(uint32_t packet,
                                                    uint32_t count) XE_RESTRICT {
   // initialize CP's micro-engine
+  if (COMMAND_PROCESSOR::debug_markers_enabled()) {
+    COMMAND_PROCESSOR::InsertDebugMarker("PM4_ME_INIT: %u dwords", count);
+  }
   me_bin_.resize(count);
   for (uint32_t i = 0; i < count; i++) {
     me_bin_[i] = reader_.ReadAndSwap<uint32_t>();
@@ -649,9 +763,10 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_INTERRUPT(
 
   // generate interrupt from the command stream
   uint32_t cpu_mask = reader_.ReadAndSwap<uint32_t>();
-  static std::atomic<uint32_t> interrupt_log_budget{64};
-  if (interrupt_log_budget.load() > 0 && interrupt_log_budget-- > 0) {
-    XELOGI("CP: PM4_INTERRUPT cpu_mask={:02X}", cpu_mask);
+
+  if (COMMAND_PROCESSOR::debug_markers_enabled()) {
+    COMMAND_PROCESSOR::InsertDebugMarker("PM4_INTERRUPT: cpu_mask=0x%02X",
+                                         cpu_mask);
   }
 
   for (int n = 0; n < 6; n++) {
@@ -681,12 +796,18 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_XE_SWAP(uint32_t packet,
   uint32_t frontbuffer_height = reader_.ReadAndSwap<uint32_t>();
   reader_.AdvanceRead((count - 4) * sizeof(uint32_t));
 
-  const uint64_t fs_swap_begin = COMMAND_PROCESSOR::FrameStatsBegin();
+  if (COMMAND_PROCESSOR::debug_markers_enabled()) {
+    COMMAND_PROCESSOR::InsertDebugMarker("PM4_XE_SWAP: 0x%08X %ux%u",
+                                         frontbuffer_ptr, frontbuffer_width,
+                                         frontbuffer_height);
+  }
+
   COMMAND_PROCESSOR::IssueSwap(frontbuffer_ptr, frontbuffer_width,
                                frontbuffer_height);
-  COMMAND_PROCESSOR::FrameStatsEndSwap(fs_swap_begin);
 
-  ++counter_;
+  // Apply host frame rate limiting (separate from guest vblank timing)
+  COMMAND_PROCESSOR::ThrottlePresentation();
+
   return true;
 }
 
@@ -697,6 +818,12 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_INDIRECT_BUFFER(
   uint32_t list_length = reader_.ReadAndSwap<uint32_t>();
   assert_zero(list_length & ~0xFFFFF);
   list_length &= 0xFFFFF;
+
+  if (COMMAND_PROCESSOR::debug_markers_enabled()) {
+    COMMAND_PROCESSOR::InsertDebugMarker("PM4_INDIRECT_BUFFER: 0x%08X (%u)",
+                                         list_ptr, list_length);
+  }
+
   COMMAND_PROCESSOR::ExecuteIndirectBuffer(GpuToCpu(list_ptr), list_length);
   return true;
 }
@@ -731,6 +858,12 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_WAIT_REG_MEM(
   uint32_t wait = reader_.ReadAndSwap<uint32_t>();
 
   bool is_memory = (wait_info & 0x10) != 0;
+
+  if (COMMAND_PROCESSOR::debug_markers_enabled()) {
+    COMMAND_PROCESSOR::InsertDebugMarker(
+        "PM4_WAIT_REG_MEM: %s 0x%08X ref=0x%08X mask=0x%08X",
+        is_memory ? "mem" : "reg", poll_reg_addr, ref, mask);
+  }
   assert_true(is_memory || poll_reg_addr < RegisterFile::kRegisterCount);
   const volatile uint32_t& value_ref =
       is_memory ? *reinterpret_cast<uint32_t*>(memory_->TranslatePhysical(
@@ -755,22 +888,29 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_WAIT_REG_MEM(
     matched = MatchValueAndRef(value & mask, ref, wait_info);
 
     if (!matched) {
-      // Wait.
+      // Wait using the duration specified by the guest.
       if (wait >= 0x100) {
         PrepareForWait();
-        if (!cvars::vsync) {
-          // User wants it fast and dangerous.
-          // do nothing
-        } else {
+        if (cvars::guest_display_refresh_cap) {
+          // Fixed rate vblank mode - sleep since counter updates at 50/60Hz
+#if XE_PLATFORM_WIN32
+          // Accurate timing: 90% sleep, 10% spin
+          const uint64_t wait_ms = wait / 0x100;
+          const uint64_t sleep_ns =
+              static_cast<uint64_t>(wait_ms * 1000000 * 0.90);
+          xe::threading::NanoSleep(sleep_ns);
+#else
           xe::threading::Sleep(std::chrono::milliseconds(wait / 0x100));
-          ReturnFromWait();
+#endif
         }
+        // Unlimited vblank mode (guest_display_refresh_cap=false) - spin since
+        // counter updates rapidly
+        ReturnFromWait();
 
         if (!worker_running_) {
           // Short-circuited exit.
           return false;
         }
-      } else {
       }
     }
   } while (!matched);
@@ -785,6 +925,13 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_REG_RMW(uint32_t packet,
   uint32_t rmw_info = reader_.ReadAndSwap<uint32_t>();
   uint32_t and_mask = reader_.ReadAndSwap<uint32_t>();
   uint32_t or_mask = reader_.ReadAndSwap<uint32_t>();
+
+  if (COMMAND_PROCESSOR::debug_markers_enabled()) {
+    COMMAND_PROCESSOR::InsertDebugMarker(
+        "PM4_REG_RMW: reg[0x%04X] &=0x%08X |=0x%08X", rmw_info & 0x1FFF,
+        and_mask, or_mask);
+  }
+
   uint32_t value = register_file_->values[rmw_info & 0x1FFF];
   if ((rmw_info >> 31) & 0x1) {
     // & reg
@@ -812,6 +959,11 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_REG_TO_MEM(
   uint32_t reg_addr = reader_.ReadAndSwap<uint32_t>();
   uint32_t mem_addr = reader_.ReadAndSwap<uint32_t>();
 
+  if (COMMAND_PROCESSOR::debug_markers_enabled()) {
+    COMMAND_PROCESSOR::InsertDebugMarker(
+        "PM4_REG_TO_MEM: reg[0x%04X] -> 0x%08X", reg_addr, mem_addr & ~0x3);
+  }
+
   uint32_t reg_val;
 
   assert_true(reg_addr < RegisterFile::kRegisterCount);
@@ -829,6 +981,12 @@ XE_NOINLINE
 bool COMMAND_PROCESSOR::ExecutePacketType3_MEM_WRITE(
     uint32_t packet, uint32_t count) XE_RESTRICT {
   uint32_t write_addr = reader_.ReadAndSwap<uint32_t>();
+
+  if (COMMAND_PROCESSOR::debug_markers_enabled()) {
+    COMMAND_PROCESSOR::InsertDebugMarker("PM4_MEM_WRITE: 0x%08X (%u dwords)",
+                                         write_addr & ~0x3, count - 1);
+  }
+
   for (uint32_t i = 0; i < count - 1; i++) {
     uint32_t write_data = reader_.ReadAndSwap<uint32_t>();
 
@@ -852,6 +1010,16 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_COND_WRITE(
   uint32_t mask = reader_.ReadAndSwap<uint32_t>();
   uint32_t write_reg_addr = reader_.ReadAndSwap<uint32_t>();
   uint32_t write_data = reader_.ReadAndSwap<uint32_t>();
+
+  if (COMMAND_PROCESSOR::debug_markers_enabled()) {
+    bool poll_memory = (wait_info & 0x10) != 0;
+    bool write_memory = (wait_info & 0x100) != 0;
+    COMMAND_PROCESSOR::InsertDebugMarker(
+        "PM4_COND_WRITE: poll %s 0x%08X -> write %s 0x%08X",
+        poll_memory ? "mem" : "reg", poll_reg_addr,
+        write_memory ? "mem" : "reg", write_reg_addr);
+  }
+
   uint32_t value;
   if (wait_info & 0x10) {
     // Memory.
@@ -891,9 +1059,15 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_EVENT_WRITE(
     uint32_t packet, uint32_t count) XE_RESTRICT {
   // generate an event that creates a write to memory when completed
   uint32_t initiator = reader_.ReadAndSwap<uint32_t>();
-  // Writeback initiator.
+  uint32_t event_type = initiator & 0x3f;
 
-  COMMAND_PROCESSOR::WriteEventInitiator(initiator & 0x3f);
+  if (COMMAND_PROCESSOR::debug_markers_enabled()) {
+    COMMAND_PROCESSOR::InsertDebugMarker("PM4_EVENT_WRITE: %s",
+                                         GetEventName(event_type));
+  }
+
+  // Writeback initiator.
+  COMMAND_PROCESSOR::WriteEventInitiator(event_type);
   if (count == 1) {
     // Just an event flag? Where does this write?
   } else if (count == 3) {
@@ -936,8 +1110,15 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_EVENT_WRITE_SHD(
   uint32_t initiator = reader_.ReadAndSwap<uint32_t>();
   uint32_t address = reader_.ReadAndSwap<uint32_t>();
   uint32_t value = reader_.ReadAndSwap<uint32_t>();
+  uint32_t event_type = initiator & 0x3F;
+
+  if (COMMAND_PROCESSOR::debug_markers_enabled()) {
+    COMMAND_PROCESSOR::InsertDebugMarker("PM4_EVENT_WRITE_SHD: %s @ 0x%08X",
+                                         GetEventName(event_type), address);
+  }
+
   // Writeback initiator.
-  COMMAND_PROCESSOR::WriteEventInitiator(initiator & 0x3F);
+  COMMAND_PROCESSOR::WriteEventInitiator(event_type);
   uint32_t data_value;
   if ((initiator >> 31) & 0x1) {
     // Write counter (GPU vblank counter?).
@@ -972,8 +1153,15 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_EVENT_WRITE_EXT(
   // generate a screen extent event
   uint32_t initiator = reader_.ReadAndSwap<uint32_t>();
   uint32_t address = reader_.ReadAndSwap<uint32_t>();
+  uint32_t event_type = initiator & 0x3F;
+
+  if (COMMAND_PROCESSOR::debug_markers_enabled()) {
+    COMMAND_PROCESSOR::InsertDebugMarker("PM4_EVENT_WRITE_EXT: %s @ 0x%08X",
+                                         GetEventName(event_type), address);
+  }
+
   // Writeback initiator.
-  COMMAND_PROCESSOR::WriteEventInitiator(initiator & 0x3F);
+  COMMAND_PROCESSOR::WriteEventInitiator(event_type);
   auto endianness = static_cast<xenos::Endian>(address & 0x3);
   address &= ~0x3;
 
@@ -1004,12 +1192,24 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_EVENT_WRITE_EXT(
 }
 
 XE_NOINLINE
+// This is not a simple BEGIN/END around a host occlusion query. One slot can
+// span multiple submissions, be force closed by a colliding BEGIN, or get an
+// orphaned END with no matching BEGIN. Hardware only uses a single register
+// (RB_SAMPLE_COUNT_ADDR) for the target address, no explicit handle passing.
+// Debugging RB_SAMPLE_COUNT_CTL has not yet revealed any helpful bits.
 bool COMMAND_PROCESSOR::ExecutePacketType3_EVENT_WRITE_ZPD(
     uint32_t packet, uint32_t count) XE_RESTRICT {
   assert_true(count == 1);
   uint32_t initiator = reader_.ReadAndSwap<uint32_t>();
+  uint32_t event_type = initiator & 0x3F;
+
+  if (COMMAND_PROCESSOR::debug_markers_enabled()) {
+    COMMAND_PROCESSOR::InsertDebugMarker("PM4_EVENT_WRITE_ZPD: %s",
+                                         GetEventName(event_type));
+  }
+
   // Writeback initiator.
-  COMMAND_PROCESSOR::WriteEventInitiator(initiator & 0x3F);
+  COMMAND_PROCESSOR::WriteEventInitiator(event_type);
 
   uint32_t report_address =
       register_file_->values[XE_GPU_REG_RB_SAMPLE_COUNT_ADDR];
@@ -1030,6 +1230,19 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_EVENT_WRITE_ZPD(
   bool guest_marks_end = report && XenosZPDReport::HasPendingSentinel(report);
   bool logical_active = zpd_active_segment_.logical_active;
 
+  if (cvars::occlusion_query_log && report) {
+    XELOGI(
+        "ZPD: EVENT_WRITE_ZPD fields event={} report_address=0x{:08X} "
+        "record=0x{:08X} Total=({:08X},{:08X}) ZFail=({:08X},{:08X}) "
+        "ZPass=({:08X},{:08X}) Stencil=({:08X},{:08X}) pending={}",
+        GetEventName(event_type), report_address, report_record_base,
+        uint32_t(report->Total_A), uint32_t(report->Total_B),
+        uint32_t(report->ZFail_A), uint32_t(report->ZFail_B),
+        uint32_t(report->ZPass_A), uint32_t(report->ZPass_B),
+        uint32_t(report->StencilFail_A), uint32_t(report->StencilFail_B),
+        guest_marks_end);
+  }
+
   // QueryBatch fake fallback, which ignores record layout and just returns an
   // incrementing sample count on each event.
   if (cvars::occlusion_query_querybatch_range > 0) {
@@ -1042,7 +1255,8 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_EVENT_WRITE_ZPD(
     return true;
   }
 
-  if (GetZPDMode() != ZPDMode::kFake && !zpd_force_fake_fallback_) {
+  if (COMMAND_PROCESSOR::GetZPDMode() != ZPDMode::kFake &&
+      !zpd_force_fake_fallback_) {
     if (logical_active && is_end_record) {
       COMMAND_PROCESSOR::EndZPDReport(report_address, false);
       return true;
@@ -1060,7 +1274,8 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_EVENT_WRITE_ZPD(
       // No logical report is active for this slot, so this is likely an
       // orphaned END. In fast mode, replay the last cached delta so polling
       // code does not sit on the sentinel forever.
-      if (GetZPDMode() == ZPDMode::kFast || GetZPDMode() == ZPDMode::kFastAlt) {
+      if (COMMAND_PROCESSOR::GetZPDMode() == ZPDMode::kFast ||
+          COMMAND_PROCESSOR::GetZPDMode() == ZPDMode::kFastAlt) {
         uint32_t cached_delta = 1;
         auto cache_it = fast_zpd_report_cached_values_.find(report_record_base);
         if (cache_it != fast_zpd_report_cached_values_.end()) {
@@ -1190,13 +1405,23 @@ bool COMMAND_PROCESSOR::ExecutePacketType3Draw(
       // shader has memexport.
       // TODO(Triang3l || JoelLinn): Handle this properly in the render
       // backends.
-      const uint64_t fs_draw_begin = COMMAND_PROCESSOR::FrameStatsBegin();
+
+      // Push PM4 command marker as parent for IssueDraw/IssueCopy operations.
+      if (COMMAND_PROCESSOR::debug_markers_enabled()) {
+        COMMAND_PROCESSOR::PushDebugMarker("%s", opcode_name);
+      }
+
       draw_succeeded = COMMAND_PROCESSOR::IssueDraw(
           vgt_draw_initiator.prim_type, vgt_draw_initiator.num_indices,
           is_indexed ? &index_buffer_info : nullptr,
           xenos::IsMajorModeExplicit(vgt_draw_initiator.major_mode,
                                      vgt_draw_initiator.prim_type));
-      COMMAND_PROCESSOR::FrameStatsEndDraw(fs_draw_begin);
+
+      // Pop PM4 command marker.
+      if (COMMAND_PROCESSOR::debug_markers_enabled()) {
+        COMMAND_PROCESSOR::PopDebugMarker();
+      }
+
       if (!draw_succeeded) {
         XELOGE("{}({}, {}, {}): Failed in backend", opcode_name,
                vgt_draw_initiator.num_indices,
@@ -1248,6 +1473,13 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_SET_CONSTANT(
   uint32_t index = offset_type & 0x7FF;
   uint32_t type = (offset_type >> 16) & 0xFF;
   uint32_t countm1 = count - 1;
+
+  if (COMMAND_PROCESSOR::debug_markers_enabled()) {
+    COMMAND_PROCESSOR::InsertDebugMarker("PM4_SET_CONSTANT: %s[%u] x%u",
+                                         GetConstantTypeName(type), index,
+                                         countm1);
+  }
+
   switch (type) {
     case 0:  // ALU
       // index += 0x4000;
@@ -1288,6 +1520,11 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_SET_CONSTANT2(
   uint32_t index = offset_type & 0xFFFF;
   uint32_t countm1 = count - 1;
 
+  if (COMMAND_PROCESSOR::debug_markers_enabled()) {
+    COMMAND_PROCESSOR::InsertDebugMarker("PM4_SET_CONSTANT2: reg[0x%04X] x%u",
+                                         index, countm1);
+  }
+
   COMMAND_PROCESSOR::WriteRegisterRangeFromRing(&reader_, index, countm1);
 
   return true;
@@ -1303,6 +1540,12 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_LOAD_ALU_CONSTANT(
   uint32_t size_dwords = reader_.ReadAndSwap<uint32_t>();
   size_dwords &= 0xFFF;
   uint32_t type = (offset_type >> 16) & 0xFF;
+
+  if (COMMAND_PROCESSOR::debug_markers_enabled()) {
+    COMMAND_PROCESSOR::InsertDebugMarker(
+        "PM4_LOAD_ALU_CONSTANT: %s[%u] x%u @ 0x%08X", GetConstantTypeName(type),
+        index, size_dwords, address);
+  }
 
   auto xlat_address = (uint32_t*)memory_->TranslatePhysical(address);
 
@@ -1351,6 +1594,12 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_SET_SHADER_CONSTANTS(
   uint32_t offset_type = reader_.ReadAndSwap<uint32_t>();
   uint32_t index = offset_type & 0xFFFF;
   uint32_t countm1 = count - 1;
+
+  if (COMMAND_PROCESSOR::debug_markers_enabled()) {
+    COMMAND_PROCESSOR::InsertDebugMarker(
+        "PM4_SET_SHADER_CONSTANTS: reg[0x%04X] x%u", index, countm1);
+  }
+
   COMMAND_PROCESSOR::WriteRegisterRangeFromRing(&reader_, index, countm1);
 
   return true;
@@ -1368,10 +1617,17 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_IM_LOAD(uint32_t packet,
   uint32_t start = start_size >> 16;
   uint32_t size_dwords = start_size & 0xFFFF;  // dwords
   assert_true(start == 0);
+
+  if (COMMAND_PROCESSOR::debug_markers_enabled()) {
+    COMMAND_PROCESSOR::InsertDebugMarker(
+        "PM4_IM_LOAD: %s @ 0x%08X (%u dwords)",
+        shader_type == xenos::ShaderType::kVertex ? "VS" : "PS", addr,
+        size_dwords);
+  }
+
   trace_writer_.WriteMemoryRead(CpuToGpu(addr), size_dwords * 4);
   auto shader = COMMAND_PROCESSOR::LoadShader(
-      shader_type, addr, memory_->TranslatePhysical<uint32_t*>(addr),
-      size_dwords);
+      shader_type, memory_->TranslatePhysical<uint32_t*>(addr), size_dwords);
   switch (shader_type) {
     case xenos::ShaderType::kVertex:
       active_vertex_shader_ = shader;
@@ -1400,9 +1656,15 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_IM_LOAD_IMMEDIATE(
   assert_true(start == 0);
   assert_true(reader_.read_count() >= size_dwords * 4);
   assert_true(count - 2 >= size_dwords);
+
+  if (COMMAND_PROCESSOR::debug_markers_enabled()) {
+    COMMAND_PROCESSOR::InsertDebugMarker(
+        "PM4_IM_LOAD_IMMEDIATE: %s (%u dwords)",
+        shader_type == xenos::ShaderType::kVertex ? "VS" : "PS", size_dwords);
+  }
   auto shader = COMMAND_PROCESSOR::LoadShader(
-      shader_type, uint32_t(reader_.read_ptr()),
-      reinterpret_cast<uint32_t*>(reader_.read_ptr()), size_dwords);
+      shader_type, reinterpret_cast<uint32_t*>(reader_.read_ptr()),
+      size_dwords);
   switch (shader_type) {
     case xenos::ShaderType::kVertex:
       active_vertex_shader_ = shader;
@@ -1425,7 +1687,13 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_IM_LOAD_IMMEDIATE(
 bool COMMAND_PROCESSOR::ExecutePacketType3_INVALIDATE_STATE(
     uint32_t packet, uint32_t count) XE_RESTRICT {
   // selective invalidation of state pointers
-  /*uint32_t mask =*/reader_.ReadAndSwap<uint32_t>();
+  uint32_t mask = reader_.ReadAndSwap<uint32_t>();
+
+  if (COMMAND_PROCESSOR::debug_markers_enabled()) {
+    COMMAND_PROCESSOR::InsertDebugMarker("PM4_INVALIDATE_STATE: mask=0x%08X",
+                                         mask);
+  }
+
   // driver_->InvalidateState(mask);
   return true;
 }
@@ -1440,6 +1708,12 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_VIZ_QUERY(
 
   uint32_t id = dword0 & 0x3F;
   uint32_t end = dword0 & 0x100;
+
+  if (COMMAND_PROCESSOR::debug_markers_enabled()) {
+    COMMAND_PROCESSOR::InsertDebugMarker("PM4_VIZ_QUERY: %s id=%u",
+                                         end ? "end" : "begin", id);
+  }
+
   if (!end) {
     // begin a new viz query @ id
     // On hardware this clears the internal state of the scan converter (which

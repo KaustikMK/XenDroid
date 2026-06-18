@@ -27,8 +27,9 @@ namespace vulkan {
 
 class VulkanInstance {
  public:
+  // validation_level: 0=off, 1=standard layer, 2=+synchronization validation.
   static std::unique_ptr<VulkanInstance> Create(bool with_surface,
-                                                bool try_enable_validation);
+                                                int validation_level);
 
   VulkanInstance(const VulkanInstance&) = delete;
   VulkanInstance& operator=(const VulkanInstance&) = delete;
@@ -65,9 +66,17 @@ class VulkanInstance {
 #ifdef VK_USE_PLATFORM_XCB_KHR
 #include "xenia/ui/vulkan/functions/instance_khr_xcb_surface.inc"
 #endif
+    // VK_KHR_wayland_surface (#7)
+#ifdef VK_USE_PLATFORM_WAYLAND_KHR
+#include "xenia/ui/vulkan/functions/instance_khr_wayland_surface.inc"
+#endif
     // VK_KHR_android_surface (#9)
 #ifdef VK_USE_PLATFORM_ANDROID_KHR
 #include "xenia/ui/vulkan/functions/instance_khr_android_surface.inc"
+#endif
+    // VK_EXT_metal_surface (#218)
+#ifdef VK_USE_PLATFORM_METAL_EXT
+#include "xenia/ui/vulkan/functions/instance_ext_metal_surface.inc"
 #endif
     // VK_KHR_win32_surface (#10)
 #ifdef VK_USE_PLATFORM_WIN32_KHR
@@ -92,13 +101,20 @@ class VulkanInstance {
 #ifdef VK_USE_PLATFORM_XCB_KHR
     bool ext_KHR_xcb_surface = false;  // #6
 #endif
+#ifdef VK_USE_PLATFORM_WAYLAND_KHR
+    bool ext_KHR_wayland_surface = false;  // #7
+#endif
 #ifdef VK_USE_PLATFORM_ANDROID_KHR
     bool ext_KHR_android_surface = false;  // #9
+#endif
+#ifdef VK_USE_PLATFORM_METAL_EXT
+    bool ext_EXT_metal_surface = false;  // #218
 #endif
 #ifdef VK_USE_PLATFORM_WIN32_KHR
     bool ext_KHR_win32_surface = false;  // #10
 #endif
     bool ext_1_1_KHR_get_physical_device_properties2 = false;  // #60
+    bool ext_KHR_get_surface_capabilities2 = false;            // #120
     bool ext_EXT_debug_utils = false;                          // #129
     bool ext_KHR_portability_enumeration = false;              // #395
   };

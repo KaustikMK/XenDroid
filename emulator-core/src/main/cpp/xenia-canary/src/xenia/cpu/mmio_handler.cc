@@ -264,6 +264,8 @@ bool MMIOHandler::TryDecodeLoadStore(const uint8_t* p,
 #elif XE_ARCH_ARM64
   decoded_out.length = sizeof(uint32_t);
   uint32_t instruction = *reinterpret_cast<const uint32_t*>(p);
+  constexpr uint32_t kArm64RevWMask = UINT32_C(0xFFFFFC00);
+  constexpr uint32_t kArm64RevWFixed = UINT32_C(0x5AC00800);
 
   // Literal loading (PC-relative) is not handled.
 
@@ -307,6 +309,21 @@ bool MMIOHandler::TryDecodeLoadStore(const uint8_t* p,
     // Zero constant rather than a register read.
     decoded_out.is_constant = true;
     decoded_out.constant = 0;
+  }
+  if (decoded_out.is_load &&
+      decoded_out.value_reg >= DecodedLoadStore::kArm64ValueRegX0 &&
+      decoded_out.value_reg <= (DecodedLoadStore::kArm64ValueRegX0 + 30)) {
+    // Detect LDR + REV Wt, Wt so the handler doesn't byte-swap (REV will run).
+    uint32_t next_instruction =
+        *reinterpret_cast<const uint32_t*>(p + sizeof(uint32_t));
+    uint8_t rev_rd = next_instruction & 31;
+    uint8_t rev_rn = (next_instruction >> 5) & 31;
+    uint8_t value_reg =
+        decoded_out.value_reg - DecodedLoadStore::kArm64ValueRegX0;
+    if ((next_instruction & kArm64RevWMask) == kArm64RevWFixed &&
+        rev_rd == value_reg && rev_rn == value_reg) {
+      decoded_out.byte_swap = true;
+    }
   }
 
   decoded_out.mem_has_base = true;
@@ -440,15 +457,15 @@ bool MMIOHandler::ExceptionCallback(Exception* ex) {
     // clears the watch we just hit).
     // Do this under the lock so we don't introduce another race condition.
     auto lock = global_critical_region_.Acquire();
-#if XE_PLATFORM_LINUX
-    // On Linux, exception handling runs inside a signal handler (SIGSEGV).
-    // QueryProtect uses std::ifstream to read /proc/self/maps, which is NOT
-    // async-signal-safe and can corrupt heap state or deadlock if the signal
-    // interrupted malloc or another non-reentrant function.
-    // Instead, skip the race-condition check and go straight to the callback.
-    // The callback will handle it correctly — if watches were already cleared,
-    // TriggerCallbacks will find no watches and the page will be unprotected
-    // by the time the instruction retries.
+#if XE_PLATFORM_LINUX || XE_PLATFORM_MAC
+    // POSIX exception handling runs inside a signal handler (SIGSEGV / SIGBUS).
+    // QueryProtect is not async-signal-safe on either platform: Linux reads
+    // /proc/self/maps via std::ifstream, and macOS issues a mach_msg via
+    // mach_vm_region. Either can deadlock or corrupt state if the signal
+    // interrupted malloc, the C++ runtime, or another mach reply-port use.
+    // Skip the race-condition check and go straight to the callback — if
+    // watches were already cleared by another thread, TriggerCallbacks finds
+    // no watches and the page is unprotected by the time we retry.
     if (access_violation_callback_) {
       return access_violation_callback_(std::move(lock),
                                         access_violation_callback_context_,

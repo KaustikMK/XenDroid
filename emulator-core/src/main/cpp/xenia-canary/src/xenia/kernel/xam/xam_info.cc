@@ -7,11 +7,15 @@
  ******************************************************************************
  */
 
+#include <thread>
+
 #include "xenia/base/clock.h"
 #include "xenia/base/cvar.h"
 #include "xenia/base/logging.h"
 #include "xenia/base/string_util.h"
-#include "xenia/config.h"
+#include "xenia/base/threading.h"
+#include "xenia/base/utf8.h"
+#include "xenia/emulator.h"
 #include "xenia/kernel/kernel_state.h"
 #include "xenia/kernel/title_id_utils.h"
 #include "xenia/kernel/user_module.h"
@@ -25,9 +29,6 @@
 #include "xenia/kernel/xconfig.h"
 #include "xenia/kernel/xenumerator.h"
 #include "xenia/kernel/xthread.h"
-#include "xenia/ui/imgui_dialog.h"
-#include "xenia/ui/imgui_drawer.h"
-#include "xenia/ui/window.h"
 #include "xenia/ui/windowed_app_context.h"
 #include "xenia/xbox.h"
 
@@ -48,6 +49,11 @@ DEFINE_int32(avpack, 8,
              "Video");
 DEFINE_bool(staging_mode, 0,
             "Enables preview mode in dashboards to render debug information.",
+            "Kernel");
+
+DEFINE_bool(in_process_title_relaunch, true,
+            "Handle title-to-title launches in-process via full "
+            "Shutdown/Setup cycle instead of spawning a new emulator process.",
             "Kernel");
 
 namespace xe {
@@ -292,55 +298,94 @@ void XamLoaderLaunchTitle_entry(lpstring_t raw_name_ptr, dword_t flags) {
   auto& loader_data = xam->loader_data();
   loader_data.launch_flags = flags;
 
-  std::string title;
-  std::string message;
-
-  // Translate the launch path to a full path.
-  if (raw_name_ptr && !raw_name_ptr.value().empty()) {
-    loader_data.launch_path = xe::path_to_utf8(raw_name_ptr.value());
+  // A null or empty path means exit to dashboard.
+  const std::string path = raw_name_ptr ? raw_name_ptr.value() : std::string();
+  if (!path.empty()) {
     loader_data.launch_data_present = true;
-    xam->SaveLoaderData();
-    title = "Title was restarted";
-    message =
-        "Title closed with new launch data. \nPlease restart Xenia. "
-        "Game will be loaded automatically.";
-  } else {
-    title = "Title terminated";
-    message = "Game requested exit to dashboard.";
-    assert_always("Game requested exit to dashboard via XamLoaderLaunchTitle");
+
+    std::filesystem::path host_path = loader_data.host_path;
+    std::string launch_path = xe::path_to_utf8(path);
+
+    XELOGI("XamLoaderLaunchTitle: original host_path={}, launch_path={}",
+           loader_data.host_path, launch_path);
+
+    // Remove common guest path prefixes (case-insensitive since Xbox
+    // paths are case-insensitive, games may pass e.g. "GAME:\")
+    auto remove_prefix = [&launch_path](std::string_view prefix) {
+      if (xe::utf8::starts_with_case(launch_path, prefix)) {
+        launch_path = launch_path.substr(prefix.length());
+      }
+    };
+    remove_prefix("game:\\");
+    remove_prefix("d:\\");
+
+    if (host_path.extension() == ".xex") {
+      host_path.remove_filename();
+      host_path = host_path / launch_path;
+      launch_path = "";
+    }
+
+    XELOGI("XamLoaderLaunchTitle: normalized host_path={}, launch_path={}",
+           xe::path_to_utf8(host_path), launch_path);
+
+    // Handle title launch in-process via full Shutdown/Setup cycle. Disabled
+    // on macOS — pthread_cancel there doesn't run C++ destructors, so
+    // force-terminated guest threads leak locks and deadlock teardown; spawn a
+    // fresh process instead.
+#if !XE_PLATFORM_MAC
+    if (cvars::in_process_title_relaunch) {
+      auto emulator = kernel_state()->emulator();
+
+      XELOGI("XamLoaderLaunchTitle: in-process relaunch to '{}'",
+             xe::path_to_utf8(host_path));
+
+      auto new_host_path = xe::path_to_utf8(host_path);
+      auto new_launch_module = launch_path;
+      auto new_flags = loader_data.launch_flags;
+      auto new_data = loader_data.launch_data;
+      auto current_thread = XThread::GetCurrentThread();
+
+      // Must dispatch from a non-guest thread — RelaunchTitle terminates
+      // all guest threads including the caller.
+      std::thread([emulator, new_host_path = std::move(new_host_path),
+                   new_launch_module = std::move(new_launch_module), new_flags,
+                   new_data = std::move(new_data)]() mutable {
+        emulator->RelaunchTitle(new_host_path, new_launch_module, new_flags,
+                                std::move(new_data));
+      }).detach();
+
+      // Stop running guest code; RelaunchTitle terminates us. Suspend can
+      // return on POSIX, so park rather than fall through to spawn.
+      current_thread->Suspend(nullptr);
+      while (true) {
+        xe::threading::NanoSleep(int64_t(1'000'000'000));
+      }
+    }
+#endif  // !XE_PLATFORM_MAC
+
+    std::string launch_data_hex;
+    for (uint8_t byte : loader_data.launch_data) {
+      launch_data_hex += fmt::format("{:02X}", byte);
+    }
+
+    auto on_launch_new_title =
+        kernel_state()->emulator()->on_launch_new_title();
+    if (on_launch_new_title) {
+      XELOGI("XamLoaderLaunchTitle: spawning new title process");
+      on_launch_new_title(xe::path_to_utf8(host_path), launch_path,
+                          loader_data.launch_flags, launch_data_hex);
+    }
+
+    XELOGI("XamLoaderLaunchTitle: terminating to launch new title");
+    kernel_state()->TerminateTitle();  // Does not return.
   }
 
-  auto display_window = kernel_state()->emulator()->display_window();
-  auto imgui_drawer = kernel_state()->emulator()->imgui_drawer();
-
-  if (display_window && imgui_drawer) {
-    display_window->app_context().CallInUIThreadSynchronous(
-        [imgui_drawer, title, message]() {
-          auto dialog = xe::ui::ImGuiDialog::ShowMessageBox(
-              imgui_drawer, title.c_str(), message.c_str());
-
-          std::thread([dialog]() {
-            while (!dialog->IsClosing()) {
-              std::this_thread::yield();
-            }
-
-            config::SaveConfig();
-            xe::FlushLog();
-
-            std::quick_exit(0);
-          }).detach();
-        });
-  }
-
-  // This function does not return.
-  kernel_state()->TerminateTitle();
+  XELOGI("XamLoaderLaunchTitle: game requested exit to dashboard");
+  kernel_state()->ExitToDashboard();
 }
 DECLARE_XAM_EXPORT1(XamLoaderLaunchTitle, kNone, kSketchy);
 
-void XamLoaderTerminateTitle_entry() {
-  // This function does not return.
-  kernel_state()->TerminateTitle();
-}
+void XamLoaderTerminateTitle_entry() { kernel_state()->ExitToDashboard(); }
 DECLARE_XAM_EXPORT1(XamLoaderTerminateTitle, kNone, kSketchy);
 
 uint32_t XamAllocImpl(uint32_t flags, uint32_t size,
@@ -738,7 +783,6 @@ dword_result_t XamFirstRunExperienceShouldRun_entry() { return 0; }
 DECLARE_XAM_EXPORT1(XamFirstRunExperienceShouldRun, kNone, kStub);
 
 dword_result_t QueryPerformanceFrequency_entry(lpqword_t query) {
-  // Copied from KeQueryPerformanceFrequency
   uint64_t result = Clock::guest_tick_frequency();
   *query = static_cast<uint32_t>(result);
   return 1;
@@ -748,14 +792,8 @@ DECLARE_XAM_EXPORT1(QueryPerformanceFrequency, kNone, kImplemented);
 void GetSystemTimeAsFileTime_entry(lpqword_t time_ptr,
                                    const ppc_context_t& ctx) {
   if (time_ptr) {
-    // Copied from KeQuerySystemTime
-    // update the timestamp bundle to the time we queried.
-    // this is a race, but i don't of any sw that requires it, it just seems
-    // like we ought to keep it consistent with ketimestampbundle in case
-    // something uses this function, but also reads it directly
     uint32_t ts_bundle = ctx->kernel_state->GetKeTimestampBundle();
     uint64_t time = Clock::QueryGuestSystemTime();
-    // todo: cmpxchg?
     ctx->TranslateVirtual<X_TIME_STAMP_BUNDLE*>(ts_bundle)->system_time =
         xe::byte_swap(time);
     *time_ptr = time;

@@ -12,6 +12,7 @@
 
 #include "xenia/apu/audio_driver.h"
 #include "xenia/apu/audio_system.h"
+#include "xenia/apu/xmp_state.h"
 #include "xenia/kernel/xam/apps/xmp_app.h"
 
 namespace xe {
@@ -73,7 +74,7 @@ class AudioMediaPlayer {
 
   uint32_t GetDashInitState() const { return dash_init_state; }
 
-  void SetXMPClient(XMP_CLIENT xmp_client) { xmp_client_ = xmp_client; }
+  void SetXMPClient(XmpClient xmp_client) { xmp_client_ = xmp_client; }
 
   void SetPlaybackController(PlaybackController playback_controller) {
     playback_controller_ = playback_controller;
@@ -83,13 +84,13 @@ class AudioMediaPlayer {
     return playback_controller_;
   }
 
-  XMP_CLIENT GetXMPClient() const { return xmp_client_; }
+  XmpClient GetXMPClient() const { return xmp_client_; }
 
   bool IsTitleInPlaybackControl() const {
-    const bool game_control = xmp_client_ == XMP_CLIENT::Game &&
-                              playback_controller_ == PlaybackController::Game;
+    const bool game_control = xmp_client_ == XmpClient::kGame &&
+                              playback_controller_ == PlaybackController::kGame;
 
-    return game_control || xmp_override_ || is_title_rendering_enabled_;
+    return game_control || is_title_rendering_enabled_;
   }
 
   void SetCaptureCallback(uint32_t callback, uint32_t context,
@@ -114,8 +115,8 @@ class AudioMediaPlayer {
   XmpApp::PlaybackMode playback_mode_ = XmpApp::PlaybackMode::kInOrder;
   XmpApp::RepeatMode repeat_mode_ = XmpApp::RepeatMode::kPlaylist;
   XmpApp::PlaybackFlags playback_flags_ = XmpApp::PlaybackFlags::kDefault;
-  PlaybackController playback_controller_ = PlaybackController::Game;
-  XMP_CLIENT xmp_client_ = XMP_CLIENT::Game;
+  PlaybackController playback_controller_ = PlaybackController::kGame;
+  XmpClient xmp_client_ = XmpClient::kGame;
   std::atomic<float> volume_ = 0.0f;
   uint32_t dash_init_state = 0;
 

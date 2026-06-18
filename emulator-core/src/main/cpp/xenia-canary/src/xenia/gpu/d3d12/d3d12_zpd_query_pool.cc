@@ -23,12 +23,14 @@ namespace d3d12 {
 bool D3D12ZPDQueryPool::EnsureInitialized(
     const ui::d3d12::D3D12Provider& provider, uint32_t requested_capacity,
     bool can_recreate, bool initialize_rov_counter) {
-  if (rtv_initialized() && (!initialize_rov_counter || rov_initialized()) &&
+  bool rtv_initialized = is_initialized();
+  bool rov_initialized = rov_counter_initialized();
+  if (rtv_initialized && (!initialize_rov_counter || rov_initialized) &&
       (capacity_ == requested_capacity || !can_recreate)) {
     return true;
   }
 
-  if (rtv_initialized() && capacity_ != requested_capacity) {
+  if (rtv_initialized && capacity_ != requested_capacity) {
     if (!can_recreate) {
       requested_capacity = capacity_;
     } else {
@@ -36,12 +38,14 @@ bool D3D12ZPDQueryPool::EnsureInitialized(
       // backing resources under pending resolve or copy work.
       assert_true(!has_pending_resolve_batch());
       Shutdown();
+      rtv_initialized = false;
+      rov_initialized = false;
     }
   }
 
   ID3D12Device* device = provider.GetDevice();
 
-  if (!rtv_initialized()) {
+  if (!rtv_initialized) {
     D3D12_QUERY_HEAP_DESC heap_desc = {};
     heap_desc.Type = D3D12_QUERY_HEAP_TYPE_OCCLUSION;
     heap_desc.Count = requested_capacity;
@@ -102,7 +106,7 @@ bool D3D12ZPDQueryPool::EnsureInitialized(
     index_generations_.assign(requested_capacity, 0);
   }
 
-  if (!initialize_rov_counter || rov_initialized()) {
+  if (!initialize_rov_counter || rov_initialized) {
     return true;
   }
 
@@ -125,9 +129,7 @@ bool D3D12ZPDQueryPool::EnsureInitialized(
           provider.GetHeapFlagCreateNotZeroed(), &counter_buffer_desc,
           D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr,
           IID_PPV_ARGS(&rov_counter_buffer_)))) {
-    XELOGW(
-        "D3D12ZPDQueryPool: Failed to create the ZPD ROV counter "
-        "buffer, falling back to fake sample counts.");
+    XELOGW("D3D12ZPDQueryPool: Failed to allocate the ZPD ROV counter buffer.");
     return false;
   }
 
@@ -141,8 +143,8 @@ bool D3D12ZPDQueryPool::EnsureInitialized(
           D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
           IID_PPV_ARGS(&rov_counter_readback_buffer_)))) {
     XELOGW(
-        "D3D12ZPDQueryPool: Failed to create the ZPD ROV counter readback "
-        "buffer, falling back to fake sample counts.");
+        "D3D12ZPDQueryPool: Failed to allocate the ZPD ROV counter readback "
+        "buffer.");
     rov_counter_buffer_.Reset();
     return false;
   }
@@ -155,7 +157,7 @@ bool D3D12ZPDQueryPool::EnsureInitialized(
   if (FAILED(rov_counter_readback_buffer_->Map(0, &read_range, &mapping))) {
     XELOGW(
         "D3D12ZPDQueryPool: Failed to map the ZPD ROV counter readback "
-        "buffer, falling back to fake sample counts.");
+        "buffer.");
     rov_counter_readback_buffer_.Reset();
     rov_counter_buffer_.Reset();
     return false;
@@ -177,20 +179,18 @@ void D3D12ZPDQueryPool::Shutdown() {
   capacity_ = 0;
 
   if (readback_mapping_ && readback_buffer_) {
-    // CPU never writes to this READBACK buffer - empty written range.
+    // CPU never writes to this READBACK buffer — empty written range.
     D3D12_RANGE written_range = {0, 0};
     readback_buffer_->Unmap(0, &written_range);
   }
-
-  readback_mapping_ = nullptr;
-  readback_buffer_.Reset();
-  query_heap_.Reset();
-
   if (rov_counter_readback_mapping_ && rov_counter_readback_buffer_) {
     D3D12_RANGE written_range = {0, 0};
     rov_counter_readback_buffer_->Unmap(0, &written_range);
   }
 
+  readback_mapping_ = nullptr;
+  readback_buffer_.Reset();
+  query_heap_.Reset();
   rov_counter_readback_mapping_ = nullptr;
   rov_counter_readback_buffer_.Reset();
   rov_counter_buffer_.Reset();
@@ -221,6 +221,8 @@ void D3D12ZPDQueryPool::ReleaseQueryIndex(uint32_t query_index,
   }
 
   if (!GenerationMatches(query_index, query_generation)) {
+    XELOGW("D3D12ZPDQueryPool: stale release index={} gen={}", query_index,
+           query_generation);
     return;
   }
 
@@ -279,7 +281,7 @@ void D3D12ZPDQueryPool::QueueQueryResolve(uint32_t query_index,
 
 void D3D12ZPDQueryPool::ClearROVCounter(
     DeferredCommandList& deferred_command_list, uint32_t query_index) const {
-  if (!rov_initialized() || query_index >= capacity_) {
+  if (!rov_counter_initialized() || query_index >= capacity_) {
     return;
   }
 
@@ -343,7 +345,7 @@ void D3D12ZPDQueryPool::FlushResolveBatch(
   };
 
   if (!resolve_batch_indices_.empty()) {
-    if (!rtv_initialized()) {
+    if (!is_initialized()) {
       for (uint32_t index : resolve_batch_indices_) {
         resolve_batch_pending_[index] = 0;
       }
@@ -363,7 +365,7 @@ void D3D12ZPDQueryPool::FlushResolveBatch(
     return;
   }
 
-  if (!rov_initialized()) {
+  if (!rov_counter_initialized()) {
     for (uint32_t index : rov_counter_resolve_batch_indices_) {
       rov_counter_resolve_batch_pending_[index] = 0;
     }

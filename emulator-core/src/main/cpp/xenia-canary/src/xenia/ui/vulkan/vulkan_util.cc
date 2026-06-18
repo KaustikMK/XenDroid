@@ -12,8 +12,17 @@
 #include <cstdint>
 
 #include "xenia/base/assert.h"
+#include "xenia/base/cvar.h"
 #include "xenia/base/math.h"
 #include "xenia/ui/vulkan/vulkan_device.h"
+
+DEFINE_bool(
+    vulkan_rebar, false,
+    "Use ReBAR/SAM (Resizable BAR / Smart Access Memory) for upload buffers "
+    "when available. This places staging buffers in GPU VRAM. May improve or "
+    "hurt performance depending on hardware - traditional staging via system "
+    "memory is often faster due to async GPU DMA.",
+    "Vulkan");
 
 namespace xe {
 namespace ui {
@@ -191,7 +200,11 @@ VkPipeline CreateComputePipeline(
     const VulkanDevice* const vulkan_device, const VkPipelineLayout layout,
     const VkShaderModule shader,
     const VkSpecializationInfo* const specialization_info,
-    const char* const entry_point) {
+    const char* const entry_point, const uint32_t required_subgroup_size) {
+  VkPipelineShaderStageRequiredSubgroupSizeCreateInfo subgroup_size_info = {};
+  subgroup_size_info.sType =
+      VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO;
+
   VkComputePipelineCreateInfo pipeline_create_info;
   pipeline_create_info.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
   pipeline_create_info.pNext = nullptr;
@@ -207,6 +220,16 @@ VkPipeline CreateComputePipeline(
   pipeline_create_info.layout = layout;
   pipeline_create_info.basePipelineHandle = VK_NULL_HANDLE;
   pipeline_create_info.basePipelineIndex = -1;
+
+  // Request specific subgroup size if supported and in range.
+  if (required_subgroup_size != 0 &&
+      vulkan_device->properties().subgroupSizeControl &&
+      required_subgroup_size >= vulkan_device->properties().minSubgroupSize &&
+      required_subgroup_size <= vulkan_device->properties().maxSubgroupSize) {
+    subgroup_size_info.requiredSubgroupSize = required_subgroup_size;
+    pipeline_create_info.stage.pNext = &subgroup_size_info;
+  }
+
   VkPipeline pipeline;
   if (vulkan_device->functions().vkCreateComputePipelines(
           vulkan_device->device(), VK_NULL_HANDLE, 1, &pipeline_create_info,
@@ -219,14 +242,16 @@ VkPipeline CreateComputePipeline(
 VkPipeline CreateComputePipeline(
     const VulkanDevice* const vulkan_device, VkPipelineLayout layout,
     const uint32_t* shader_code, size_t shader_code_size_bytes,
-    const VkSpecializationInfo* specialization_info, const char* entry_point) {
+    const VkSpecializationInfo* specialization_info, const char* entry_point,
+    const uint32_t required_subgroup_size) {
   const VkShaderModule shader =
       CreateShaderModule(vulkan_device, shader_code, shader_code_size_bytes);
   if (shader == VK_NULL_HANDLE) {
     return VK_NULL_HANDLE;
   }
-  const VkPipeline pipeline = CreateComputePipeline(
-      vulkan_device, layout, shader, specialization_info, entry_point);
+  const VkPipeline pipeline =
+      CreateComputePipeline(vulkan_device, layout, shader, specialization_info,
+                            entry_point, required_subgroup_size);
   vulkan_device->functions().vkDestroyShaderModule(vulkan_device->device(),
                                                    shader, nullptr);
   return pipeline;

@@ -663,6 +663,18 @@ void DxbcShaderTranslator::StartPixelShader() {
                             in_position_z);
       }
     }
+  } else if (DSV_IsApplyingPolygonOffset() &&
+             !current_shader().writes_depth()) {
+    // The decal path uses the original triangle depth slope. Take it before
+    // guest control flow or kill changes which pixels are still active.
+    assert_true(system_temp_depth_stencil_ != UINT32_MAX);
+    dxbc::Src in_position_z(
+        dxbc::Src::V1D(in_reg_ps_position_, dxbc::Src::kZZZZ));
+    in_position_used_ |= 0b0100;
+    a_.OpDerivRTXCoarse(dxbc::Dest::R(system_temp_depth_stencil_, 0b0001),
+                        in_position_z);
+    a_.OpDerivRTYCoarse(dxbc::Dest::R(system_temp_depth_stencil_, 0b0010),
+                        in_position_z);
   }
 
   // If not translating anything, we only need the depth.
@@ -916,6 +928,9 @@ void DxbcShaderTranslator::StartTranslation() {
         // X holds the guest oDepth - make sure it's always initialized because
         // assumptions can't be made about the integrity of the guest code.
         depth_stencil_temp_zero_mask = 0b0001;
+      } else if (DSV_IsApplyingPolygonOffset()) {
+        // XY hold raster depth gradients for the host RT decal path.
+        depth_stencil_temp_zero_mask = 0b0000;
       } else {
         assert_true(edram_rov_used_);
         if (ROV_IsDepthStencilEarly()) {
@@ -3187,13 +3202,20 @@ void DxbcShaderTranslator::WriteOutputSignature() {
           cull_distance.component_type =
               dxbc::SignatureRegisterComponentType::kFloat32;
           cull_distance.register_index = clip_cull_distance_register;
+          // Calculate which components the cull distance occupies in this
+          // register. Cull distances are packed after clip distances.
+          // First component of cull distance in this register.
+          uint32_t cull_start_in_register =
+              (i < clip_distance_count) ? (clip_distance_count & 3) : 0;
+          // How many cull distance components are in this register.
+          uint32_t cull_components_before_this_register =
+              (i < clip_distance_count) ? 0 : (i - clip_distance_count);
+          uint32_t cull_count_in_register = std::min(
+              cull_distance_count - cull_components_before_this_register,
+              UINT32_C(4) - cull_start_in_register);
           uint8_t cull_distance_mask =
-              (UINT8_C(1) << std::min(cull_distance_count - i, UINT32_C(4))) -
-              1;
-          if (i < clip_distance_count) {
-            cull_distance_mask &=
-                ~((UINT8_C(1) << (clip_distance_count - i)) - 1);
-          }
+              ((UINT8_C(1) << cull_count_in_register) - 1)
+              << cull_start_in_register;
           cull_distance.mask = cull_distance_mask;
           cull_distance.never_writes_mask = cull_distance_mask ^ 0b1111;
         }
@@ -3314,7 +3336,8 @@ void DxbcShaderTranslator::WriteOutputSignature() {
 
       // Depth (SV_Depth or SV_DepthLessEqual).
       size_t depth_position = SIZE_MAX;
-      if (current_shader().writes_depth() || DSV_IsWritingFloat24Depth()) {
+      if (current_shader().writes_depth() || DSV_IsWritingFloat24Depth() ||
+          DSV_IsApplyingPolygonOffset()) {
         depth_position = shader_object_.size();
         shader_object_.resize(shader_object_.size() + kParameterDwords);
         ++parameter_count;
@@ -3357,6 +3380,7 @@ void DxbcShaderTranslator::WriteOutputSignature() {
         }
         const char* depth_semantic_name;
         if (!current_shader().writes_depth() &&
+            !DSV_IsApplyingPolygonOffset() &&
             shader_modification.pixel.depth_stencil_mode ==
                 Modification::DepthStencilMode::kFloat24Truncating) {
           depth_semantic_name = "SV_DepthLessEqual";
@@ -3728,8 +3752,9 @@ void DxbcShaderTranslator::WriteShaderCode() {
         ao_.OpDclOutput(dxbc::Dest::OMask());
       }
       // Depth output.
-      if (is_writing_float24_depth || shader_writes_depth) {
-        if (!shader_writes_depth &&
+      if (is_writing_float24_depth || DSV_IsApplyingPolygonOffset() ||
+          shader_writes_depth) {
+        if (!shader_writes_depth && !DSV_IsApplyingPolygonOffset() &&
             GetDxbcShaderModification().pixel.depth_stencil_mode ==
                 Modification::DepthStencilMode::kFloat24Truncating) {
           ao_.OpDclOutput(dxbc::Dest::ODepthLE());

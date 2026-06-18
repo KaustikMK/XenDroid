@@ -32,6 +32,11 @@ class GpdInfoProfile : public GpdInfo {
   ~GpdInfoProfile() = default;
 
   void AddNewTitle(const SpaInfo* title_data);
+  // SPA-less overload. achievement_count / total_gamerscore default to 0
+  // and get filled in on the next real launch via UpdateProfileGpd.
+  void AddNewTitle(uint32_t title_id, const std::u16string& title_name,
+                   uint32_t achievement_count = 0,
+                   uint32_t total_gamerscore = 0);
   bool RemoveTitle(const uint32_t title_id);
   void UpdateTitleInfo(const uint32_t title_id,
                        X_XDBF_GPD_TITLE_PLAYED* title_data);
@@ -41,8 +46,14 @@ class GpdInfoProfile : public GpdInfo {
 
   std::u16string GetTitleName(const uint32_t title_id) const;
 
- private:
-  X_XDBF_GPD_TITLE_PLAYED FillTitlePlayedData(const SpaInfo* title_data) const;
+  // Xenia-specific: title launch path(s), read by the GPD->library migration.
+  std::optional<std::filesystem::path> GetTitlePath(uint32_t title_id) const;
+
+  struct DiscInfo {
+    std::filesystem::path path;
+    std::string label;
+  };
+  std::vector<DiscInfo> GetTitleDiscs(uint32_t title_id) const;
 };
 
 }  // namespace xam
