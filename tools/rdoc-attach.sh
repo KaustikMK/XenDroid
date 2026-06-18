@@ -18,7 +18,7 @@
 #      presented frame (API flips to Vulkan), then capture.
 set -euo pipefail
 
-PKG="xendroid.free"
+PKG="xendroid"
 EMU_PROC="${PKG}:emu"
 HOST_PORT="${1:-38920}"
 

@@ -6,8 +6,8 @@
  * Released under the BSD license - see LICENSE in the root for more details. *
  ******************************************************************************
  */
-#ifndef xendroid_XE_AAUDIO_AUDIO_DRIVER_H
-#define xendroid_XE_AAUDIO_AUDIO_DRIVER_H
+#ifndef XENDROID_XE_AAUDIO_AUDIO_DRIVER_H
+#define XENDROID_XE_AAUDIO_AUDIO_DRIVER_H
 
 #include <mutex>
 #include <queue>
