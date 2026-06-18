@@ -85,6 +85,29 @@ foreach(_tool glslangValidator spirv-opt spirv-dis)
     endif()
 endforeach()
 
+# Regenerate the Vulkan SPIR-V shader bytecode at configure time. Edge's in-tree
+# shader pipeline (xenia-shader-cc + slangc) can't run in the arm64 NDK cross
+# build, so gpu/vulkan and ui/vulkan have their edge shader rules guarded off on
+# Android (see those CMakeLists) and consume bytecode produced here by the host
+# Python + system glslang toolchain validated just above. Incremental, so it is
+# a near no-op once generated. Output dirs are git-ignored generated headers.
+find_program(XE_PYTHON3 NAMES python3 python)
+if(NOT XE_PYTHON3)
+    message(FATAL_ERROR "python3 not found; required to generate SPIR-V shader bytecode.")
+endif()
+set(_xe_shader_root "${CMAKE_CURRENT_SOURCE_DIR}/xenia-canary/src/xenia")
+execute_process(
+    COMMAND "${XE_PYTHON3}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/xenia-canary/tools/build/gen_android_spirv.py"
+            "${_xe_shader_root}/gpu/shaders"
+            "${_xe_shader_root}/ui/shaders"
+    RESULT_VARIABLE _xe_spirv_result
+    OUTPUT_VARIABLE _xe_spirv_out)
+message(STATUS "XenDroid SPIR-V shader bytecode: ${_xe_spirv_out}")
+if(NOT _xe_spirv_result EQUAL 0)
+    message(FATAL_ERROR "SPIR-V shader bytecode generation failed (exit ${_xe_spirv_result}).")
+endif()
+
 add_subdirectory(xenia-canary EXCLUDE_FROM_ALL)
 
 add_subdirectory(libadrenotools EXCLUDE_FROM_ALL)
