@@ -45,16 +45,6 @@
     #define SLIBSUF ".so"
   #endif
   #undef  ARCH_AARCH64
-
-#if defined(_WIN32)
-  #define ARCH_AARCH64 0
-  #define HAVE_ARMV8 0
-  #define HAVE_NEON 0
-  #define HAVE_VFP 0
-  #define HAVE_ARMV8_EXTERNAL 0
-  #define HAVE_NEON_EXTERNAL 0
-  #define HAVE_VFP_EXTERNAL 0
-#else
   #define ARCH_AARCH64 1
   #define HAVE_ARMV8 1
   #define HAVE_NEON 1
@@ -62,7 +52,6 @@
   #define HAVE_ARMV8_EXTERNAL 1
   #define HAVE_NEON_EXTERNAL 1
   #define HAVE_VFP_EXTERNAL 1
-#endif
   #if defined(_MSC_VER)
     #define HAVE_ARMV8_INLINE 0
     #define HAVE_NEON_INLINE 0
@@ -72,12 +61,7 @@
     #define HAVE_NEON_INLINE 1
     #define HAVE_VFP_INLINE 1
   #endif
-
-#if defined(_WIN32)
-  #define HAVE_INTRINSICS_NEON 0
-#else
   #define HAVE_INTRINSICS_NEON 1
-#endif
   #define HAVE_AS_FUNC 0
   #define HAVE_AS_ARCH_DIRECTIVE 0
   #define HAVE_AS_ARCHEXT_CRC_DIRECTIVE 0
