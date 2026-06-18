@@ -174,8 +174,14 @@ void AndroidWindowedAppContext::main_loop(){
 
         if(ev & EVENT_PAINT){
             EmulatorApp* app=reinterpret_cast<EmulatorApp*>(ae::g_windowed_app.get());
-            AndroidWindow* win=reinterpret_cast<AndroidWindow*>(app->emu_window.get());
-            win->Paint();
+            // emu_window is an EmulatorWindow, NOT an AndroidWindow -- the real
+            // ui::Window (the AndroidWindow that SetPresenter() was called on) is
+            // emu_window->window(). The old reinterpret_cast read presenter_ at the
+            // wrong offset (a latent UB that only stopped being a harmless no-op
+            // once the EmulatorWindow/Window layout changed in the edge rebase).
+            AndroidWindow* win = app->emu_window
+                ? static_cast<AndroidWindow*>(app->emu_window->window()) : nullptr;
+            if(win) win->Paint();
         }
 
         if(ev & EVENT_QUIT){
@@ -426,6 +432,16 @@ void EmulatorApp::emu_thr_main() {
             create_audio_system, create_graphics_system, create_input_drivers);
     if (XFAILED(result)) {
         XELOGE("Failed to setup emulator: {:08X}", result);
+        app_context().RequestDeferredQuit();
+        return;
+    }
+    // XenDroid: edge split subsystem creation (audio/graphics/input) out of
+    // Setup() into SetupSubsystems(), which the desktop app (xenia_main.cc) runs
+    // at first title launch. Bring the subsystems up here, before wiring the
+    // presenter and launching the title -- otherwise graphics_system_ stays null
+    // and the first Vd* kernel call (e.g. VdSetGraphicsInterruptCallback) crashes.
+    if (XFAILED(result = emu->SetupSubsystems())) {
+        XELOGE("Failed to setup subsystems: {:08X}", result);
         app_context().RequestDeferredQuit();
         return;
     }
@@ -813,8 +829,10 @@ namespace ae{
         // fork's CallInUIThread is synchronous via the pump). Only after the
         // GPU drain + vkDestroySurfaceKHR is it safe to release the window.
         if(g_app_context && g_windowed_app_ref){
-            AndroidWindow* win =
-                reinterpret_cast<AndroidWindow*>(g_windowed_app_ref->emu_window.get());
+            // The real AndroidWindow is emu_window->window() (emu_window is an
+            // EmulatorWindow, not an AndroidWindow). See the EVENT_PAINT note above.
+            AndroidWindow* win = g_windowed_app_ref->emu_window
+                ? static_cast<AndroidWindow*>(g_windowed_app_ref->emu_window->window()) : nullptr;
             if(win){
                 XELOGI("ae::surface_detach: marshalling DetachSurface to main_thr");
                 g_app_context->CallInUIThread([win]{ win->DetachSurface(); });
@@ -849,8 +867,10 @@ namespace ae{
         // SetupGraphicsSystemPresenterPainting. Post-boot: marshal a recreate
         // (async is fine -- the new swapchain comes up on the next paint tick).
         if(!g_app_context || !g_windowed_app_ref) return;
-        AndroidWindow* win =
-            reinterpret_cast<AndroidWindow*>(g_windowed_app_ref->emu_window.get());
+        // The real AndroidWindow is emu_window->window() (emu_window is an
+        // EmulatorWindow, not an AndroidWindow). See the EVENT_PAINT note above.
+        AndroidWindow* win = g_windowed_app_ref->emu_window
+            ? static_cast<AndroidWindow*>(g_windowed_app_ref->emu_window->window()) : nullptr;
         if(!win) return;
         XELOGI("ae::surface_attach: marshalling UpdateSurface to main_thr");
         g_app_context->CallInUIThread([win]{ win->UpdateSurface(); });
