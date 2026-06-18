@@ -137,7 +137,7 @@ aaudio_data_callback_result_t AAudioAudioDriver::AudioCallback(
     auto buffer = driver->frames_queued_.front();
     driver->frames_queued_.pop();
 
-    if (cvars::mute) {
+    if (cvars::volume == 0) {  // XenDroid: edge replaced cvars::mute with volume (0 == mute)
       std::memset(output_buffer, 0, samples_count * sizeof(float));
     } else {
         conversion::sequential_6_BE_to_interleaved_2_LE(

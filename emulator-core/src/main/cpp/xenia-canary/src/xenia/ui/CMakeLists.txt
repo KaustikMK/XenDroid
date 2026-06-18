@@ -13,6 +13,15 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Android")
     "${CMAKE_CURRENT_SOURCE_DIR}/*_wx.h"
     "${CMAKE_CURRENT_SOURCE_DIR}/wx_locale.cc"
     "${CMAKE_CURRENT_SOURCE_DIR}/wx_locale.h"
+    # XenDroid: edge's post-processing dialog drives edge's EmulatorWindow API
+    # (public Update*Cvar / Get*); XenDroid keeps its own EmulatorWindow UI, so
+    # this edge-only dialog is unused on Android (and would invert ui->app deps).
+    "${CMAKE_CURRENT_SOURCE_DIR}/imgui_postprocessing_dialog.cc"
+    "${CMAKE_CURRENT_SOURCE_DIR}/imgui_postprocessing_dialog.h"
+    # icon_decode is a wxWidgets-based (wx/bmpbndl.h) icon decoder consumed only
+    # by the *_wx.cc files (already excluded on Android). Exclude it too.
+    "${CMAKE_CURRENT_SOURCE_DIR}/icon_decode.cc"
+    "${CMAKE_CURRENT_SOURCE_DIR}/icon_decode.h"
   )
   list(APPEND _ui_exclude ${_wx_exclude})
 endif()

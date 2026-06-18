@@ -415,8 +415,10 @@ bool ImGuiDrawer::LoadWindowsFont(ImGuiIO& io, ImFontConfig& font_config,
   return true;
 #endif
 
-#if XE_PLATFORM_LINUX
+#if XE_PLATFORM_LINUX && !(XE_PLATFORM_ANDROID || XE_PLATFORM_xendroid)
   // On Linux, use fontconfig to find the system's default sans-serif font
+  // (XenDroid: Android defines XE_PLATFORM_LINUX but has no fontconfig; fall
+  // through to the no-system-font path and use imgui's embedded font).
   FcConfig* config = FcInitLoadConfigAndFonts();
   if (!config) {
     XELOGW("Unable to initialize fontconfig for system font");

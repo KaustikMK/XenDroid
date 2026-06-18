@@ -650,7 +650,7 @@ struct LOAD_OFFSET_I8
     ComputeMemoryAddressOffset(e, i.src1, i.src2);
     e.ldrb(i.dest, ptr(e.GetMembaseReg(), e.x0));
     if (IsTracingData()) {
-      AddGuestMemoryOffset(e, ComputeMemoryAddress(e, i.src1), i.src2);
+      ComputeMemoryAddressOffset(e, i.src1, i.src2);
       e.mov(e.w2, i.dest);
       e.mov(e.w1, e.w0);
       e.CallNative(reinterpret_cast<void*>(TraceMemoryLoadI8));
@@ -666,7 +666,7 @@ struct LOAD_OFFSET_I16
       e.rev16(i.dest, i.dest);
     }
     if (IsTracingData()) {
-      AddGuestMemoryOffset(e, ComputeMemoryAddress(e, i.src1), i.src2);
+      ComputeMemoryAddressOffset(e, i.src1, i.src2);
       e.mov(e.w2, i.dest);
       e.mov(e.w1, e.w0);
       e.CallNative(reinterpret_cast<void*>(TraceMemoryLoadI16));
@@ -748,7 +748,7 @@ struct LOAD_OFFSET_I32
         e.rev(i.dest, i.dest);
       }
       if (IsTracingData()) {
-        AddGuestMemoryOffset(e, ComputeMemoryAddress(e, i.src1), i.src2);
+        ComputeMemoryAddressOffset(e, i.src1, i.src2);
         e.mov(e.w2, i.dest);
         e.mov(e.w1, e.w0);
         e.CallNative(reinterpret_cast<void*>(TraceMemoryLoadI32));
@@ -765,7 +765,7 @@ struct LOAD_OFFSET_I64
       e.rev(i.dest, i.dest);
     }
     if (IsTracingData()) {
-      AddGuestMemoryOffset(e, ComputeMemoryAddress(e, i.src1), i.src2);
+      ComputeMemoryAddressOffset(e, i.src1, i.src2);
       e.mov(e.x2, i.dest);
       e.mov(e.w1, e.w0);
       e.CallNative(reinterpret_cast<void*>(TraceMemoryLoadI64));
@@ -787,7 +787,7 @@ struct STORE_OFFSET_I8
       e.strb(i.src3, ptr(e.GetMembaseReg(), e.x0));
     }
     if (IsTracingData()) {
-      AddGuestMemoryOffset(e, ComputeMemoryAddress(e, i.src1), i.src2);
+      ComputeMemoryAddressOffset(e, i.src1, i.src2);
       e.ldrb(e.w2, ptr(e.GetMembaseReg(), e.x0));
       e.mov(e.w1, e.w0);
       e.CallNative(reinterpret_cast<void*>(TraceMemoryStoreI8));
@@ -816,7 +816,7 @@ struct STORE_OFFSET_I16
       }
     }
     if (IsTracingData()) {
-      AddGuestMemoryOffset(e, ComputeMemoryAddress(e, i.src1), i.src2);
+      ComputeMemoryAddressOffset(e, i.src1, i.src2);
       e.ldrh(e.w2, ptr(e.GetMembaseReg(), e.x0));
       e.mov(e.w1, e.w0);
       e.CallNative(reinterpret_cast<void*>(TraceMemoryStoreI16));
@@ -937,7 +937,7 @@ struct STORE_OFFSET_I32
         }
       }
       if (IsTracingData()) {
-        AddGuestMemoryOffset(e, ComputeMemoryAddress(e, i.src1), i.src2);
+        ComputeMemoryAddressOffset(e, i.src1, i.src2);
         e.ldr(e.w2, ptr(e.GetMembaseReg(), e.x0));
         e.mov(e.w1, e.w0);
         e.CallNative(reinterpret_cast<void*>(TraceMemoryStoreI32));
@@ -967,7 +967,7 @@ struct STORE_OFFSET_I64
       }
     }
     if (IsTracingData()) {
-      AddGuestMemoryOffset(e, ComputeMemoryAddress(e, i.src1), i.src2);
+      ComputeMemoryAddressOffset(e, i.src1, i.src2);
       e.ldr(e.x2, ptr(e.GetMembaseReg(), e.x0));
       e.mov(e.w1, e.w0);
       e.CallNative(reinterpret_cast<void*>(TraceMemoryStoreI64));

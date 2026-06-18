@@ -643,8 +643,8 @@ void EmulatorApp::emu_thr_main() {
             "xam.xex");
 
     if (xam) {
-        xam->LoadLoaderData();
-
+        // XenDroid: edge removed XamModule::LoadLoaderData(); loader_data_ is now populated
+        // directly by the xam content/launch handlers (see xam_content.cc).
         if (xam->loader_data().launch_data_present) {
             const std::filesystem::path host_path = xam->loader_data().host_path;
             app_context().CallInUIThread([this, host_path]() {

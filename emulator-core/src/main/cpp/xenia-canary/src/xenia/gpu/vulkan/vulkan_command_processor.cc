@@ -1918,8 +1918,7 @@ void VulkanCommandProcessor::WritePossiblySpecialRegistersFromMem(
          (XE_GPU_REG_DC_LUT_30_COLOR - XE_GPU_REG_DC_LUT_RW_INDEX));
     if (expr != 0) {
       HandleSpecialRegisterWrite(index, value);
-    }
-  } else if (index == XE_GPU_REG_VGT_MAX_VTX_INDX ||
+    } else if (index == XE_GPU_REG_VGT_MAX_VTX_INDX ||
              index == XE_GPU_REG_VGT_MIN_VTX_INDX ||
              index == XE_GPU_REG_VGT_INDX_OFFSET ||
              index == XE_GPU_REG_VGT_DMA_SIZE ||
@@ -1938,6 +1937,7 @@ void VulkanCommandProcessor::WritePossiblySpecialRegistersFromMem(
     // first draw of the submission.
     current_constant_buffers_up_to_date_ &=
         ~(UINT32_C(1) << SpirvShaderTranslator::kConstantBufferClipPlanes);
+    }
   }
 }
 

@@ -25,8 +25,12 @@ namespace xe {
         SAF_DiscZarchiveDevice::~SAF_DiscZarchiveDevice() {};
 
         bool SAF_DiscZarchiveDevice::Initialize() {
-            reader_ =
-                    std::unique_ptr<ZArchiveReader>(ZArchiveReader::OpenFromFile(DocumentFile::open_fd(saf_path_)));
+            // XenDroid: edge's ZArchiveReader::OpenFromFile takes a filesystem path, but Android
+            // SAF only exposes an fd. Bridge the fd to a path via /proc/self/fd/<fd> (the kernel
+            // resolves it to the underlying file), so the path-based API opens the SAF content.
+            const int saf_fd = DocumentFile::open_fd(saf_path_);
+            reader_ = std::unique_ptr<ZArchiveReader>(ZArchiveReader::OpenFromFile(
+                    std::filesystem::path("/proc/self/fd/" + std::to_string(saf_fd))));
 
             if (!reader_) {
                 XELOGE("Disc ZArchive could not be opened");
