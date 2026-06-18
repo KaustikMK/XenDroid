@@ -24,7 +24,7 @@ namespace dxil_dia {
 class Session;
 
 class InputAssemblyFilesTable
-  : public impl::TableBase<IDiaEnumInputAssemblyFiles, IDiaInputAssemblyFile> {
+  : public impl::TableBase<IDixendroidmInputAssemblyFiles, IDiaInputAssemblyFile> {
 public:
   InputAssemblyFilesTable(IMalloc *pMalloc, Session *pSession);
   HRESULT GetItem(DWORD index, IDiaInputAssemblyFile **ppItem) override;

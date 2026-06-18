@@ -1096,7 +1096,7 @@ HRESULT DxcContext::GetDxcDiaTable(IDxcLibrary *pLibrary, IDxcBlob *pTargetBlob,
   CComPtr<IDiaDataSource> pDataSource;
   CComPtr<IStream> pSourceStream;
   CComPtr<IDiaSession> pSession;
-  CComPtr<IDiaEnumTables> pEnumTables;
+  CComPtr<IDixendroidmTables> pEnumTables;
   IFT(CreateInstance(CLSID_DxcDiaDataSource, &pDataSource));
   IFT(pLibrary->CreateStreamFromBlobReadOnly(pTargetBlob, &pSourceStream));
   IFT(pDataSource->loadDataFromIStream(pSourceStream));

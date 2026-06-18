@@ -1,4 +1,4 @@
-//==- DIAEnumSymbols.cpp - DIA Symbol Enumerator impl ------------*- C++ -*-==//
+//==- DIxendroidmSymbols.cpp - DIA Symbol Enumerator impl ------------*- C++ -*-==//
 //
 //                     The LLVM Compiler Infrastructure
 //
@@ -8,23 +8,23 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/DebugInfo/PDB/PDBSymbol.h"
-#include "llvm/DebugInfo/PDB/DIA/DIAEnumSymbols.h"
+#include "llvm/DebugInfo/PDB/DIA/DIxendroidmSymbols.h"
 #include "llvm/DebugInfo/PDB/DIA/DIARawSymbol.h"
 #include "llvm/DebugInfo/PDB/DIA/DIASession.h"
 
 using namespace llvm;
 
-DIAEnumSymbols::DIAEnumSymbols(const DIASession &PDBSession,
-                               CComPtr<IDiaEnumSymbols> DiaEnumerator)
-    : Session(PDBSession), Enumerator(DiaEnumerator) {}
+DIxendroidmSymbols::DIxendroidmSymbols(const DIASession &PDBSession,
+                               CComPtr<IDixendroidmSymbols> Dixendroidmerator)
+    : Session(PDBSession), Enumerator(Dixendroidmerator) {}
 
-uint32_t DIAEnumSymbols::getChildCount() const {
+uint32_t DIxendroidmSymbols::getChildCount() const {
   LONG Count = 0;
   return (S_OK == Enumerator->get_Count(&Count)) ? Count : 0;
 }
 
 std::unique_ptr<PDBSymbol>
-DIAEnumSymbols::getChildAtIndex(uint32_t Index) const {
+DIxendroidmSymbols::getChildAtIndex(uint32_t Index) const {
   CComPtr<IDiaSymbol> Item;
   if (S_OK != Enumerator->Item(Index, &Item))
     return nullptr;
@@ -33,7 +33,7 @@ DIAEnumSymbols::getChildAtIndex(uint32_t Index) const {
   return std::unique_ptr<PDBSymbol>(PDBSymbol::create(Session, std::move(RawSymbol)));
 }
 
-std::unique_ptr<PDBSymbol> DIAEnumSymbols::getNext() {
+std::unique_ptr<PDBSymbol> DIxendroidmSymbols::getNext() {
   CComPtr<IDiaSymbol> Item;
   ULONG NumFetched = 0;
   if (S_OK != Enumerator->Next(1, &Item, &NumFetched))
@@ -44,11 +44,11 @@ std::unique_ptr<PDBSymbol> DIAEnumSymbols::getNext() {
       PDBSymbol::create(Session, std::move(RawSymbol)));
 }
 
-void DIAEnumSymbols::reset() { Enumerator->Reset(); }
+void DIxendroidmSymbols::reset() { Enumerator->Reset(); }
 
-DIAEnumSymbols *DIAEnumSymbols::clone() const {
-  CComPtr<IDiaEnumSymbols> EnumeratorClone;
+DIxendroidmSymbols *DIxendroidmSymbols::clone() const {
+  CComPtr<IDixendroidmSymbols> EnumeratorClone;
   if (S_OK != Enumerator->Clone(&EnumeratorClone))
     return nullptr;
-  return new DIAEnumSymbols(Session, EnumeratorClone);
+  return new DIxendroidmSymbols(Session, EnumeratorClone);
 }

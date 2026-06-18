@@ -14,7 +14,7 @@
 #include "DxilDiaSession.h"
 
 dxil_dia::InputAssemblyFilesTable::InputAssemblyFilesTable(IMalloc *pMalloc, Session *pSession)
-  : impl::TableBase<IDiaEnumInputAssemblyFiles, IDiaInputAssemblyFile>(pMalloc, pSession, Table::Kind::InputAssemblyFile) {
+  : impl::TableBase<IDixendroidmInputAssemblyFiles, IDiaInputAssemblyFile>(pMalloc, pSession, Table::Kind::InputAssemblyFile) {
 
 }
 

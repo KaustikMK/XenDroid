@@ -1,4 +1,4 @@
-//==- DIAEnumSourceFiles.h - DIA Source File Enumerator impl -----*- C++ -*-==//
+//==- DIxendroidmSourceFiles.h - DIA Source File Enumerator impl -----*- C++ -*-==//
 //
 //                     The LLVM Compiler Infrastructure
 //
@@ -7,8 +7,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef LLVM_DEBUGINFO_PDB_DIA_DIAENUMSOURCEFILES_H
-#define LLVM_DEBUGINFO_PDB_DIA_DIAENUMSOURCEFILES_H
+#ifndef LLVM_DEBUGINFO_PDB_DIA_DIxendroidMSOURCEFILES_H
+#define LLVM_DEBUGINFO_PDB_DIA_DIxendroidMSOURCEFILES_H
 
 #include "DIASupport.h"
 #include "llvm/DebugInfo/PDB/IPDBEnumChildren.h"
@@ -17,20 +17,20 @@ namespace llvm {
 
 class DIASession;
 
-class DIAEnumSourceFiles : public IPDBEnumChildren<IPDBSourceFile> {
+class DIxendroidmSourceFiles : public IPDBEnumChildren<IPDBSourceFile> {
 public:
-  explicit DIAEnumSourceFiles(const DIASession &PDBSession,
-                              CComPtr<IDiaEnumSourceFiles> DiaEnumerator);
+  explicit DIxendroidmSourceFiles(const DIASession &PDBSession,
+                              CComPtr<IDixendroidmSourceFiles> Dixendroidmerator);
 
   uint32_t getChildCount() const override;
   ChildTypePtr getChildAtIndex(uint32_t Index) const override;
   ChildTypePtr getNext() override;
   void reset() override;
-  DIAEnumSourceFiles *clone() const override;
+  DIxendroidmSourceFiles *clone() const override;
 
 private:
   const DIASession &Session;
-  CComPtr<IDiaEnumSourceFiles> Enumerator;
+  CComPtr<IDixendroidmSourceFiles> Enumerator;
 };
 }
 

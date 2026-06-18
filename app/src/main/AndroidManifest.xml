@@ -53,7 +53,7 @@
             android:process=":emu"
             >
             <intent-filter>
-                <action android:name="aenu.intent.action.xendroid" />
+                <action android:name="xendroid.intent.action.xendroid" />
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
             <intent-filter>

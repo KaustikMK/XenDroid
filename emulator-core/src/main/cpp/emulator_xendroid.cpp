@@ -662,7 +662,7 @@ static jobject j_meta_info_from_uri(JNIEnv* env,jobject self,jstring uri_str ){
         public int fd;
         public byte[] icon;
      */
-    jclass cls_Emulator$GameInfo = env->FindClass("aenu/compose/Emulator$GameInfo");
+    jclass cls_Emulator$GameInfo = env->FindClass("xendroid/compose/Emulator$GameInfo");
     jmethodID mid_Emulator$GameInfo = env->GetMethodID(cls_Emulator$GameInfo, "<init>", "()V");
     jobject game_info = env->NewObject(cls_Emulator$GameInfo, mid_Emulator$GameInfo);
     jfieldID fid_name = env->GetFieldID(cls_Emulator$GameInfo, "name", "Ljava/lang/String;");

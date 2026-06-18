@@ -24,7 +24,7 @@
 namespace dxil_dia {
 class Session;
 
-class FrameDataTable : public impl::TableBase<IDiaEnumFrameData, IDiaFrameData> {
+class FrameDataTable : public impl::TableBase<IDixendroidmFrameData, IDiaFrameData> {
 public:
   FrameDataTable(IMalloc *pMalloc, Session *pSession);
 

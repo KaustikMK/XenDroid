@@ -1552,7 +1552,7 @@ void UnwrappedLineParser::parseEnum() {
 
   if (Style.Language == FormatStyle::LK_Java) {
     // Java enums are different.
-    parseJavaEnumBody();
+    parseJavxendroidmBody();
     return;
   }
 
@@ -1569,7 +1569,7 @@ void UnwrappedLineParser::parseEnum() {
   // "} n, m;" will end up in one unwrapped line.
 }
 
-void UnwrappedLineParser::parseJavaEnumBody() {
+void UnwrappedLineParser::parseJavxendroidmBody() {
   // Determine whether the enum is simple, i.e. does not have a semicolon or
   // constants with class bodies. Simple enums can be formatted like braced
   // lists, contracted to a single line, etc.

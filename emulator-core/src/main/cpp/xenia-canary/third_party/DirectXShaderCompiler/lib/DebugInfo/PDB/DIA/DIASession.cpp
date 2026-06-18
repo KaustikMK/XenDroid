@@ -8,9 +8,9 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/ADT/STLExtras.h"
-#include "llvm/DebugInfo/PDB/DIA/DIAEnumDebugStreams.h"
-#include "llvm/DebugInfo/PDB/DIA/DIAEnumLineNumbers.h"
-#include "llvm/DebugInfo/PDB/DIA/DIAEnumSourceFiles.h"
+#include "llvm/DebugInfo/PDB/DIA/DIxendroidmDebugStreams.h"
+#include "llvm/DebugInfo/PDB/DIA/DIxendroidmLineNumbers.h"
+#include "llvm/DebugInfo/PDB/DIA/DIxendroidmSourceFiles.h"
 #include "llvm/DebugInfo/PDB/DIA/DIARawSymbol.h"
 #include "llvm/DebugInfo/PDB/DIA/DIASession.h"
 #include "llvm/DebugInfo/PDB/DIA/DIASourceFile.h"
@@ -159,24 +159,24 @@ DIASession::findSymbolByAddress(uint64_t Address, PDB_SymType Type) const {
 
 std::unique_ptr<IPDBEnumLineNumbers>
 DIASession::findLineNumbersByAddress(uint64_t Address, uint32_t Length) const {
-  CComPtr<IDiaEnumLineNumbers> LineNumbers;
+  CComPtr<IDixendroidmLineNumbers> LineNumbers;
   if (S_OK != Session->findLinesByVA(Address, Length, &LineNumbers))
     return nullptr;
 
-  return llvm::make_unique<DIAEnumLineNumbers>(LineNumbers);
+  return llvm::make_unique<DIxendroidmLineNumbers>(LineNumbers);
 }
 
 std::unique_ptr<IPDBEnumSourceFiles> DIASession::getAllSourceFiles() const {
-  CComPtr<IDiaEnumSourceFiles> Files;
+  CComPtr<IDixendroidmSourceFiles> Files;
   if (S_OK != Session->findFile(nullptr, nullptr, nsNone, &Files))
     return nullptr;
 
-  return llvm::make_unique<DIAEnumSourceFiles>(*this, Files);
+  return llvm::make_unique<DIxendroidmSourceFiles>(*this, Files);
 }
 
 std::unique_ptr<IPDBEnumSourceFiles> DIASession::getSourceFilesForCompiland(
     const PDBSymbolCompiland &Compiland) const {
-  CComPtr<IDiaEnumSourceFiles> Files;
+  CComPtr<IDixendroidmSourceFiles> Files;
 
   const DIARawSymbol &RawSymbol =
       static_cast<const DIARawSymbol &>(Compiland.getRawSymbol());
@@ -184,7 +184,7 @@ std::unique_ptr<IPDBEnumSourceFiles> DIASession::getSourceFilesForCompiland(
       Session->findFile(RawSymbol.getDiaSymbol(), nullptr, nsNone, &Files))
     return nullptr;
 
-  return llvm::make_unique<DIAEnumSourceFiles>(*this, Files);
+  return llvm::make_unique<DIxendroidmSourceFiles>(*this, Files);
 }
 
 std::unique_ptr<IPDBSourceFile>
@@ -197,9 +197,9 @@ DIASession::getSourceFileById(uint32_t FileId) const {
 }
 
 std::unique_ptr<IPDBEnumDataStreams> DIASession::getDebugStreams() const {
-  CComPtr<IDiaEnumDebugStreams> DiaEnumerator;
-  if (S_OK != Session->getEnumDebugStreams(&DiaEnumerator))
+  CComPtr<IDixendroidmDebugStreams> Dixendroidmerator;
+  if (S_OK != Session->getEnumDebugStreams(&Dixendroidmerator))
     return nullptr;
 
-  return llvm::make_unique<DIAEnumDebugStreams>(DiaEnumerator);
+  return llvm::make_unique<DIxendroidmDebugStreams>(Dixendroidmerator);
 }

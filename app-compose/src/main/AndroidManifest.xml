@@ -55,7 +55,7 @@
             android:theme="@style/Theme.xendroidEmu">
             <!-- In-app launch: GameLibraryViewModel.buildLaunchIntent (xendroid + setPackage). -->
             <intent-filter>
-                <action android:name="aenu.intent.action.xendroid" />
+                <action android:name="xendroid.intent.action.xendroid" />
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
             <!-- Pinned-shortcut cold start: createShortcut sets action = ACTION_VIEW. -->

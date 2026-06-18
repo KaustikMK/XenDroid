@@ -1,4 +1,4 @@
-//==- DIAEnumDebugStreams.cpp - DIA Debug Stream Enumerator impl -*- C++ -*-==//
+//==- DIxendroidmDebugStreams.cpp - DIA Debug Stream Enumerator impl -*- C++ -*-==//
 //
 //                     The LLVM Compiler Infrastructure
 //
@@ -9,22 +9,22 @@
 
 #include "llvm/DebugInfo/PDB/PDBSymbol.h"
 #include "llvm/DebugInfo/PDB/DIA/DIADataStream.h"
-#include "llvm/DebugInfo/PDB/DIA/DIAEnumDebugStreams.h"
+#include "llvm/DebugInfo/PDB/DIA/DIxendroidmDebugStreams.h"
 
 using namespace llvm;
 
-DIAEnumDebugStreams::DIAEnumDebugStreams(
-    CComPtr<IDiaEnumDebugStreams> DiaEnumerator)
-    : Enumerator(DiaEnumerator) {}
+DIxendroidmDebugStreams::DIxendroidmDebugStreams(
+    CComPtr<IDixendroidmDebugStreams> Dixendroidmerator)
+    : Enumerator(Dixendroidmerator) {}
 
-uint32_t DIAEnumDebugStreams::getChildCount() const {
+uint32_t DIxendroidmDebugStreams::getChildCount() const {
   LONG Count = 0;
   return (S_OK == Enumerator->get_Count(&Count)) ? Count : 0;
 }
 
 std::unique_ptr<IPDBDataStream>
-DIAEnumDebugStreams::getChildAtIndex(uint32_t Index) const {
-  CComPtr<IDiaEnumDebugStreamData> Item;
+DIxendroidmDebugStreams::getChildAtIndex(uint32_t Index) const {
+  CComPtr<IDixendroidmDebugStreamData> Item;
   VARIANT VarIndex;
   VarIndex.vt = VT_I4;
   VarIndex.lVal = Index;
@@ -34,8 +34,8 @@ DIAEnumDebugStreams::getChildAtIndex(uint32_t Index) const {
   return std::unique_ptr<IPDBDataStream>(new DIADataStream(Item));
 }
 
-std::unique_ptr<IPDBDataStream> DIAEnumDebugStreams::getNext() {
-  CComPtr<IDiaEnumDebugStreamData> Item;
+std::unique_ptr<IPDBDataStream> DIxendroidmDebugStreams::getNext() {
+  CComPtr<IDixendroidmDebugStreamData> Item;
   ULONG NumFetched = 0;
   if (S_OK != Enumerator->Next(1, &Item, &NumFetched))
     return nullptr;
@@ -43,11 +43,11 @@ std::unique_ptr<IPDBDataStream> DIAEnumDebugStreams::getNext() {
   return std::unique_ptr<IPDBDataStream>(new DIADataStream(Item));
 }
 
-void DIAEnumDebugStreams::reset() { Enumerator->Reset(); }
+void DIxendroidmDebugStreams::reset() { Enumerator->Reset(); }
 
-DIAEnumDebugStreams *DIAEnumDebugStreams::clone() const {
-  CComPtr<IDiaEnumDebugStreams> EnumeratorClone;
+DIxendroidmDebugStreams *DIxendroidmDebugStreams::clone() const {
+  CComPtr<IDixendroidmDebugStreams> EnumeratorClone;
   if (S_OK != Enumerator->Clone(&EnumeratorClone))
     return nullptr;
-  return new DIAEnumDebugStreams(EnumeratorClone);
+  return new DIxendroidmDebugStreams(EnumeratorClone);
 }

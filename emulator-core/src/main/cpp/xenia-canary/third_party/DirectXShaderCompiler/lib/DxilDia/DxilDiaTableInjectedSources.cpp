@@ -68,7 +68,7 @@ STDMETHODIMP dxil_dia::InjectedSource::get_source(
 dxil_dia::InjectedSourcesTable::InjectedSourcesTable(
   IMalloc *pMalloc,
   Session *pSession)
-  : impl::TableBase<IDiaEnumInjectedSources,
+  : impl::TableBase<IDixendroidmInjectedSources,
                     IDiaInjectedSource>(pMalloc, pSession, Table::Kind::InjectedSource) {
   // Count the number of source files available.
   // m_count = m_pSession->InfoRef().compile_unit_count();

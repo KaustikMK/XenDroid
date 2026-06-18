@@ -324,7 +324,7 @@ public:
   std::wstring GetDebugInfoAsText(_In_ IDiaDataSource* pDataSource) {
     CComPtr<IDiaSession> pSession;
     CComPtr<IDiaTable> pTable;
-    CComPtr<IDiaEnumTables> pEnumTables;
+    CComPtr<IDixendroidmTables> pEnumTables;
     std::wstringstream o;
 
     VERIFY_SUCCEEDED(pDataSource->openSession(&pSession));
@@ -477,7 +477,7 @@ public:
 
     CComPtr<IDiaTable> pSourcesTable;
 
-    CComPtr<IDiaEnumTables> pEnumTables;
+    CComPtr<IDixendroidmTables> pEnumTables;
     std::wstringstream o;
 
     VERIFY_SUCCEEDED(pDataSource->openSession(&pSession));
@@ -512,7 +512,7 @@ public:
     CComPtr<IDiaSourceFile> pSourceFile;
     CComBSTR pName;
     CComPtr<IUnknown> pSymbolUnk;
-    CComPtr<IDiaEnumInjectedSources> pEnumInjectedSources;
+    CComPtr<IDixendroidmInjectedSources> pEnumInjectedSources;
     CComPtr<IDiaInjectedSource> pInjectedSource;
     std::wstring sourceText, sourceFilename;
 
@@ -548,7 +548,7 @@ public:
   }
 
   struct LineNumber { DWORD line; DWORD rva; };
-  std::vector<LineNumber> ReadLineNumbers(IDiaEnumLineNumbers *pEnumLineNumbers) {
+  std::vector<LineNumber> ReadLineNumbers(IDixendroidmLineNumbers *pEnumLineNumbers) {
     std::vector<LineNumber> lines;
     CComPtr<IDiaLineNumber> pLineNumber;
     DWORD lineCount;
@@ -1567,7 +1567,7 @@ TEST_F(PixTest, DiaCompileArgs) {
   CComPtr<IDiaSession> pSession;
   VERIFY_SUCCEEDED(pDiaDataSource->openSession(&pSession));
 
-  CComPtr<IDiaEnumTables> pEnumTables;
+  CComPtr<IDixendroidmTables> pEnumTables;
   VERIFY_SUCCEEDED(pSession->getEnumTables(&pEnumTables));
 
   CComPtr<IDiaTable> pSymbolTable;
@@ -1724,7 +1724,7 @@ TEST_F(PixTest, DiaLoadDebugThenOK) {
 TEST_F(PixTest, DiaTableIndexThenOK) {
   CComPtr<IDiaDataSource> pDiaSource;
   CComPtr<IDiaSession> pDiaSession;
-  CComPtr<IDiaEnumTables> pEnumTables;
+  CComPtr<IDixendroidmTables> pEnumTables;
   CComPtr<IDiaTable> pTable;
   VARIANT vtIndex;
   CompileTestAndLoadDia(m_dllSupport, &pDiaSource);

@@ -12,7 +12,7 @@
 
 using namespace llvm;
 
-DIADataStream::DIADataStream(CComPtr<IDiaEnumDebugStreamData> DiaStreamData)
+DIADataStream::DIADataStream(CComPtr<IDixendroidmDebugStreamData> DiaStreamData)
     : StreamData(DiaStreamData) {}
 
 uint32_t DIADataStream::getRecordCount() const {
@@ -65,7 +65,7 @@ bool DIADataStream::getNext(RecordType &Record) {
 void DIADataStream::reset() { StreamData->Reset(); }
 
 DIADataStream *DIADataStream::clone() const {
-  CComPtr<IDiaEnumDebugStreamData> EnumeratorClone;
+  CComPtr<IDixendroidmDebugStreamData> EnumeratorClone;
   if (S_OK != StreamData->Clone(&EnumeratorClone))
     return nullptr;
 

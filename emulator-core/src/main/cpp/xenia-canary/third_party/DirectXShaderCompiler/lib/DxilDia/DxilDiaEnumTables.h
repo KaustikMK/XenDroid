@@ -1,6 +1,6 @@
 ///////////////////////////////////////////////////////////////////////////////
 //                                                                           //
-// DxilDiaEnumTable.h                                                        //
+// DxilDixendroidmTable.h                                                        //
 // Copyright (C) Microsoft Corporation. All rights reserved.                 //
 // This file is distributed under the University of Illinois Open Source     //
 // License. See LICENSE.TXT for details.                                     //
@@ -27,7 +27,7 @@ namespace dxil_dia {
 
 class Session;
 
-class EnumTables : public IDiaEnumTables {
+class EnumTables : public IDixendroidmTables {
 private:
   DXC_MICROCOM_TM_REF_FIELDS()
 protected:
@@ -37,7 +37,7 @@ public:
   DXC_MICROCOM_TM_ADDREF_RELEASE_IMPL()
 
   HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void **ppvObject) {
-    return DoBasicQueryInterface<IDiaEnumTables>(this, iid, ppvObject);
+    return DoBasicQueryInterface<IDixendroidmTables>(this, iid, ppvObject);
   }
 
   EnumTables(IMalloc *pMalloc, Session *pSession)
@@ -65,10 +65,10 @@ public:
   STDMETHODIMP Reset(void) override;
 
   STDMETHODIMP Clone(
-    /* [out] */ IDiaEnumTables **ppenum) override { return ENotImpl(); }
+    /* [out] */ IDixendroidmTables **ppenum) override { return ENotImpl(); }
 
   static HRESULT Create(Session *pSession,
-                        IDiaEnumTables **ppEnumTables);
+                        IDixendroidmTables **ppEnumTables);
 private:
   std::array<CComPtr<IDiaTable>, (int)Table::LastKind+1> m_tables;
 };

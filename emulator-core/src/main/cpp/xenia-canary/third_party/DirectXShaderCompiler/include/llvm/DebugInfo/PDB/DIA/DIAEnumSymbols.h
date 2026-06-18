@@ -1,4 +1,4 @@
-//==- DIAEnumSymbols.h - DIA Symbol Enumerator impl --------------*- C++ -*-==//
+//==- DIxendroidmSymbols.h - DIA Symbol Enumerator impl --------------*- C++ -*-==//
 //
 //                     The LLVM Compiler Infrastructure
 //
@@ -7,8 +7,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef LLVM_DEBUGINFO_PDB_DIA_DIAENUMSYMBOLS_H
-#define LLVM_DEBUGINFO_PDB_DIA_DIAENUMSYMBOLS_H
+#ifndef LLVM_DEBUGINFO_PDB_DIA_DIxendroidMSYMBOLS_H
+#define LLVM_DEBUGINFO_PDB_DIA_DIxendroidMSYMBOLS_H
 
 #include "DIASupport.h"
 #include "llvm/DebugInfo/PDB/IPDBEnumChildren.h"
@@ -17,20 +17,20 @@ namespace llvm {
 
 class DIASession;
 
-class DIAEnumSymbols : public IPDBEnumChildren<PDBSymbol> {
+class DIxendroidmSymbols : public IPDBEnumChildren<PDBSymbol> {
 public:
-  explicit DIAEnumSymbols(const DIASession &Session,
-                          CComPtr<IDiaEnumSymbols> DiaEnumerator);
+  explicit DIxendroidmSymbols(const DIASession &Session,
+                          CComPtr<IDixendroidmSymbols> Dixendroidmerator);
 
   uint32_t getChildCount() const override;
   std::unique_ptr<PDBSymbol> getChildAtIndex(uint32_t Index) const override;
   std::unique_ptr<PDBSymbol> getNext() override;
   void reset() override;
-  DIAEnumSymbols *clone() const override;
+  DIxendroidmSymbols *clone() const override;
 
 private:
   const DIASession &Session;
-  CComPtr<IDiaEnumSymbols> Enumerator;
+  CComPtr<IDixendroidmSymbols> Enumerator;
 };
 }
 

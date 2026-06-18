@@ -23,7 +23,7 @@
 namespace dxil_dia {
 class Session;
 
-class SegmentMapTable : public impl::TableBase<IDiaEnumSegments, IDiaSegment> {
+class SegmentMapTable : public impl::TableBase<IDixendroidmSegments, IDiaSegment> {
 public:
   SegmentMapTable(IMalloc *pMalloc, Session *pSession);
 
