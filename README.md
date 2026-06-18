@@ -1,6 +1,5 @@
 <p align="center">
-    <a href="https://github.com/rfandango/XenDroid/">
-        <img height="256px" src="https://raw.githubusercontent.com/XenDroid/master/XenDroid_full.png" />
+        <img height="256px" src="https://github.com/rfandango/XenDroid/blob/rebrand/XenDroid_foreground.png" />
     </a>
 </p>
 
