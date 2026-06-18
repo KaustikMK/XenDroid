@@ -11,6 +11,7 @@
 #define xendroid_XE_ANDROID_INPUT_DRIVER_H
 
 #include <queue>
+#include <vector>
 
 #include "xenia/base/mutex.h"
 #include "xenia/hid/input_driver.h"
@@ -48,6 +49,10 @@ namespace xe {
                 X_RESULT GetKeystroke(uint32_t user_index, uint32_t flags,X_INPUT_KEYSTROKE* out_keystroke) override;
 
                 InputType GetInputType() const override;
+                // XenDroid: edge's InputSystem builds guest controller-slot
+                // bindings from each driver's EnumerateDevices(). Advertise the
+                // always-present Android controller so it auto-binds to a slot.
+                std::vector<InputDeviceInfo> EnumerateDevices() override;
                 void OnKey(int key_index, bool pressed, short value);
 
             };
