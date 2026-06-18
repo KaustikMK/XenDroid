@@ -30,3 +30,5 @@ Please check the LICENSE file under the appropriate file header and directory fo
 - Snapdragon SoC, GEN 2 or higher
 - Adreno GPU, starting from 7xx series at least.
 - [Freedreno Mesa Turnip](https://github.com/s1mptom/freedreno_turnip-CI/releases/tag/mesa_v26.1-eden-fix-latest-crash-fix) drivers to use on XenDroid
+
+You can check your device specs with [CPU X](https://play.google.com/store/apps/details?id=com.abs.cpu_z_advance&hl=it)
