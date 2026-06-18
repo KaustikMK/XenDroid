@@ -1,4 +1,4 @@
-package xendroid.compose.compose.gamepad
+package xendroid.compose.gamepad
 
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.unit.Density

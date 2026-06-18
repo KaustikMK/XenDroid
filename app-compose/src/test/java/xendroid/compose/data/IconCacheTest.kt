@@ -1,4 +1,4 @@
-package xendroid.compose.compose.data
+package xendroid.compose.data
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue

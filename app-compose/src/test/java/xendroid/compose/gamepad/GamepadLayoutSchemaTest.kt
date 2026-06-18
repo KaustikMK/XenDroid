@@ -1,4 +1,4 @@
-package xendroid.compose.compose.gamepad
+package xendroid.compose.gamepad
 
 import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals

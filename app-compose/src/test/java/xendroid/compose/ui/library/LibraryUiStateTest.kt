@@ -1,4 +1,4 @@
-package xendroid.compose.compose.ui.library
+package xendroid.compose.ui.library
 
 import xendroid.compose.data.Game
 import xendroid.compose.data.GameFormat

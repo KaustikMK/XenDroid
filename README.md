@@ -1,5 +1,5 @@
 <p align="center">
-        <img height="256px" src="https://github.com/rfandango/XenDroid/blob/rebrand/XenDroid_foreground.png" />
+       <img height="256px" src="https://github.com/rfandango/XenDroid/blob/rebrand/XenDroid_foreground.png"/>
     </a>
 </p>
 
@@ -25,3 +25,8 @@ See [BUILD.md](BUILD.md) for build instructions (Linux and Windows). In short:
 LICENSE:
 
 Please check the LICENSE file under the appropriate file header and directory for detailed information.
+
+## Device Requirements
+- Snapdragon SoC, GEN 2 or higher
+- Adreno GPU, starting from 7xx series at least.
+- [Freedreno Mesa Turnip](https://github.com/s1mptom/freedreno_turnip-CI/releases/tag/mesa_v26.1-eden-fix-latest-crash-fix) drivers to use on XenDroid

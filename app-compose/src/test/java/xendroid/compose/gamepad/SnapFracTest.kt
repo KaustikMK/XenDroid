@@ -1,4 +1,4 @@
-package xendroid.compose.compose.gamepad
+package xendroid.compose.gamepad
 
 import org.junit.Assert.assertEquals
 import org.junit.Test

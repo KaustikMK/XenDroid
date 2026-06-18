@@ -1,4 +1,4 @@
-package xendroid.compose.compose.data
+package xendroid.compose.data
 
 import android.view.KeyEvent
 import org.junit.Assert.assertEquals

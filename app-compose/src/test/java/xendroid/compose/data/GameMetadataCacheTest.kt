@@ -1,4 +1,4 @@
-package xendroid.compose.compose.data
+package xendroid.compose.data
 
 import xendroid.compose.data.GameMetadataCache.Decision
 import xendroid.compose.data.GameMetadataCache.Entry
@@ -11,6 +11,7 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import xendroid.compose.data.GameMetadataCache
+import java.io.File
 
 /**
  * Unit tests for the pure HIT/MISS decision (the bug-prone core: file-change
@@ -120,7 +121,7 @@ class GameMetadataCacheTest {
 
     @Test fun loadOnCorruptFileIsColdNotCrash() {
         val dir = tmp.newFolder()
-        java.io.File(dir, GameMetadataCache.FILE_NAME).writeText("{ not valid json ]")
+        File(dir, GameMetadataCache.FILE_NAME).writeText("{ not valid json ]")
         val cache = GameMetadataCache(dir)
         cache.load()  // must not throw
         assertNull(cache.get("anything"))
