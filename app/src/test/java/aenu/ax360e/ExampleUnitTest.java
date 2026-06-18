@@ -1,4 +1,4 @@
-package aenu.ax360e;
+package xendroid.compose;
 
 import org.junit.Test;
 

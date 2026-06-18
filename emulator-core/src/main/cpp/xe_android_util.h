@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: WTFPL
 
-#ifndef AX360E_XE_ANDROID_UTIL_H
-#define AX360E_XE_ANDROID_UTIL_H
+#ifndef xendroid_XE_ANDROID_UTIL_H
+#define xendroid_XE_ANDROID_UTIL_H
 #include <jni.h>
 namespace xe {
     jint
 }
 
-#endif //AX360E_XE_ANDROID_UTIL_H
+#endif //xendroid_XE_ANDROID_UTIL_H

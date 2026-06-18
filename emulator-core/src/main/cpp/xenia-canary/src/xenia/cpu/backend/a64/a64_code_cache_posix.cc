@@ -22,7 +22,7 @@
 extern "C" void __register_frame(void*);
 extern "C" void __deregister_frame(void*);
 
-#if XE_PLATFORM_AX360E
+#if XE_PLATFORM_xendroid
 #include "../aarch64_disasm.h"
 #include <unwind.h>
 extern "C" _Unwind_Reason_Code __gxx_personality_v0(
@@ -163,7 +163,7 @@ class PosixA64CodeCache : public A64CodeCache {
   std::vector<void*> registered_frames_;
   uint32_t unwind_table_count_ = 0;
 
-#if XE_PLATFORM_AX360E
+#if XE_PLATFORM_xendroid
   // Bump allocator for the JIT's DWARF .eh_frame (a CIE+FDE per function).
   // eh_frame_table_ is the current write cursor; _base_/_end_ bound the
   // allocation so the cursor can be size-checked and the buffer freed correctly
@@ -185,7 +185,7 @@ PosixA64CodeCache::~PosixA64CodeCache() {
     __deregister_frame(frame);
   }
 
-#if XE_PLATFORM_AX360E
+#if XE_PLATFORM_xendroid
   // Free the original allocation, not the advanced write cursor.
   delete[] eh_frame_table_base_;
 #endif
@@ -196,7 +196,7 @@ bool PosixA64CodeCache::Initialize() {
     return false;
   }
 
-#if XE_PLATFORM_AX360E
+#if XE_PLATFORM_xendroid
   // 128 MiB. Worst case kMaximumFunctionCount (1,000,000) x ~70 B/entry
   // (CIE+FDE) ~= 70 MB; 128 MiB leaves headroom, and the per-write bounds check
   // in InitializeUnwindEntry turns exhaustion into a clean abort rather than a
@@ -226,8 +226,8 @@ A64CodeCache::UnwindReservation PosixA64CodeCache::RequestUnwindReservation(
   assert_false(unwind_table_count_ >= kMaximumFunctionCount);
 #endif
   UnwindReservation unwind_reservation;
-#if XE_PLATFORM_AX360E
-  // On AX360E the DWARF .eh_frame lives in a separate bump buffer
+#if XE_PLATFORM_xendroid
+  // On xendroid the DWARF .eh_frame lives in a separate bump buffer
   // (eh_frame_table_); InitializeUnwindEntry/PlaceCode never write to or
   // register the per-function tail in the code region (unlike the #else path,
   // which anchors pcrel pointers there). Reserving a tail here only wastes code
@@ -253,7 +253,7 @@ void PosixA64CodeCache::PlaceCode(uint32_t guest_address, void* machine_code,
                                  generated_code_write_base_ +
                                  generated_code_execute_base_;
 
-#if !XE_PLATFORM_AX360E
+#if !XE_PLATFORM_xendroid
   __register_frame(unwind_execute_address);
   registered_frames_.push_back(unwind_execute_address);
 #endif
@@ -269,7 +269,7 @@ void PosixA64CodeCache::InitializeUnwindEntry(
 
   uint8_t* p = eh_frame_table_;
   uint8_t* cie_start = p;
-#if XE_PLATFORM_AX360E
+#if XE_PLATFORM_xendroid
 
     // Refuse to bump past the end of the table instead of corrupting the heap.
     // Real entries are <= ~140 B (a thunk's CIE+FDE); 1 KiB is a safe ceiling.
@@ -665,8 +665,8 @@ void PosixA64CodeCache::InitializeUnwindEntry(
   *reinterpret_cast<uint32_t*>(p) = 0;
   p += 4;
 #endif
-#if !XE_PLATFORM_AX360E
-  // The AX360E path writes unwind data into its own 64 MiB eh_frame_table_
+#if !XE_PLATFORM_xendroid
+  // The xendroid path writes unwind data into its own 64 MiB eh_frame_table_
   // bump buffer (p starts at eh_frame_table_, not at unwind_entry_address, and
   // the per-function unwind_entry_address reservation is unused). So this
   // bound compares unrelated pointers (heap vs. code-cache mmap) and does not

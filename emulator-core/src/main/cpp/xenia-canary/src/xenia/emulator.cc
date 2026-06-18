@@ -657,7 +657,7 @@ X_STATUS Emulator::LaunchDefaultModule(const std::filesystem::path& path) {
   }
   return result;
 }
-#if XE_PLATFORM_AX360E
+#if XE_PLATFORM_xendroid
 
     const std::unique_ptr<vfs::Device> Emulator::CreateVfsDevice(
             std::unique_ptr<DocumentFile> path,std::unique_ptr<DocumentFile> data_dir,FileSignatureType type, const std::string_view mount_path) {

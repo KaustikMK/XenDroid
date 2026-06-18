@@ -7,8 +7,8 @@
  ******************************************************************************
  */
 
-#ifndef AX360E_XE_SAF_STFS_ENTRY_H
-#define AX360E_XE_SAF_STFS_ENTRY_H
+#ifndef xendroid_XE_SAF_STFS_ENTRY_H
+#define xendroid_XE_SAF_STFS_ENTRY_H
 
 #include <map>
 #include <string>
@@ -61,4 +61,4 @@ namespace xe {
 
     }  // namespace vfs
 }  // namespace xe
-#endif //AX360E_XE_SAF_STFS_ENTRY_H
+#endif //xendroid_XE_SAF_STFS_ENTRY_H

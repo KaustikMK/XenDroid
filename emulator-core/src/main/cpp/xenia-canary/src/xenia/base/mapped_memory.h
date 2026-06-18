@@ -34,7 +34,7 @@ class MappedMemory {
       size_t length = 0);
 #endif  // XE_PLATFORM_ANDROID
 
-#if XE_PLATFORM_AX360E
+#if XE_PLATFORM_xendroid
         static std::unique_ptr<MappedMemory> OpenForUnixFd(int fd);
 #endif
 

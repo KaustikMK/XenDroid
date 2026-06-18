@@ -34,9 +34,9 @@
 #elif defined(__ANDROID__)
 // The fork IS an Android build: define XE_PLATFORM_ANDROID so upstream's
 // (now-mature) `#if XE_PLATFORM_ANDROID` code paths activate, and keep
-// XE_PLATFORM_AX360E for fork-specific overrides on top.
+// XE_PLATFORM_xendroid for fork-specific overrides on top.
 //#define XE_PLATFORM_ANDROID 1
-#define XE_PLATFORM_AX360E 1
+#define XE_PLATFORM_xendroid 1
 #define XE_PLATFORM_LINUX 1
 #elif defined(__gnu_linux__)
 #define XE_PLATFORM_GNU_LINUX 1

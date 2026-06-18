@@ -97,7 +97,7 @@ private:
   void parseNew();
   void parseAccessSpecifier();
   void parseEnum();
-  void parseJavaEnumBody();
+  void parseJavxendroidmBody();
   void parseRecord();
   void parseObjCProtocolList();
   void parseObjCUntilAtEnd();

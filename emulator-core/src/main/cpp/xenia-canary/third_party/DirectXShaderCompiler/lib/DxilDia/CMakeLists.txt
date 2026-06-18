@@ -16,7 +16,7 @@ add_llvm_library(LLVMDxilDia
   DxcPixVariables.cpp
   DxilDia.cpp
   DxilDiaDataSource.cpp
-  DxilDiaEnumTables.cpp
+  DxilDixendroidmTables.cpp
   DxilDiaSession.cpp
   DxilDiaSymbolManager.cpp
   DxilDiaTable.cpp

@@ -135,7 +135,7 @@ std::unique_ptr<MappedMemory> MappedMemory::OpenForAndroidContentUri(
                                                length);
 }
 #endif  // XE_PLATFORM_ANDROID
-#if XE_PLATFORM_AX360E
+#if XE_PLATFORM_xendroid
     std::unique_ptr<MappedMemory> MappedMemory::OpenForUnixFd(int fd){
         return PosixMappedMemory::WrapFileDescriptor(fd, Mode::kRead,0,0);
     }

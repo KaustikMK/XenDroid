@@ -1,6 +1,6 @@
 ///////////////////////////////////////////////////////////////////////////////
 //                                                                           //
-// DxilDiaEnumTables.cpp                                                     //
+// DxilDixendroidmTables.cpp                                                     //
 // Copyright (C) Microsoft Corporation. All rights reserved.                 //
 // This file is distributed under the University of Illinois Open Source     //
 // License. See LICENSE.TXT for details.                                     //
@@ -9,7 +9,7 @@
 //                                                                           //
 ///////////////////////////////////////////////////////////////////////////////
 
-#include "DxilDiaEnumTables.h"
+#include "DxilDixendroidmTables.h"
 
 #include "DxilDia.h"
 #include "DxilDiaSession.h"
@@ -79,7 +79,7 @@ STDMETHODIMP dxil_dia::EnumTables::Reset() {
 
 HRESULT dxil_dia::EnumTables::Create(
     /* [in] */ dxil_dia::Session *pSession,
-    /* [out] */ IDiaEnumTables **ppEnumTables) {
+    /* [out] */ IDixendroidmTables **ppEnumTables) {
   *ppEnumTables = CreateOnMalloc<EnumTables>(pSession->GetMallocNoRef(), pSession);
   if (*ppEnumTables == nullptr)
     return E_OUTOFMEMORY;

@@ -7,8 +7,8 @@
  ******************************************************************************
  */
 
-#ifndef AX360E_XE_SAF_DISC_IMAGE_FILE_H
-#define AX360E_XE_SAF_DISC_IMAGE_FILE_H
+#ifndef xendroid_XE_SAF_DISC_IMAGE_FILE_H
+#define xendroid_XE_SAF_DISC_IMAGE_FILE_H
 
 #include "xenia/vfs/file.h"
 
@@ -38,4 +38,4 @@ namespace xe {
 
     }  // namespace vfs
 }  // namespace xe
-#endif //AX360E_XE_SAF_DISC_IMAGE_FILE_H
+#endif //xendroid_XE_SAF_DISC_IMAGE_FILE_H

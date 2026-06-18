@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Forward a host port to the ax360e :emu render process's RenderDoc target
+# Forward a host port to the compose :emu render process's RenderDoc target
 # control socket, so qrenderdoc's "Attach to Running Instance" lands on the
 # Vulkan renderer instead of the launcher process (which shows "API = None").
 #
-# Both aenu.ax360e.free (launcher) and aenu.ax360e.free:emu (renderer) create a
+# Both xendroid.compose.free (launcher) and xendroid.compose.free:emu (renderer) create a
 # Vulkan instance with the bundled VK_LAYER_RENDERDOC_Capture layer, so each
 # opens its own @renderdoc_3892X target-control socket. qrenderdoc auto-grabs
 # 38920, often the wrong one. This script identifies which socket :emu owns and
@@ -18,7 +18,7 @@
 #      presented frame (API flips to Vulkan), then capture.
 set -euo pipefail
 
-PKG="aenu.ax360e.free"
+PKG="xendroid"
 EMU_PROC="${PKG}:emu"
 HOST_PORT="${1:-38920}"
 

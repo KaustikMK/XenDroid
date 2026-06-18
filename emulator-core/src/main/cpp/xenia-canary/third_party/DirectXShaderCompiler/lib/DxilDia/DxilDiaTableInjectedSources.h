@@ -66,7 +66,7 @@ public:
     /* [size_is][out] */ BYTE *pbData) override;
 };
 
-class InjectedSourcesTable : public impl::TableBase<IDiaEnumInjectedSources,
+class InjectedSourcesTable : public impl::TableBase<IDixendroidmInjectedSources,
                                                     IDiaInjectedSource> {
 public:
   InjectedSourcesTable(IMalloc *pMalloc, Session *pSession);

@@ -15,7 +15,7 @@
 #if XE_PLATFORM_WIN32
 #include "xenia/base/platform_win.h"
 #endif
-#if XE_PLATFORM_AX360E
+#if XE_PLATFORM_xendroid
 #include "../aarch64_disasm.h"
 #endif
 #if defined(__linux__)
@@ -118,7 +118,7 @@ void A64CodeCache::FlushCodeRange(void* address, size_t size) {
 #else
 
 
-#if XE_PLATFORM_AX360E
+#if XE_PLATFORM_xendroid
     //XELOGI("ASM:\n{}", aarch64_disasm(reinterpret_cast<uint64_t>(address),reinterpret_cast<uint32_t*>(address),size/4));
 #endif
     __builtin___clear_cache(

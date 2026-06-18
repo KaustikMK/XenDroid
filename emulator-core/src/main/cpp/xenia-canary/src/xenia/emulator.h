@@ -31,7 +31,7 @@
 #include "xenia/vfs/virtual_file_system.h"
 #include "xenia/xbox.h"
 
-#if XE_PLATFORM_AX360E
+#if XE_PLATFORM_xendroid
 #include "../document_file.h"
 #include "../xe_saf_xex_device.h"
 #include "../xe_saf_stfs_device.h"
@@ -243,7 +243,7 @@ class Emulator {
   X_STATUS LaunchStfsContainer(const std::filesystem::path& path);
 
   X_STATUS LaunchDefaultModule(const std::filesystem::path& path);
-#if XE_PLATFORM_AX360E
+#if XE_PLATFORM_xendroid
         const std::unique_ptr<vfs::Device> CreateVfsDevice(
                 std::unique_ptr<DocumentFile> path,std::unique_ptr<DocumentFile> data_dir,FileSignatureType type, const std::string_view mount_path);
         X_STATUS MountPath(std::unique_ptr<DocumentFile> path,std::unique_ptr<DocumentFile> data_dir,FileSignatureType type,

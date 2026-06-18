@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: WTFPL
-package aenu.preference;
+package xendroid.preference;
 
 import android.content.Context;
 import android.content.res.TypedArray;

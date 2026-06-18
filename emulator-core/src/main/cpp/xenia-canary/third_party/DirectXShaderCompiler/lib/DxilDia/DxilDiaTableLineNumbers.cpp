@@ -145,14 +145,14 @@ STDMETHODIMP dxil_dia::LineNumber::get_compilandId(
 }
 
 dxil_dia::LineNumbersTable::LineNumbersTable(IMalloc *pMalloc, Session *pSession)
-  : impl::TableBase<IDiaEnumLineNumbers, IDiaLineNumber>(pMalloc, pSession, Table::Kind::LineNumbers)
+  : impl::TableBase<IDixendroidmLineNumbers, IDiaLineNumber>(pMalloc, pSession, Table::Kind::LineNumbers)
   , m_instructions(pSession->InstructionLinesRef())
 {
   m_count = m_instructions.size();
 }
 
 dxil_dia::LineNumbersTable::LineNumbersTable(IMalloc *pMalloc, Session *pSession, std::vector<const llvm::Instruction*> &&instructions)
-  : impl::TableBase<IDiaEnumLineNumbers, IDiaLineNumber>(pMalloc, pSession, Table::Kind::LineNumbers)
+  : impl::TableBase<IDixendroidmLineNumbers, IDiaLineNumber>(pMalloc, pSession, Table::Kind::LineNumbers)
   , m_instructions(m_instructionsStorage)
   , m_instructionsStorage(std::move(instructions))
 {

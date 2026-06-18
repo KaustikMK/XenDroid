@@ -13,10 +13,10 @@ if(HAVE_DIA_SDK)
 
   add_pdb_impl_folder(DIA
     DIA/DIADataStream.cpp
-    DIA/DIAEnumDebugStreams.cpp
-    DIA/DIAEnumLineNumbers.cpp
-    DIA/DIAEnumSourceFiles.cpp
-    DIA/DIAEnumSymbols.cpp
+    DIA/DIxendroidmDebugStreams.cpp
+    DIA/DIxendroidmLineNumbers.cpp
+    DIA/DIxendroidmSourceFiles.cpp
+    DIA/DIxendroidmSymbols.cpp
     DIA/DIALineNumber.cpp
     DIA/DIARawSymbol.cpp
     DIA/DIASession.cpp

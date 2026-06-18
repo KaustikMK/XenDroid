@@ -6,8 +6,8 @@
  * Released under the BSD license - see LICENSE in the root for more details. *
  ******************************************************************************
  */
-#ifndef AX360E_XE_SAF_DISC_IMAGE_DEVICE_H
-#define AX360E_XE_SAF_DISC_IMAGE_DEVICE_H
+#ifndef xendroid_XE_SAF_DISC_IMAGE_DEVICE_H
+#define xendroid_XE_SAF_DISC_IMAGE_DEVICE_H
 
 #include <stdint.h>
 #include <string>
@@ -78,4 +78,4 @@ namespace xe {
     }  // namespace vfs
 }  // namespace xe
 
-#endif //AX360E_XE_SAF_DISC_IMAGE_DEVICE_H
+#endif //xendroid_XE_SAF_DISC_IMAGE_DEVICE_H

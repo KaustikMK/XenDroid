@@ -3,11 +3,11 @@
 
     <!-- The DocumentsProvider lives in :emulator-core (it depends on Application/Utils,
          which moved here too). ${applicationId} resolves to each consuming app's id at
-         merge time, so :app (aenu.ax360e.dev) and a future :app-compose get distinct,
+         merge time, so :app (composee.dev) and a future :app-compose get distinct,
          non-colliding authorities. -->
     <application>
         <provider
-            android:name="aenu.ax360e.DocumentsProvider"
+            android:name="xendroid.compose.DocumentsProvider"
             android:authorities="${applicationId}.DocumentsProvider"
             android:exported="true"
             android:grantUriPermissions="true"

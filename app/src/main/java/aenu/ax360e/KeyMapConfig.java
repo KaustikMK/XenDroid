@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: WTFPL
 
-package aenu.ax360e;
+package xendroid.compose;
 
 import android.view.KeyEvent;
 

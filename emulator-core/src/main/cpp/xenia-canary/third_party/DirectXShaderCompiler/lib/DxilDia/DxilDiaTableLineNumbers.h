@@ -93,7 +93,7 @@ public:
     /* [retval][out] */ DWORD *pRetVal) override;
 };
 
-class LineNumbersTable : public impl::TableBase<IDiaEnumLineNumbers, IDiaLineNumber> {
+class LineNumbersTable : public impl::TableBase<IDixendroidmLineNumbers, IDiaLineNumber> {
 public:
   LineNumbersTable(
     /* [in] */ IMalloc *pMalloc,

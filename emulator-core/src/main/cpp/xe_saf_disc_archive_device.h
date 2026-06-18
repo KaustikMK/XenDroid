@@ -6,8 +6,8 @@
  * Released under the BSD license - see LICENSE in the root for more details. *
  ******************************************************************************
  */
-#ifndef AX360E_XE_SAF_DISC_ARCHIVE_DEVICE_H
-#define AX360E_XE_SAF_DISC_ARCHIVE_DEVICE_H
+#ifndef xendroid_XE_SAF_DISC_ARCHIVE_DEVICE_H
+#define xendroid_XE_SAF_DISC_ARCHIVE_DEVICE_H
 
 #include <memory>
 #include <string>
@@ -62,4 +62,4 @@ namespace xe {
     }  // namespace vfs
 }  // namespace xe
 
-#endif //AX360E_XE_SAF_DISC_ARCHIVE_DEVICE_H
+#endif //xendroid_XE_SAF_DISC_ARCHIVE_DEVICE_H

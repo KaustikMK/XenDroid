@@ -58,7 +58,7 @@ public:
     /* [retval][out] */ DWORD *pRetVal) override { return ENotImpl(); }
 
   STDMETHODIMP get_compilands(
-    /* [retval][out] */ IDiaEnumSymbols **pRetVal) override { return ENotImpl(); }
+    /* [retval][out] */ IDixendroidmSymbols **pRetVal) override { return ENotImpl(); }
 
   STDMETHODIMP get_checksum(
     /* [in] */ DWORD cbData,
@@ -66,7 +66,7 @@ public:
     /* [size_is][out] */ BYTE *pbData) override { return ENotImpl(); }
 };
 
-class SourceFilesTable : public impl::TableBase<IDiaEnumSourceFiles, IDiaSourceFile> {
+class SourceFilesTable : public impl::TableBase<IDixendroidmSourceFiles, IDiaSourceFile> {
 public:
   SourceFilesTable(IMalloc *pMalloc, Session *pSession);
   SourceFilesTable(IMalloc *pMalloc, Session *pSession,

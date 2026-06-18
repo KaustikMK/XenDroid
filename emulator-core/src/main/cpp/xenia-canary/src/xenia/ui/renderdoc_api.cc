@@ -22,7 +22,7 @@ namespace xe {
 namespace ui {
 
 std::unique_ptr<RenderDocAPI> RenderDocAPI::CreateIfConnected() {
-#if XE_PLATFORM_AX360E
+#if XE_PLATFORM_xendroid
     return nullptr;
 #endif
   std::unique_ptr<RenderDocAPI> renderdoc_api(new RenderDocAPI());

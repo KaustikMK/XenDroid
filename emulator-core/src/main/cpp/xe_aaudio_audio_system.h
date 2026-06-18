@@ -7,8 +7,8 @@
  ******************************************************************************
  */
 
-#ifndef AX360E_XE_AAUDIO_AUDIO_SYSTEM_H
-#define AX360E_XE_AAUDIO_AUDIO_SYSTEM_H
+#ifndef xendroid_XE_AAUDIO_AUDIO_SYSTEM_H
+#define xendroid_XE_AAUDIO_AUDIO_SYSTEM_H
 
 #include "xenia/apu/audio_system.h"
 
@@ -39,4 +39,4 @@ namespace xe {
         }
     }
 }
-#endif //AX360E_XE_AAUDIO_AUDIO_SYSTEM_H
+#endif //xendroid_XE_AAUDIO_AUDIO_SYSTEM_H

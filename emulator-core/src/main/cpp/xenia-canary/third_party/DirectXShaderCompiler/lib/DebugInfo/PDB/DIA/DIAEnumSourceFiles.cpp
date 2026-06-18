@@ -1,4 +1,4 @@
-//==- DIAEnumSourceFiles.cpp - DIA Source File Enumerator impl ---*- C++ -*-==//
+//==- DIxendroidmSourceFiles.cpp - DIA Source File Enumerator impl ---*- C++ -*-==//
 //
 //                     The LLVM Compiler Infrastructure
 //
@@ -8,22 +8,22 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/DebugInfo/PDB/PDBSymbol.h"
-#include "llvm/DebugInfo/PDB/DIA/DIAEnumSourceFiles.h"
+#include "llvm/DebugInfo/PDB/DIA/DIxendroidmSourceFiles.h"
 #include "llvm/DebugInfo/PDB/DIA/DIASourceFile.h"
 
 using namespace llvm;
 
-DIAEnumSourceFiles::DIAEnumSourceFiles(
-    const DIASession &PDBSession, CComPtr<IDiaEnumSourceFiles> DiaEnumerator)
-    : Session(PDBSession), Enumerator(DiaEnumerator) {}
+DIxendroidmSourceFiles::DIxendroidmSourceFiles(
+    const DIASession &PDBSession, CComPtr<IDixendroidmSourceFiles> Dixendroidmerator)
+    : Session(PDBSession), Enumerator(Dixendroidmerator) {}
 
-uint32_t DIAEnumSourceFiles::getChildCount() const {
+uint32_t DIxendroidmSourceFiles::getChildCount() const {
   LONG Count = 0;
   return (S_OK == Enumerator->get_Count(&Count)) ? Count : 0;
 }
 
 std::unique_ptr<IPDBSourceFile>
-DIAEnumSourceFiles::getChildAtIndex(uint32_t Index) const {
+DIxendroidmSourceFiles::getChildAtIndex(uint32_t Index) const {
   CComPtr<IDiaSourceFile> Item;
   if (S_OK != Enumerator->Item(Index, &Item))
     return nullptr;
@@ -31,7 +31,7 @@ DIAEnumSourceFiles::getChildAtIndex(uint32_t Index) const {
   return std::unique_ptr<IPDBSourceFile>(new DIASourceFile(Session, Item));
 }
 
-std::unique_ptr<IPDBSourceFile> DIAEnumSourceFiles::getNext() {
+std::unique_ptr<IPDBSourceFile> DIxendroidmSourceFiles::getNext() {
   CComPtr<IDiaSourceFile> Item;
   ULONG NumFetched = 0;
   if (S_OK != Enumerator->Next(1, &Item, &NumFetched))
@@ -40,11 +40,11 @@ std::unique_ptr<IPDBSourceFile> DIAEnumSourceFiles::getNext() {
   return std::unique_ptr<IPDBSourceFile>(new DIASourceFile(Session, Item));
 }
 
-void DIAEnumSourceFiles::reset() { Enumerator->Reset(); }
+void DIxendroidmSourceFiles::reset() { Enumerator->Reset(); }
 
-DIAEnumSourceFiles *DIAEnumSourceFiles::clone() const {
-  CComPtr<IDiaEnumSourceFiles> EnumeratorClone;
+DIxendroidmSourceFiles *DIxendroidmSourceFiles::clone() const {
+  CComPtr<IDixendroidmSourceFiles> EnumeratorClone;
   if (S_OK != Enumerator->Clone(&EnumeratorClone))
     return nullptr;
-  return new DIAEnumSourceFiles(Session, EnumeratorClone);
+  return new DIxendroidmSourceFiles(Session, EnumeratorClone);
 }

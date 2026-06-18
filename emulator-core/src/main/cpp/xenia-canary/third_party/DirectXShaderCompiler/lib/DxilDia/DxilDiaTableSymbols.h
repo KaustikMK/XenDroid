@@ -326,13 +326,13 @@ public:
     /* [in] */ enum SymTagEnum symtag,
     /* [in] */ LPCOLESTR name,
     /* [in] */ DWORD compareFlags,
-    /* [out] */ IDiaEnumSymbols **ppResult) override;
+    /* [out] */ IDixendroidmSymbols **ppResult) override;
 
   STDMETHODIMP findChildrenEx(
     /* [in] */ enum SymTagEnum symtag,
     /* [in] */ LPCOLESTR name,
     /* [in] */ DWORD compareFlags,
-    /* [out] */ IDiaEnumSymbols **ppResult) override;
+    /* [out] */ IDixendroidmSymbols **ppResult) override;
 
   STDMETHODIMP findChildrenExByAddr(
     /* [in] */ enum SymTagEnum symtag,
@@ -340,21 +340,21 @@ public:
     /* [in] */ DWORD compareFlags,
     /* [in] */ DWORD isect,
     /* [in] */ DWORD offset,
-    /* [out] */ IDiaEnumSymbols **ppResult) override { return ENotImpl(); }
+    /* [out] */ IDixendroidmSymbols **ppResult) override { return ENotImpl(); }
 
   STDMETHODIMP findChildrenExByVA(
     /* [in] */ enum SymTagEnum symtag,
     /* [in] */ LPCOLESTR name,
     /* [in] */ DWORD compareFlags,
     /* [in] */ ULONGLONG va,
-    /* [out] */ IDiaEnumSymbols **ppResult) override { return ENotImpl(); }
+    /* [out] */ IDixendroidmSymbols **ppResult) override { return ENotImpl(); }
 
   STDMETHODIMP findChildrenExByRVA(
     /* [in] */ enum SymTagEnum symtag,
     /* [in] */ LPCOLESTR name,
     /* [in] */ DWORD compareFlags,
     /* [in] */ DWORD rva,
-    /* [out] */ IDiaEnumSymbols **ppResult) override { return ENotImpl(); }
+    /* [out] */ IDixendroidmSymbols **ppResult) override { return ENotImpl(); }
 
   STDMETHODIMP get_targetSection(
     /* [retval][out] */ DWORD *pRetVal) override { return ENotImpl(); }
@@ -698,43 +698,43 @@ public:
   STDMETHODIMP findInlineFramesByAddr(
     /* [in] */ DWORD isect,
     /* [in] */ DWORD offset,
-    /* [out] */ IDiaEnumSymbols **ppResult) override { return ENotImpl(); }
+    /* [out] */ IDixendroidmSymbols **ppResult) override { return ENotImpl(); }
 
   STDMETHODIMP findInlineFramesByRVA(
     /* [in] */ DWORD rva,
-    /* [out] */ IDiaEnumSymbols **ppResult) override { return ENotImpl(); }
+    /* [out] */ IDixendroidmSymbols **ppResult) override { return ENotImpl(); }
 
   STDMETHODIMP findInlineFramesByVA(
     /* [in] */ ULONGLONG va,
-    /* [out] */ IDiaEnumSymbols **ppResult) override { return ENotImpl(); }
+    /* [out] */ IDixendroidmSymbols **ppResult) override { return ENotImpl(); }
 
   STDMETHODIMP findInlineeLines(
-    /* [out] */ IDiaEnumLineNumbers **ppResult) override { return ENotImpl(); }
+    /* [out] */ IDixendroidmLineNumbers **ppResult) override { return ENotImpl(); }
 
   STDMETHODIMP findInlineeLinesByAddr(
     /* [in] */ DWORD isect,
     /* [in] */ DWORD offset,
     /* [in] */ DWORD length,
-    /* [out] */ IDiaEnumLineNumbers **ppResult) override { return ENotImpl(); }
+    /* [out] */ IDixendroidmLineNumbers **ppResult) override { return ENotImpl(); }
 
   STDMETHODIMP findInlineeLinesByRVA(
     /* [in] */ DWORD rva,
     /* [in] */ DWORD length,
-    /* [out] */ IDiaEnumLineNumbers **ppResult) override { return ENotImpl(); }
+    /* [out] */ IDixendroidmLineNumbers **ppResult) override { return ENotImpl(); }
 
   STDMETHODIMP findInlineeLinesByVA(
     /* [in] */ ULONGLONG va,
     /* [in] */ DWORD length,
-    /* [out] */ IDiaEnumLineNumbers **ppResult) override { return ENotImpl(); }
+    /* [out] */ IDixendroidmLineNumbers **ppResult) override { return ENotImpl(); }
 
   STDMETHODIMP findSymbolsForAcceleratorPointerTag(
     /* [in] */ DWORD tagValue,
-    /* [out] */ IDiaEnumSymbols **ppResult) override { return ENotImpl(); }
+    /* [out] */ IDixendroidmSymbols **ppResult) override { return ENotImpl(); }
 
   STDMETHODIMP findSymbolsByRVAForAcceleratorPointerTag(
     /* [in] */ DWORD tagValue,
     /* [in] */ DWORD rva,
-    /* [out] */ IDiaEnumSymbols **ppResult) override { return ENotImpl(); }
+    /* [out] */ IDixendroidmSymbols **ppResult) override { return ENotImpl(); }
 
   STDMETHODIMP get_acceleratorPointerTags(
     /* [in] */ DWORD cnt,
@@ -831,17 +831,17 @@ public:
 #pragma endregion
 };
 
-class SymbolChildrenEnumerator : public IDiaEnumSymbols {
+class SymbolChildrenEnumerator : public IDixendroidmSymbols {
 public:
   DXC_MICROCOM_TM_ADDREF_RELEASE_IMPL()
   DXC_MICROCOM_TM_CTOR(SymbolChildrenEnumerator)
   HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void **ppvObject) {
-    return DoBasicQueryInterface<IDiaEnumSymbols>(this, iid, ppvObject);
+    return DoBasicQueryInterface<IDixendroidmSymbols>(this, iid, ppvObject);
   }
 
   void Init(std::vector<CComPtr<Symbol>> &&syms);
 
-#pragma region IDiaEnumSymbols implementation
+#pragma region IDixendroidmSymbols implementation
   /* [id][helpstring][propget] */ HRESULT STDMETHODCALLTYPE get__NewEnum(
     /* [retval][out] */ IUnknown **pRetVal) override { return ENotImpl(); }
 
@@ -863,7 +863,7 @@ public:
   HRESULT STDMETHODCALLTYPE Reset(void) override;
 
   HRESULT STDMETHODCALLTYPE Clone(
-    /* [out] */ IDiaEnumSymbols **ppenum) override { return ENotImpl(); }
+    /* [out] */ IDixendroidmSymbols **ppenum) override { return ENotImpl(); }
 #pragma endregion
 
 private:
@@ -872,7 +872,7 @@ private:
   std::vector<CComPtr<Symbol>>::iterator m_pos;
 };
 
-class SymbolsTable : public impl::TableBase<IDiaEnumSymbols, IDiaSymbol> {
+class SymbolsTable : public impl::TableBase<IDixendroidmSymbols, IDiaSymbol> {
 public:
   SymbolsTable(IMalloc *pMalloc, Session *pSession);
 

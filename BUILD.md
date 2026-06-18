@@ -1,6 +1,6 @@
-# Building ax360e
+# Building xendroid
 
-ax360e is an Android (arm64-v8a only) build of a xenia-canary fork with an
+xendroid is an Android (arm64-v8a only) build of a xenia-canary fork with an
 ARM64 JIT backend. It builds the same way from a **Linux** or **Windows** host —
 both cross-compile to Android via the NDK; nothing is built for the host CPU.
 
@@ -10,7 +10,7 @@ The Gradle build produces two modules:
   `libhardware_ProcessorInfo.so`) plus the JNI-bound Java classes. Built once,
   consumed transitively.
 - `:app-compose` — the Kotlin/Jetpack-Compose frontend (`applicationId
-  aenu.ax360e.compose`).
+  compose.compose`).
 
 ## Toolchain
 
@@ -141,7 +141,7 @@ git config --global core.longpaths true
 Also enable Win32 long paths OS-wide (Group Policy "Enable Win32 long paths", or
 registry `HKLM\SYSTEM\CurrentControlSet\Control\FileSystem\LongPathsEnabled=1`)
 so the CMake/Ninja toolchain itself can create long object paths, and clone into
-a **short root** (e.g. `C:\dev\ax360e`, not under `Documents`).
+a **short root** (e.g. `C:\dev\xendroid`, not under `Documents`).
 
 ## Corporate TLS interception (Zscaler etc.)
 

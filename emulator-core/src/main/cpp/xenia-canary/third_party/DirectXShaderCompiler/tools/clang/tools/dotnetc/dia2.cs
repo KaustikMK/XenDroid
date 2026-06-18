@@ -44,7 +44,7 @@ namespace dia2
         UInt64 get_loadAddress();
         void put_loadAddress(UInt64 value);
         IDiaSymbol get_globalScope();
-        IDiaEnumTables getEnumTables();
+        IDixendroidmTables getEnumTables();
         void getSymbolsByAddr();
         void findChildren();
         void findChildrenEx();
@@ -66,8 +66,8 @@ namespace dia2
         void findLinesByRVA();
         void findLinesByVA();
         void findLinesByLinenum();
-        object /*IDiaEnumInjectedSources*/ findInjectedSource(string srcFile);
-        object /*IDiaEnumDebugStreams*/ getEnumDebugStreams();
+        object /*IDixendroidmInjectedSources*/ findInjectedSource(string srcFile);
+        object /*IDixendroidmDebugStreams*/ getEnumDebugStreams();
         void findInlineFramesByAddr();
         void findInlineFramesByRVA();
         void findInlineFramesByVA();
@@ -97,8 +97,8 @@ namespace dia2
         void getNumberOfFunctionFragments_RVA();
         void getFunctionFragments_VA();
         void getFunctionFragments_RVA();
-        object /*IDiaEnumSymbols*/ getExports();
-        object /*IDiaEnumSymbols*/ getHeapAllocationSites();
+        object /*IDixendroidmSymbols*/ getExports();
+        object /*IDixendroidmSymbols*/ getHeapAllocationSites();
         void findInputAssemblyFile();
     }
 
@@ -358,7 +358,7 @@ namespace dia2
     [ComImport]
     [Guid("C65C2B0A-1150-4d7a-AFCC-E05BF3DEE81E")]
     [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-    public interface IDiaEnumTables
+    public interface IDixendroidmTables
     {
         void get__NewEnum();
         UInt32 get_Count();
@@ -368,7 +368,7 @@ namespace dia2
             ref IDiaTable[] tables, out UInt32 fetched);
         void Skip(UInt32 count);
         void Reset();
-        IDiaEnumTables Clone();
+        IDixendroidmTables Clone();
     }
 
     [ComImport]
@@ -458,7 +458,7 @@ namespace dia2
         uint get_uniqueId();
         [return: MarshalAs(UnmanagedType.BStr)]
         string get_fileName();
-        void /* IDiaEnumSymbols */ get_compilands();
+        void /* IDixendroidmSymbols */ get_compilands();
         [PreserveSig] int get_checksum(uint cbData, out uint pcbData,
             [MarshalAs(UnmanagedType.LPArray, ArraySubType = UnmanagedType.I1, SizeParamIndex = 1)] ref byte[] pbData);
     }

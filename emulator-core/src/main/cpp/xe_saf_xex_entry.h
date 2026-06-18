@@ -7,8 +7,8 @@
  ******************************************************************************
  */
 
-#ifndef AX360E_XE_SAF_XEX_ENTRY_H
-#define AX360E_XE_SAF_XEX_ENTRY_H
+#ifndef xendroid_XE_SAF_XEX_ENTRY_H
+#define xendroid_XE_SAF_XEX_ENTRY_H
 
 #include <string>
 #include "document_file.h"
@@ -53,4 +53,4 @@ namespace xe {
 
     }  // namespace vfs
 }  // namespace xe
-#endif //AX360E_XE_SAF_XEX_ENTRY_H
+#endif //xendroid_XE_SAF_XEX_ENTRY_H

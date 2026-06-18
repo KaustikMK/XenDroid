@@ -7,7 +7,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "llvm/DebugInfo/PDB/DIA/DIAEnumSymbols.h"
+#include "llvm/DebugInfo/PDB/DIA/DIxendroidmSymbols.h"
 #include "llvm/DebugInfo/PDB/DIA/DIASession.h"
 #include "llvm/DebugInfo/PDB/DIA/DIASourceFile.h"
 #include "llvm/Support/ConvertUTF.h"
@@ -57,11 +57,11 @@ PDB_Checksum DIASourceFile::getChecksumType() const {
 }
 
 std::unique_ptr<IPDBEnumSymbols> DIASourceFile::getCompilands() const {
-  CComPtr<IDiaEnumSymbols> DiaEnumerator;
-  HRESULT Result = SourceFile->get_compilands(&DiaEnumerator);
+  CComPtr<IDixendroidmSymbols> Dixendroidmerator;
+  HRESULT Result = SourceFile->get_compilands(&Dixendroidmerator);
   if (S_OK != Result)
     return nullptr;
 
   return std::unique_ptr<IPDBEnumSymbols>(
-      new DIAEnumSymbols(Session, DiaEnumerator));
+      new DIxendroidmSymbols(Session, Dixendroidmerator));
 }

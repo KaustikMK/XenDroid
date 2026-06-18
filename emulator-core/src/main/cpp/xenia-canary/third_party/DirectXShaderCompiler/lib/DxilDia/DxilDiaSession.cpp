@@ -21,7 +21,7 @@
 #include "llvm/IR/Module.h"
 
 #include "DxilDia.h"
-#include "DxilDiaEnumTables.h"
+#include "DxilDixendroidmTables.h"
 #include "DxilDiaTable.h"
 #include "DxilDiaTableInjectedSources.h"
 #include "DxilDiaTableLineNumbers.h"
@@ -138,7 +138,7 @@ STDMETHODIMP dxil_dia::Session::get_globalScope(
 }
 
 STDMETHODIMP dxil_dia::Session::getEnumTables(
-    /* [out] */ _COM_Outptr_ IDiaEnumTables **ppEnumTables) {
+    /* [out] */ _COM_Outptr_ IDixendroidmTables **ppEnumTables) {
   if (!m_pEnumTables) {
     DxcThreadMalloc TM(m_pMalloc);
     IFR(EnumTables::Create(this, &m_pEnumTables));
@@ -168,7 +168,7 @@ STDMETHODIMP dxil_dia::Session::findFile(
     /* [in] */ IDiaSymbol *pCompiland,
     /* [in] */ LPCOLESTR name,
     /* [in] */ DWORD compareFlags,
-    /* [out] */ IDiaEnumSourceFiles **ppResult) {
+    /* [out] */ IDixendroidmSourceFiles **ppResult) {
     if (!m_pEnumTables) {
         return E_INVALIDARG;
     }
@@ -186,7 +186,7 @@ STDMETHODIMP dxil_dia::Session::findFile(
     vtIndex.uintVal = (int)Table::Kind::SourceFiles;
     IFR(m_pEnumTables->Item(vtIndex, &pTable));
 
-    CComPtr<IDiaEnumSourceFiles> pSourceTable;
+    CComPtr<IDixendroidmSourceFiles> pSourceTable;
     IFR(pTable->QueryInterface(&pSourceTable));
     HRESULT hr;
     CComPtr<IDiaSourceFile> src;
@@ -220,7 +220,7 @@ static HRESULT DxcDiaFindLineNumbersByRVA(
   Session *pSession,
   DWORD rva,
   DWORD length,
-  IDiaEnumLineNumbers **ppResult)
+  IDixendroidmLineNumbers **ppResult)
 {
   if (!ppResult)
     return E_POINTER;
@@ -254,7 +254,7 @@ STDMETHODIMP dxil_dia::Session::findLinesByAddr(
   /* [in] */ DWORD seg,
   /* [in] */ DWORD offset,
   /* [in] */ DWORD length,
-  /* [out] */ IDiaEnumLineNumbers **ppResult) {
+  /* [out] */ IDixendroidmLineNumbers **ppResult) {
   DxcThreadMalloc TM(m_pMalloc);
   return DxcDiaFindLineNumbersByRVA(this, offset, length, ppResult);
 }
@@ -262,7 +262,7 @@ STDMETHODIMP dxil_dia::Session::findLinesByAddr(
 STDMETHODIMP dxil_dia::Session::findLinesByRVA(
   /* [in] */ DWORD rva,
   /* [in] */ DWORD length,
-  /* [out] */ IDiaEnumLineNumbers **ppResult) {
+  /* [out] */ IDixendroidmLineNumbers **ppResult) {
   DxcThreadMalloc TM(m_pMalloc);
   return DxcDiaFindLineNumbersByRVA(this, rva, length, ppResult);
 }
@@ -272,7 +272,7 @@ STDMETHODIMP dxil_dia::Session::findInlineeLinesByAddr(
   /* [in] */ DWORD isect,
   /* [in] */ DWORD offset,
   /* [in] */ DWORD length,
-  /* [out] */ IDiaEnumLineNumbers **ppResult) {
+  /* [out] */ IDixendroidmLineNumbers **ppResult) {
   DxcThreadMalloc TM(m_pMalloc);
   return DxcDiaFindLineNumbersByRVA(this, offset, length, ppResult);
 }
@@ -282,7 +282,7 @@ STDMETHODIMP dxil_dia::Session::findLinesByLinenum(
   /* [in] */ IDiaSourceFile *file,
   /* [in] */ DWORD linenum,
   /* [in] */ DWORD column,
-  /* [out] */ IDiaEnumLineNumbers **ppResult) {
+  /* [out] */ IDixendroidmLineNumbers **ppResult) {
     if (!m_pEnumTables) {
         return E_INVALIDARG;
     }
@@ -295,7 +295,7 @@ STDMETHODIMP dxil_dia::Session::findLinesByLinenum(
     vtIndex.uintVal = (int)Table::Kind::LineNumbers;
     IFR(m_pEnumTables->Item(vtIndex, &pTable));
 
-    CComPtr<IDiaEnumLineNumbers> pLineTable;
+    CComPtr<IDixendroidmLineNumbers> pLineTable;
     IFR(pTable->QueryInterface(&pLineTable));
     HRESULT hr;
     CComPtr<IDiaLineNumber> line;
@@ -343,7 +343,7 @@ STDMETHODIMP dxil_dia::Session::findLinesByLinenum(
 
 STDMETHODIMP dxil_dia::Session::findInjectedSource(
   /* [in] */ LPCOLESTR srcFile,
-  /* [out] */ IDiaEnumInjectedSources **ppResult) {
+  /* [out] */ IDixendroidmInjectedSources **ppResult) {
   if (Contents() != nullptr) {
     CW2A pUtf8FileName(srcFile, CP_UTF8);
     DxcThreadMalloc TM(m_pMalloc);
@@ -363,7 +363,7 @@ STDMETHODIMP dxil_dia::Session::findInlineFramesByAddr(
   /* [in] */ IDiaSymbol *parent,
   /* [in] */ DWORD isect,
   /* [in] */ DWORD offset,
-  /* [out] */ IDiaEnumSymbols **ppResult) {
+  /* [out] */ IDixendroidmSymbols **ppResult) {
   if (parent != nullptr || isect != kD3DCodeSection || ppResult == nullptr) {
     return E_INVALIDARG;
   }

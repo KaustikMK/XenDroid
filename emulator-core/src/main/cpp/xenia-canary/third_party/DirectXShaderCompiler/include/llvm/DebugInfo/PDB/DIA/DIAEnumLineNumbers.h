@@ -1,4 +1,4 @@
-//==- DIAEnumLineNumbers.h - DIA Line Number Enumerator impl -----*- C++ -*-==//
+//==- DIxendroidmLineNumbers.h - DIA Line Number Enumerator impl -----*- C++ -*-==//
 //
 //                     The LLVM Compiler Infrastructure
 //
@@ -7,8 +7,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef LLVM_DEBUGINFO_PDB_DIA_DIAENUMLINENUMBERS_H
-#define LLVM_DEBUGINFO_PDB_DIA_DIAENUMLINENUMBERS_H
+#ifndef LLVM_DEBUGINFO_PDB_DIA_DIxendroidMLINENUMBERS_H
+#define LLVM_DEBUGINFO_PDB_DIA_DIxendroidMLINENUMBERS_H
 
 #include "DIASupport.h"
 #include "llvm/DebugInfo/PDB/IPDBEnumChildren.h"
@@ -17,18 +17,18 @@ namespace llvm {
 
 class IPDBLineNumber;
 
-class DIAEnumLineNumbers : public IPDBEnumChildren<IPDBLineNumber> {
+class DIxendroidmLineNumbers : public IPDBEnumChildren<IPDBLineNumber> {
 public:
-  explicit DIAEnumLineNumbers(CComPtr<IDiaEnumLineNumbers> DiaEnumerator);
+  explicit DIxendroidmLineNumbers(CComPtr<IDixendroidmLineNumbers> Dixendroidmerator);
 
   uint32_t getChildCount() const override;
   ChildTypePtr getChildAtIndex(uint32_t Index) const override;
   ChildTypePtr getNext() override;
   void reset() override;
-  DIAEnumLineNumbers *clone() const override;
+  DIxendroidmLineNumbers *clone() const override;
 
 private:
-  CComPtr<IDiaEnumLineNumbers> Enumerator;
+  CComPtr<IDixendroidmLineNumbers> Enumerator;
 };
 }
 

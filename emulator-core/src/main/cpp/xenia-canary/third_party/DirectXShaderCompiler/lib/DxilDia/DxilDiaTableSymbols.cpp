@@ -246,7 +246,7 @@ STDMETHODIMP dxil_dia::Symbol::findChildren(
   /* [in] */ enum SymTagEnum symtag,
   /* [in] */ LPCOLESTR name,
   /* [in] */ DWORD compareFlags,
-  /* [out] */ IDiaEnumSymbols **ppResult) {
+  /* [out] */ IDixendroidmSymbols **ppResult) {
   return findChildrenEx(symtag, name, compareFlags, ppResult);;
 }
 
@@ -254,7 +254,7 @@ STDMETHODIMP dxil_dia::Symbol::findChildrenEx(
   /* [in] */ enum SymTagEnum symtag,
   /* [in] */ LPCOLESTR name,
   /* [in] */ DWORD compareFlags,
-  /* [out] */ IDiaEnumSymbols **ppResult)  {
+  /* [out] */ IDixendroidmSymbols **ppResult)  {
   DxcThreadMalloc TM(m_pMalloc);
   if (ppResult == nullptr) {
     return E_INVALIDARG;
@@ -406,7 +406,7 @@ STDMETHODIMP dxil_dia::Symbol::get_isHLSLData(
 }
 
 dxil_dia::SymbolsTable::SymbolsTable(IMalloc *pMalloc, Session *pSession)
-  : impl::TableBase<IDiaEnumSymbols, IDiaSymbol>(pMalloc, pSession, Table::Kind::Symbols) {
+  : impl::TableBase<IDixendroidmSymbols, IDiaSymbol>(pMalloc, pSession, Table::Kind::Symbols) {
   m_count = pSession->SymMgr().NumSymbols();
 }
 

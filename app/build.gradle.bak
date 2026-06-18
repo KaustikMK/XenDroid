@@ -3,11 +3,11 @@ plugins {
 }
 
 android {
-    namespace 'aenu.ax360e'
+    namespace 'compose'
     compileSdk 35
 
     defaultConfig {
-        applicationId "aenu.ax360e.free"
+        applicationId "compose.free"
         minSdk 28
         targetSdk 35
         versionCode 14

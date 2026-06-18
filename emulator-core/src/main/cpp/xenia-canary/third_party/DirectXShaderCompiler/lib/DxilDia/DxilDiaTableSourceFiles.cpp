@@ -38,7 +38,7 @@ STDMETHODIMP dxil_dia::SourceFile::get_fileName(
 dxil_dia::SourceFilesTable::SourceFilesTable(
   IMalloc *pMalloc,
   Session *pSession)
-  : impl::TableBase<IDiaEnumSourceFiles, IDiaSourceFile>(pMalloc, pSession, Table::Kind::SourceFiles) {
+  : impl::TableBase<IDixendroidmSourceFiles, IDiaSourceFile>(pMalloc, pSession, Table::Kind::SourceFiles) {
     m_count =
       (m_pSession->Contents() == nullptr) ? 0 : m_pSession->Contents()->getNumOperands();
     m_items.assign(m_count, nullptr);
@@ -48,7 +48,7 @@ dxil_dia::SourceFilesTable::SourceFilesTable(
     IMalloc *pMalloc,
     Session *pSession,
     std::vector<CComPtr<IDiaSourceFile>> &&items)
-    : impl::TableBase<IDiaEnumSourceFiles, IDiaSourceFile>(pMalloc, pSession, Table::Kind::SourceFiles),
+    : impl::TableBase<IDixendroidmSourceFiles, IDiaSourceFile>(pMalloc, pSession, Table::Kind::SourceFiles),
       m_items(std::move(items)) {
     m_count = m_items.size();
 }

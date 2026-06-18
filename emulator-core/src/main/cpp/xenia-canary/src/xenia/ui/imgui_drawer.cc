@@ -31,11 +31,11 @@
 #include <ShlObj_core.h>
 #endif
 
-#if XE_PLATFORM_LINUX&&!(XE_PLATFORM_ANDROID||XE_PLATFORM_AX360E)
+#if XE_PLATFORM_LINUX&&!(XE_PLATFORM_ANDROID||XE_PLATFORM_xendroid)
 #include <fontconfig/fontconfig.h>
 #endif
 
-#if XE_PLATFORM_LINUX&&!(XE_PLATFORM_ANDROID||XE_PLATFORM_AX360E)
+#if XE_PLATFORM_LINUX&&!(XE_PLATFORM_ANDROID||XE_PLATFORM_xendroid)
 #include <gtk/gtk.h>
 #endif
 
@@ -142,7 +142,7 @@ void ImGuiDrawer::RemoveNotification(ImGuiNotification* dialog) {
   DetachIfLastWindowRemoved();
 }
 
-#if XE_PLATFORM_LINUX&&!(XE_PLATFORM_ANDROID||XE_PLATFORM_AX360E)
+#if XE_PLATFORM_LINUX&&!(XE_PLATFORM_ANDROID||XE_PLATFORM_xendroid)
 static void SetClipboardText(void* user_data, const char* text) {
   GtkClipboard* clipboard = gtk_clipboard_get(GDK_SELECTION_CLIPBOARD);
   gtk_clipboard_set_text(clipboard, text, -1);
@@ -169,7 +169,7 @@ void ImGuiDrawer::Initialize() {
   InitializeFonts(font_size);
   InitializeFonts(title_font_size);
 
-#if XE_PLATFORM_LINUX&&!(XE_PLATFORM_ANDROID||XE_PLATFORM_AX360E)
+#if XE_PLATFORM_LINUX&&!(XE_PLATFORM_ANDROID||XE_PLATFORM_xendroid)
   io.SetClipboardTextFn = SetClipboardText;
   io.GetClipboardTextFn = GetClipboardText;
 #endif
@@ -433,7 +433,7 @@ bool ImGuiDrawer::LoadJapaneseFont(ImGuiIO& io, float font_size) {
   return true;
 #endif
 
-#if XE_PLATFORM_LINUX&&!(XE_PLATFORM_ANDROID||XE_PLATFORM_AX360E)
+#if XE_PLATFORM_LINUX&&!(XE_PLATFORM_ANDROID||XE_PLATFORM_xendroid)
   // On Linux, find and merge CJK font using fontconfig
   FcConfig* config = FcInitLoadConfigAndFonts();
   if (!config) {
