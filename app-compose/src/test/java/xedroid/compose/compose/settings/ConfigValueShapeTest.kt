@@ -1,10 +1,10 @@
-package xedroid.compose.compose.settings
+package xendroid.compose.compose.settings
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
-import xedroid.compose.settings.ConfigValueShape
+import xendroid.compose.settings.ConfigValueShape
 
 /** The native `save_config_entry` re-infers the TOML type from the string shape;
  *  these tests pin the canonical shapes (JNI-free) so the contract can't regress. */

@@ -1,4 +1,4 @@
-package xedroid.compose;
+package xendroid.compose;
 
 import android.app.Activity;
 import android.app.AlertDialog;
@@ -30,7 +30,7 @@ import androidx.documentfile.provider.DocumentFile;
 
 import java.io.File;
 
-// Created by xedroid on 2025/7/29.
+// Created by xendroid on 2025/7/29.
 // SPDX-License-Identifier: WTFPL
 public class EmulatorActivity extends Activity implements SurfaceHolder.Callback, View.OnGenericMotionListener {
 
@@ -79,7 +79,7 @@ public class EmulatorActivity extends Activity implements SurfaceHolder.Callback
     });
     void on_create(){
         String uri=getIntent().getStringExtra(EXTRA_GAME_URI);
-        xedroid.emulator.Emulator.Path path= xedroid.emulator.Emulator.Path.from(uri,-1);
+        xendroid.emulator.Emulator.Path path= xendroid.emulator.Emulator.Path.from(uri,-1);
         Emulator.get.setup_context(this);
         Emulator.get.setup_document_file_tree(DocumentFile.fromTreeUri(this,MainActivity.load_pref_game_dir( this)));
         Emulator.get.setup_game_path(path);
@@ -245,7 +245,7 @@ public class EmulatorActivity extends Activity implements SurfaceHolder.Callback
             Emulator.get.setup_surface(holder.getSurface());
             try {
                 Emulator.get.boot();
-            } catch (xedroid.emulator.Emulator.BootException e) {
+            } catch (xendroid.emulator.Emulator.BootException e) {
                 throw new RuntimeException(e);
             }
         }

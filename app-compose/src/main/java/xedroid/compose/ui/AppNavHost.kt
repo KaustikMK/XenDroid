@@ -1,4 +1,4 @@
-package xedroid.compose.ui
+package xendroid.compose.ui
 
 import android.net.Uri
 import androidx.compose.runtime.Composable
@@ -10,18 +10,18 @@ import androidx.navigation.navArgument
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
-import xedroid.compose.AppContainer
-import xedroid.compose.gamepad.GamepadController
-import xedroid.compose.gamepad.GamepadEditorScreen
-import xedroid.compose.settings.GameSettingsViewModel
-import xedroid.compose.settings.SettingsViewModel
-import xedroid.compose.ui.library.GameLibraryScreen
-import xedroid.compose.ui.library.GameLibraryViewModel
-import xedroid.compose.ui.settings.PerGameSettingsScreen
-import xedroid.compose.ui.settings.SettingsScreen
-import xedroid.compose.ui.about.AboutScreen
-import xedroid.compose.ui.keymap.KeymapScreen
-import xedroid.compose.ui.keymap.KeymapViewModel
+import xendroid.compose.AppContainer
+import xendroid.compose.gamepad.GamepadController
+import xendroid.compose.gamepad.GamepadEditorScreen
+import xendroid.compose.settings.GameSettingsViewModel
+import xendroid.compose.settings.SettingsViewModel
+import xendroid.compose.ui.library.GameLibraryScreen
+import xendroid.compose.ui.library.GameLibraryViewModel
+import xendroid.compose.ui.settings.PerGameSettingsScreen
+import xendroid.compose.ui.settings.SettingsScreen
+import xendroid.compose.ui.about.AboutScreen
+import xendroid.compose.ui.keymap.KeymapScreen
+import xendroid.compose.ui.keymap.KeymapViewModel
 
 object Routes {
     const val LIBRARY = "library"

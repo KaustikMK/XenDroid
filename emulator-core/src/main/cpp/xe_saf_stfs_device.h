@@ -8,8 +8,8 @@
  */
 //存储访问框架 (SAF)
 
-#ifndef AX360E_XE_SAF_STFS_DEVICE_H
-#define AX360E_XE_SAF_STFS_DEVICE_H
+#ifndef xendroid_XE_SAF_STFS_DEVICE_H
+#define xendroid_XE_SAF_STFS_DEVICE_H
 
 #include <stdint.h>
 #include <string>
@@ -141,4 +141,4 @@ namespace xe {
     }  // namespace vfs
 }  // namespace xe
 
-#endif //AX360E_XE_SAF_STFS_DEVICE_H
+#endif //xendroid_XE_SAF_STFS_DEVICE_H

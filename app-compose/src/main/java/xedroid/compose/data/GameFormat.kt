@@ -1,4 +1,4 @@
-package xedroid.compose.data
+package xendroid.compose.data
 
 /**
  * Container formats the one-level library scan recognizes, mirroring legacy
@@ -14,7 +14,7 @@ enum class GameFormat {
         GOD, XEX_FOLDER -> fileName
     }
 
-    /** Native title-id format code (MUST match the enum in emulator_ax360e.cpp).
+    /** Native title-id format code (MUST match the enum in emulator_xendroid.cpp).
      *  null for formats with no boot-free reader via title_id_from_uri. */
     val titleIdCode: Int? get() = when (this) {
         ISO -> 0

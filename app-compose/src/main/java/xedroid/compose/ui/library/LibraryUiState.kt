@@ -1,6 +1,6 @@
-package xedroid.compose.ui.library
+package xendroid.compose.ui.library
 
-import xedroid.compose.data.Game
+import xendroid.compose.data.Game
 
 /** Drives the library screen. NoFolder vs empty Loaded are deliberately distinct
  *  so the UI shows "pick a folder" vs "folder has no games". */

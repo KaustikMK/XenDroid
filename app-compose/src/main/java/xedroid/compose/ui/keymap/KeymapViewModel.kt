@@ -1,10 +1,10 @@
-package xedroid.compose.ui.keymap
+package xendroid.compose.ui.keymap
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import xedroid.compose.data.GameButton
-import xedroid.compose.data.GameButtons
-import xedroid.compose.data.KeymapStore
+import xendroid.compose.data.GameButton
+import xendroid.compose.data.GameButtons
+import xendroid.compose.data.KeymapStore
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine

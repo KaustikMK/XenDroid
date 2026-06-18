@@ -12,7 +12,7 @@
 int register_Emulator(JNIEnv* env);
 int register_Emulator$Config(JNIEnv* env);
 
-int register_ax360e_Emulator(JNIEnv* env);
+int register_xendroid_Emulator(JNIEnv* env);
 
 JavaVM* g_jvm;
 
@@ -40,8 +40,8 @@ jint JNI_OnLoad(JavaVM* vm, void* reserved){
         goto bail;
     }
 
-    if(register_ax360e_Emulator(env) != JNI_OK){
-        LOGE("register_ax360e_Emulator failed");
+    if(register_xendroid_Emulator(env) != JNI_OK){
+        LOGE("register_xendroid_Emulator failed");
         goto bail;
     }
     result = JNI_VERSION_1_6;

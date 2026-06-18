@@ -7,8 +7,8 @@
  ******************************************************************************
  */
 
-#ifndef AX360E_XE_ANDROID_INPUT_DRIVER_H
-#define AX360E_XE_ANDROID_INPUT_DRIVER_H
+#ifndef xendroid_XE_ANDROID_INPUT_DRIVER_H
+#define xendroid_XE_ANDROID_INPUT_DRIVER_H
 
 #include <queue>
 
@@ -55,4 +55,4 @@ namespace xe {
     }
 }
 
-#endif //AX360E_XE_ANDROID_INPUT_DRIVER_H
+#endif //xendroid_XE_ANDROID_INPUT_DRIVER_H

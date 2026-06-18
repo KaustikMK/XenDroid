@@ -1,4 +1,4 @@
-package xedroid.compose.data
+package xendroid.compose.data
 
 import android.content.Context
 import androidx.datastore.preferences.core.Preferences
@@ -9,7 +9,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 
 /** Persists the 16-button hardware-key mapping + the vibrate toggle in the shared
- *  "ax360e_prefs" DataStore. Keyed by STABLE button index (keymap_0..keymap_15),
+ *  "xendroid_prefs" DataStore. Keyed by STABLE button index (keymap_0..keymap_15),
  *  NOT the legacy resId-as-string keys. Value = bound Android keycode (0 = cleared). */
 class KeymapStore(private val appContext: Context) {
 

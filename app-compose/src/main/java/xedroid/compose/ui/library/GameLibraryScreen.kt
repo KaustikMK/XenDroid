@@ -1,4 +1,4 @@
-package xedroid.compose.ui.library
+package xendroid.compose.ui.library
 
 import android.app.Activity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -26,8 +26,8 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
-import xedroid.compose.data.Game
-import xedroid.compose.ui.userdata.openUserData
+import xendroid.compose.data.Game
+import xendroid.compose.ui.userdata.openUserData
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable

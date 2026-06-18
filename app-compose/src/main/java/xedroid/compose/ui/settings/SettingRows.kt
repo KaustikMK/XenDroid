@@ -1,4 +1,4 @@
-package xedroid.compose.ui.settings
+package xendroid.compose.ui.settings
 
 import android.app.Activity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -13,9 +13,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
-import xedroid.compose.Utils
-import xedroid.compose.settings.Setting
-import xedroid.compose.settings.SettingsHost
+import xendroid.compose.Utils
+import xendroid.compose.settings.Setting
+import xendroid.compose.settings.SettingsHost
 
 @Composable
 fun SettingRow(host: SettingsHost, s: Setting, modified: Boolean) = when (s) {

@@ -1,18 +1,18 @@
-package xedroid.compose.compose.gamepad
+package xendroid.compose.compose.gamepad
 
 import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
 import org.junit.Test
-import xedroid.compose.gamepad.ControlId
-import xedroid.compose.gamepad.ControlLayoutDto
-import xedroid.compose.gamepad.GamepadConfigDto
-import xedroid.compose.gamepad.GamepadGlobalsDto
-import xedroid.compose.gamepad.Kc
-import xedroid.compose.gamepad.OnScreenControl
-import xedroid.compose.gamepad.OrientationLayoutDto
-import xedroid.compose.gamepad.applyTo
-import xedroid.compose.gamepad.defaultLayout
-import xedroid.compose.gamepad.toDto
+import xendroid.compose.gamepad.ControlId
+import xendroid.compose.gamepad.ControlLayoutDto
+import xendroid.compose.gamepad.GamepadConfigDto
+import xendroid.compose.gamepad.GamepadGlobalsDto
+import xendroid.compose.gamepad.Kc
+import xendroid.compose.gamepad.OnScreenControl
+import xendroid.compose.gamepad.OrientationLayoutDto
+import xendroid.compose.gamepad.applyTo
+import xendroid.compose.gamepad.defaultLayout
+import xendroid.compose.gamepad.toDto
 
 class GamepadLayoutSchemaTest {
 

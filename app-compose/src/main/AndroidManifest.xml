@@ -19,19 +19,19 @@
          Vulkan to read the device name), first-run asset extraction (default_config.toml +
          profile), and EAGER Emulator.load_library() on non-delay devices (Adreno 830). -->
     <application
-        android:name="xedroid.compose.Application"
+        android:name="xendroid.compose.Application"
         android:allowBackup="true"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:supportsRtl="true"
-        android:theme="@style/Theme.Ax360eCompose">
+        android:theme="@style/Theme.xendroidCompose">
         <!-- configChanges (incl. orientation|screenSize): the layout editor FORCES the screen
              orientation via requestedOrientation so each touch layout previews as it appears
              in-game. Without this, rotating would RECREATE MainActivity (losing the editor's
              in-progress edits and reverting to landscape), which is why "Portrait" appeared to
              do nothing. Compose handles the config change via recomposition. -->
         <activity
-            android:name="xedroid.compose.MainActivity"
+            android:name="xendroid.compose.MainActivity"
             android:configChanges="layoutDirection|locale|orientation|uiMode|screenLayout|screenSize|smallestScreenSize|keyboard|keyboardHidden|navigation"
             android:exported="true">
             <intent-filter>
@@ -46,16 +46,16 @@
              Activity (a recreate would re-enter the single-shot boot). Fullscreen theme:
              the Vulkan swapchain must own the whole window. -->
         <activity
-            android:name="xedroid.compose.EmulatorHostActivity"
+            android:name="xendroid.compose.EmulatorHostActivity"
             android:process=":emu"
             android:exported="true"
             android:launchMode="singleTask"
             android:screenOrientation="sensorLandscape"
             android:configChanges="layoutDirection|locale|orientation|uiMode|screenLayout|screenSize|smallestScreenSize|keyboard|keyboardHidden|navigation"
-            android:theme="@style/Theme.Ax360eEmu">
-            <!-- In-app launch: GameLibraryViewModel.buildLaunchIntent (AX360E + setPackage). -->
+            android:theme="@style/Theme.xendroidEmu">
+            <!-- In-app launch: GameLibraryViewModel.buildLaunchIntent (xendroid + setPackage). -->
             <intent-filter>
-                <action android:name="aenu.intent.action.AX360E" />
+                <action android:name="aenu.intent.action.xendroid" />
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
             <!-- Pinned-shortcut cold start: createShortcut sets action = ACTION_VIEW. -->

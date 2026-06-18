@@ -19,7 +19,7 @@
 #include "xenia/kernel/util/crypto_utils.h"
 #include "xenia/vfs/devices/host_path_device.h"
 
-#if XE_PLATFORM_AX360E
+#if XE_PLATFORM_xendroid
 DEFINE_string(logged_profile_slot_0_xuid, "E0300000A360E000",
               "XUID of the profile to load on boot in slot 0", "Profiles");
 #else

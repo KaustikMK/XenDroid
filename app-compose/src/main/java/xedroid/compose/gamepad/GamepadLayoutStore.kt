@@ -1,4 +1,4 @@
-package xedroid.compose.gamepad
+package xendroid.compose.gamepad
 
 import android.content.Context
 import androidx.datastore.preferences.core.edit
@@ -9,7 +9,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.serialization.json.Json
 
 // Distinct DataStore name so :emu and :main never share a single-writer file handle.
-private val Context.gamepadStore by preferencesDataStore(name = "ax360e_gamepad")
+private val Context.gamepadStore by preferencesDataStore(name = "xendroid_gamepad")
 
 class GamepadLayoutStore(private val appContext: Context) {
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }

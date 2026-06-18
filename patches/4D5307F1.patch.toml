@@ -17,7 +17,7 @@ hash = ["4145F96D2DEE2AB5"]
 [[patch]]
 name = "Streaming pool empty-pop crash fix"
 desc = "Empty-check on head (0x16C) instead of count (0x138) to avoid null-head deref under concurrency."
-author = "ax360e"
+author = "xendroid"
 is_enabled = true
 be32 = [
   { address = 0x82C9F114, value = 0x817F016C },

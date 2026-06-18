@@ -7,7 +7,7 @@ titles don't want — and use the emulator's per-game config mechanism instead.
 ## How per-game configs work
 
 - Path: `<storage_root>/config/<TITLEID>.config.toml`
-  (on Android: `/sdcard/Android/data/<package>/files/ax360e/config/`)
+  (on Android: `/sdcard/Android/data/<package>/files/xendroid/config/`)
 - Loaded automatically when a title launches, *after* the global
   `xenia-canary.config.toml`, so its values override the global ones
   (`src/xenia/emulator.cc` → `config::LoadGameConfig`,
@@ -125,7 +125,7 @@ deploy to `<storage_root>/patches/`):
 - Dialogue audio cutoffs (matches upstream compat #74).
 
 > **Caveat: `mount_*` cvars cannot be set per-game.** Cache/scratch/MU devices
-> are registered during emulator setup (`ax360e_emu.cpp`, right after
+> are registered during emulator setup (`xendroid_emu.cpp`, right after
 > `Emulator::Setup`), which happens *before* the title launch loads
 > `config/<TITLEID>.config.toml` — a per-game override is read too late.
 

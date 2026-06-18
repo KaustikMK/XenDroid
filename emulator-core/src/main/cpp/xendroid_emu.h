@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: WTFPL
 
-#ifndef AX360E_AX360E_EMU_H
-#define AX360E_AX360E_EMU_H
+#ifndef xendroid_xendroid_EMU_H
+#define xendroid_xendroid_EMU_H
 
 #include <cstdint>
 
@@ -165,4 +165,4 @@ public:
     static std::vector<std::unique_ptr<xe::hid::InputDriver>> create_input_drivers(xe::ui::Window* window);
     void emu_thr_main();
 };
-#endif //AX360E_AX360E_EMU_H
+#endif //xendroid_xendroid_EMU_H

@@ -1,21 +1,21 @@
-package xedroid.compose
+package xendroid.compose
 
 import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
-import xedroid.compose.core.GameMetadataSource
-import xedroid.compose.data.GameLibraryRepository
-import xedroid.compose.data.GameMetadataCache
-import xedroid.compose.data.IconCache
-import xedroid.compose.data.PreferencesStore
-import xedroid.compose.settings.ConfigStore
-import xedroid.compose.settings.GameSettingsRepository
-import xedroid.compose.settings.GameSettingsViewModel
-import xedroid.compose.settings.SettingsRepository
-import xedroid.compose.settings.SettingsViewModel
-import xedroid.compose.ui.library.GameLibraryViewModel
-import xedroid.compose.data.KeymapStore
-import xedroid.compose.ui.keymap.KeymapViewModel
+import xendroid.compose.core.GameMetadataSource
+import xendroid.compose.data.GameLibraryRepository
+import xendroid.compose.data.GameMetadataCache
+import xendroid.compose.data.IconCache
+import xendroid.compose.data.PreferencesStore
+import xendroid.compose.settings.ConfigStore
+import xendroid.compose.settings.GameSettingsRepository
+import xendroid.compose.settings.GameSettingsViewModel
+import xendroid.compose.settings.SettingsRepository
+import xendroid.compose.settings.SettingsViewModel
+import xendroid.compose.ui.library.GameLibraryViewModel
+import xendroid.compose.data.KeymapStore
+import xendroid.compose.ui.keymap.KeymapViewModel
 
 /** Manual DI (no Hilt). One instance per process, created lazily in MainActivity
  *  from applicationContext (so it survives config changes / outlives any Activity). */

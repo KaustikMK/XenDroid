@@ -1,9 +1,9 @@
 <resources xmlns:tools="http://schemas.android.com/tools">
     <!-- Base application theme. -->
-    <style name="Base.Theme.Ax360e" parent="Theme.Material3.DayNight.NoActionBar">
+    <style name="Base.Theme.xendroid" parent="Theme.Material3.DayNight.NoActionBar">
         <!-- Customize your light theme here. -->
         <!-- <item name="colorPrimary">@color/my_light_primary</item> -->
     </style>
 
-    <style name="Theme.Ax360e" parent="Base.Theme.Ax360e" />
+    <style name="Theme.xendroid" parent="Base.Theme.xendroid" />
 </resources>

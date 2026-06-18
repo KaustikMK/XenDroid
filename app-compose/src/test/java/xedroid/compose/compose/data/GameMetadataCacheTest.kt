@@ -1,8 +1,8 @@
-package xedroid.compose.compose.data
+package xendroid.compose.compose.data
 
-import xedroid.compose.data.GameMetadataCache.Decision
-import xedroid.compose.data.GameMetadataCache.Entry
-import xedroid.compose.data.GameMetadataCache.Signature
+import xendroid.compose.data.GameMetadataCache.Decision
+import xendroid.compose.data.GameMetadataCache.Entry
+import xendroid.compose.data.GameMetadataCache.Signature
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertFalse
@@ -10,7 +10,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
-import xedroid.compose.data.GameMetadataCache
+import xendroid.compose.data.GameMetadataCache
 
 /**
  * Unit tests for the pure HIT/MISS decision (the bug-prone core: file-change

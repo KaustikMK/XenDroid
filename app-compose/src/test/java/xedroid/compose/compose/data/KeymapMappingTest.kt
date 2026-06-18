@@ -1,11 +1,11 @@
-package xedroid.compose.compose.data
+package xendroid.compose.compose.data
 
 import android.view.KeyEvent
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
-import xedroid.compose.data.GameButtons
+import xendroid.compose.data.GameButtons
 
 /** Locks the deterministic transform KeymapStore uses to build its host lookup
  *  (Android keycode -> game KEY_CODE) and its default-filled per-index bindings.

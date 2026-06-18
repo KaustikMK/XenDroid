@@ -1,9 +1,9 @@
-package xedroid.compose.core
+package xendroid.compose.core
 
 import android.content.Context
 import android.util.Log
-import xedroid.compose.Emulator
-import xedroid.compose.data.GameFormat
+import xendroid.compose.Emulator
+import xendroid.compose.data.GameFormat
 
 /**
  * Wraps the synchronous SAF+mmap GOD-metadata native call. MUST run off the main

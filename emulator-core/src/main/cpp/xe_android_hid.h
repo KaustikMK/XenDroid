@@ -7,8 +7,8 @@
  ******************************************************************************
  */
 
-#ifndef AX360E_XE_ANDROID_HID_H
-#define AX360E_XE_ANDROID_HID_H
+#ifndef xendroid_XE_ANDROID_HID_H
+#define xendroid_XE_ANDROID_HID_H
 
 
 #include <memory>
@@ -24,4 +24,4 @@ namespace xe {
     }
 }
 
-#endif //AX360E_XE_ANDROID_HID_H
+#endif //xendroid_XE_ANDROID_HID_H

@@ -1,4 +1,4 @@
-package xedroid.compose.data
+package xendroid.compose.data
 
 import android.view.KeyEvent
 

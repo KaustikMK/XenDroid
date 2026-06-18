@@ -6,8 +6,8 @@
  * Released under the BSD license - see LICENSE in the root for more details. *
  ******************************************************************************
  */
-#ifndef AX360E_XE_OPENSLES_AUDIO_SYSTEM_H
-#define AX360E_XE_OPENSLES_AUDIO_SYSTEM_H
+#ifndef xendroid_XE_OPENSLES_AUDIO_SYSTEM_H
+#define xendroid_XE_OPENSLES_AUDIO_SYSTEM_H
 
 #include "xenia/apu/audio_system.h"
 
@@ -38,4 +38,4 @@ namespace xe {
         }
     }
 }
-#endif //AX360E_XE_OPENSLES_AUDIO_SYSTEM_H
+#endif //xendroid_XE_OPENSLES_AUDIO_SYSTEM_H

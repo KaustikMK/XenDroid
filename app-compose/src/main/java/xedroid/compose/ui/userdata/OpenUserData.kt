@@ -1,4 +1,4 @@
-package xedroid.compose.ui.userdata
+package xendroid.compose.ui.userdata
 
 import android.content.ActivityNotFoundException
 import android.content.Context

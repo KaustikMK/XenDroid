@@ -1,4 +1,4 @@
-package xedroid.compose;
+package xendroid.compose;
 
 import android.content.Context;
 
@@ -6,9 +6,9 @@ import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 
-import xedroid.hardware.ProcessorInfo;
+import xendroid.hardware.ProcessorInfo;
 
-// Created by xedroid on 2025/7/31.
+// Created by xendroid on 2025/7/31.
 // SPDX-License-Identifier: WTFPL
 public class Application extends android.app.Application{
     static File get_app_data_dir(){

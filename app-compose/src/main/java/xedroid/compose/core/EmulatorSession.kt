@@ -1,13 +1,13 @@
-package xedroid.compose.core
+package xendroid.compose.core
 
 import android.content.Context
 import android.view.Surface
 import androidx.documentfile.provider.DocumentFile
-import xedroid.compose.Emulator
-import xedroid.emulator.Emulator as BaseEmulator
+import xendroid.compose.Emulator
+import xendroid.emulator.Emulator as BaseEmulator
 
 /**
- * Thin, UI-thread-affine facade over the native xenia singleton (xedroid.compose.Emulator
+ * Thin, UI-thread-affine facade over the native xenia singleton (xendroid.compose.Emulator
  * via EmulatorRuntime). Mirrors the EXACT legacy EmulatorActivity ordering and owns the
  * boot-once invariant. One instance per EmulatorHostActivity (one process / one core).
  *

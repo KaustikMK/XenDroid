@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: WTFPL
-package xedroid.view;
+package xendroid.view;
 
 import android.widget.ListView;
 

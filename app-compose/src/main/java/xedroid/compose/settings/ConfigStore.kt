@@ -1,8 +1,8 @@
-package xedroid.compose.settings
+package xendroid.compose.settings
 
 import android.content.Context
-import xedroid.compose.Application
-import xedroid.emulator.Emulator
+import xendroid.compose.Application
+import xendroid.emulator.Emulator
 import java.io.File
 
 /** Sources the live global config file and the bundled default template baseline. */

@@ -1,11 +1,11 @@
-package xedroid.compose.compose.settings
+package xendroid.compose.compose.settings
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
-import xedroid.compose.settings.Setting
-import xedroid.compose.settings.SettingsSchema
+import xendroid.compose.settings.Setting
+import xendroid.compose.settings.SettingsSchema
 
 /** Schema-integrity checks (no emulator / JNI needed). The schema completeness is
  *  the deliverable, so these assert exact counts, uniqueness, and per-list well-formedness. */

@@ -1,4 +1,4 @@
-package xedroid.compose.settings
+package xendroid.compose.settings
 
 /** One selectable list option: stored [value] (verbatim) + UI [label]. */
 data class ListOption(val value: String, val label: String)

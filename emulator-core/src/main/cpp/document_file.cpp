@@ -2,7 +2,7 @@
 
 #include "document_file.h"
 #include <android/log.h>
-#include "emulator_ax360e.h"
+#include "emulator_xendroid.h"
 #include "xenia/base/logging.h"
 
 #define LOG_TAG "DocumentFileJNI"

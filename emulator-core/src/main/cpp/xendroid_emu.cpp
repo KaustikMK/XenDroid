@@ -33,7 +33,7 @@
 #include "xenia/vfs/devices/host_path_device.h"
 
 #include "emulator.h"
-#include "emulator_ax360e.h"
+#include "emulator_xendroid.h"
 
 #include "xe_android_hid.h"
 #include "xe_android_input_driver.h"
@@ -41,10 +41,10 @@
 #include "xe_aaudio_audio_system.h"
 #include "document_file.h"
 
-#include "ax360e_emu.h"
+#include "xendroid_emu.h"
 //#include "nlohmann/json.hpp"
 
-#define LOG_TAG "ax360e_native"
+#define LOG_TAG "xendroid_native"
 #define LOGW(...) __android_log_print(ANDROID_LOG_WARN, LOG_TAG,__VA_ARGS__);
 
 DEFINE_string(apu, "aaudio", "Audio system. Use: [any, nop, opensles, aaudio]", "APU");
@@ -371,7 +371,7 @@ bool EmulatorApp::OnInitialize() {
 std::unique_ptr<xe::apu::AudioSystem> EmulatorApp::create_audio_system(xe::cpu::Processor* processor) {
     Factory<xe::apu::AudioSystem, xe::cpu::Processor*> factory;
     factory.Add<xe::apu::nop::NopAudioSystem>("nop");
-#if XE_PLATFORM_AX360E
+#if XE_PLATFORM_xendroid
     factory.Add<xe::apu::opensles::OpenSLESAudioSystem>("opensles");
     factory.Add<xe::apu::aaudio::AAudioAudioSystem>("aaudio");
 #endif

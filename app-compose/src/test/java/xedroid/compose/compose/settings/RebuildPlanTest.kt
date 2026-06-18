@@ -1,13 +1,13 @@
-package xedroid.compose.compose.settings
+package xendroid.compose.compose.settings
 
 import org.junit.Assert.assertEquals
 import org.junit.Test
-import xedroid.compose.settings.RebuildPlan
-import xedroid.compose.settings.rebuildPlan
+import xendroid.compose.settings.RebuildPlan
+import xendroid.compose.settings.rebuildPlan
 
 /**
  * Exercises the rebuild-on-flush decision the per-game store relies on (there is no
- * native key-erase, so [xedroid.compose.settings.GameSettingsRepository.flush] re-emits the WHOLE file from the
+ * native key-erase, so [xendroid.compose.settings.GameSettingsRepository.flush] re-emits the WHOLE file from the
  * in-memory override set, deleting it when empty). Verifies the recommended scenario:
  * two overrides -> file has exactly two keys; clear one -> one key; clear last -> delete.
  * This covers the no-native-erase rebuild path without a device/JNI.

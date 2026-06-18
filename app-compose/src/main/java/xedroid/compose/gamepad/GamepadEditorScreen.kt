@@ -1,4 +1,4 @@
-package xedroid.compose.gamepad
+package xendroid.compose.gamepad
 
 import android.app.Activity
 import android.content.Context

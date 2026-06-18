@@ -1,11 +1,11 @@
-package xedroid.compose.compose.data
+package xendroid.compose.compose.data
 
 import android.view.KeyEvent
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
-import xedroid.compose.data.GameButtons
+import xendroid.compose.data.GameButtons
 
 /** Pure-Kotlin checks on the SP3 keymap default table. KeyEvent.KEYCODE_* are
  *  compile-time int constants, inlined into GameButtons, so they resolve to real

@@ -1,9 +1,9 @@
-package xedroid.compose.settings
+package xendroid.compose.settings
 
 /**
  * The row-editing contract the setting rows call into. Extracted so both the global
  * [SettingsViewModel] and the per-game [GameSettingsViewModel] can drive the same
- * [xedroid.compose.ui.settings.SettingRow] composables. The method set is exactly
+ * [xendroid.compose.ui.settings.SettingRow] composables. The method set is exactly
  * the calls already present in SettingRows.kt.
  */
 interface SettingsHost {

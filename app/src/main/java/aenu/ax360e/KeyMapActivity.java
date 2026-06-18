@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: WTFPL
 
-package xedroid.compose;
+package xendroid.compose;
 
 import android.content.SharedPreferences;
 import android.os.Bundle;
@@ -34,7 +34,7 @@ import android.view.*;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.appcompat.widget.Toolbar;
 
-import xedroid.view.SVListView;
+import xendroid.view.SVListView;
 
 public class KeyMapActivity extends AppCompatActivity {
 

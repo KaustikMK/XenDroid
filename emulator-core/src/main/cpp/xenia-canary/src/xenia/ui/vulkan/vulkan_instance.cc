@@ -27,7 +27,7 @@
 #include "xenia/base/platform_win.h"
 #endif
 
-#if XE_PLATFORM_AX360E||XE_PLATFORM_ANDROID
+#if XE_PLATFORM_xendroid||XE_PLATFORM_ANDROID
 #include "../libadrenotools/include/adrenotools/priv.h"
 #include "../libadrenotools/include/adrenotools/driver.h"
 extern std::string g_native_lib_dir;
@@ -79,12 +79,12 @@ std::unique_ptr<VulkanInstance> VulkanInstance::Create(
 
   bool functions_loaded = true;
 #if XE_PLATFORM_LINUX
-#if XE_PLATFORM_ANDROID||XE_PLATFORM_AX360E
+#if XE_PLATFORM_ANDROID||XE_PLATFORM_xendroid
   const char* const loader_library_name = "libvulkan.so";
 #else
   const char* const loader_library_name = "libvulkan.so.1";
 #endif
-#if XE_PLATFORM_ANDROID||XE_PLATFORM_AX360E
+#if XE_PLATFORM_ANDROID||XE_PLATFORM_xendroid
     // Turnip reads TU_DEBUG from the environment at vkCreateInstance, so set it
     // before the driver is loaded. Default "sysmem" forces untiled rendering,
     // which avoids a class of Adreno GPU hangs (device-loss).
@@ -130,7 +130,7 @@ std::unique_ptr<VulkanInstance> VulkanInstance::Create(
   // http://developer.download.nvidia.com/mobile/shield/assets/Vulkan/UsingtheVulkanAPI.pdf
   vulkan_instance->loader_ = dlopen(loader_library_name, RTLD_NOW | RTLD_LOCAL);
 
-#if XE_PLATFORM_ANDROID || XE_PLATFORM_AX360E
+#if XE_PLATFORM_ANDROID || XE_PLATFORM_xendroid
     }
 #endif
 

@@ -1,4 +1,4 @@
-package xedroid.compose.settings
+package xendroid.compose.settings
 
 /**
  * Pure (JNI-free) helpers encoding the native `save_config_entry` type-inference

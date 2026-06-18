@@ -7,8 +7,8 @@
  ******************************************************************************
  */
 
-#ifndef AX360E_XE_SAF_XEX_FILE_H
-#define AX360E_XE_SAF_XEX_FILE_H
+#ifndef xendroid_XE_SAF_XEX_FILE_H
+#define xendroid_XE_SAF_XEX_FILE_H
 
 #include <string>
 
@@ -40,4 +40,4 @@ namespace xe {
 
     }  // namespace vfs
 }  // namespace xe
-#endif //AX360E_XE_SAF_XEX_FILE_H
+#endif //xendroid_XE_SAF_XEX_FILE_H

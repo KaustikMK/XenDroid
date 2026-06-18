@@ -1,6 +1,6 @@
-package xedroid.compose.settings
+package xendroid.compose.settings
 
-import xedroid.compose.settings.Setting.*
+import xendroid.compose.settings.Setting.*
 
 private fun b(s: String, n: String, t: String, d: Boolean) = Setting.Bool(s, n, t, d)
 private fun i(s: String, n: String, t: String, d: Int, lo: Int, hi: Int) =
@@ -109,7 +109,7 @@ object SettingsSchema {
             l("Display", "postprocess_antialiasing", "Antialiasing", "",
                 "none" to "none", "fxaa" to "fxaa", "fxaa_extreme" to "fxaa_extreme"), // "" => none
             // host_present_from_non_ui_thread intentionally NOT exposed: it MUST be true on
-            // Android (forced in ax360e_emu.cpp after config load) -- false black-screens the
+            // Android (forced in xendroid_emu.cpp after config load) -- false black-screens the
             // app, so there is no valid user choice to make.
             b("Display", "fullscreen", "Fullscreen", false),
             b("Display", "show_debug_overlay", "Show debug overlay", false),

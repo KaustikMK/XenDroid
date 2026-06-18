@@ -1,4 +1,4 @@
-package xedroid.compose.gamepad
+package xendroid.compose.gamepad
 
 fun defaultLayout(landscape: Boolean): List<OnScreenControl> {
     // Vertical band where controls sit; portrait packs them lower.

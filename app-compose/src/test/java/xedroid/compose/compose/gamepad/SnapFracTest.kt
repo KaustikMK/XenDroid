@@ -1,8 +1,8 @@
-package xedroid.compose.compose.gamepad
+package xendroid.compose.compose.gamepad
 
 import org.junit.Assert.assertEquals
 import org.junit.Test
-import xedroid.compose.gamepad.snapFrac
+import xendroid.compose.gamepad.snapFrac
 
 class SnapFracTest {
 

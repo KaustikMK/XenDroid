@@ -1,4 +1,4 @@
-package xedroid.compose.gamepad
+package xendroid.compose.gamepad
 
 import android.content.Context
 import androidx.compose.runtime.Composable

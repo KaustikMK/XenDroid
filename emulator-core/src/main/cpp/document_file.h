@@ -1,7 +1,7 @@
 /// SPDX-License-Identifier: WTFPL
 
-#ifndef AX360E_DOCUMENT_FILE_H
-#define AX360E_DOCUMENT_FILE_H
+#ifndef xendroid_DOCUMENT_FILE_H
+#define xendroid_DOCUMENT_FILE_H
 
 #include <string>
 #include <vector>
@@ -44,4 +44,4 @@ public:
     static int open_fd(const std::unique_ptr<DocumentFile>& file);
 };
 
-#endif //AX360E_DOCUMENT_FILE_H
+#endif //xendroid_DOCUMENT_FILE_H

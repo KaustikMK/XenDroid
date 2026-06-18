@@ -1,11 +1,11 @@
-package xedroid.compose
+package xendroid.compose
 
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import xedroid.compose.ui.AppNavHost
-import xedroid.compose.ui.theme.Ax360eTheme
+import xendroid.compose.ui.AppNavHost
+import xendroid.compose.ui.theme.xendroidTheme
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -15,7 +15,7 @@ class MainActivity : ComponentActivity() {
         val container = AppContainer(applicationContext)
         enableEdgeToEdge()
         setContent {
-            Ax360eTheme {
+            xendroidTheme {
                 // Each screen owns its own Scaffold/TopAppBar chrome (GameLibraryScreen
                 // already does), so no outer Scaffold here — avoids double insets.
                 AppNavHost(container)

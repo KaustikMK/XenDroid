@@ -1,11 +1,11 @@
-// Created by xedroid on 2025/7/21.
+// Created by xendroid on 2025/7/21.
 // SPDX-License-Identifier: WTFPL
 #include <stdlib.h>
 #include <jni.h>
 #include <vector>
 #include <vulkan/vulkan.h>
 
-extern "C" JNIEXPORT jstring JNICALL  Java_xedroid_hardware_ProcessorInfo_gpu_1get_1physical_1device_1name_1vk(JNIEnv*  env,jclass cls){
+extern "C" JNIEXPORT jstring JNICALL  Java_xendroid_hardware_ProcessorInfo_gpu_1get_1physical_1device_1name_1vk(JNIEnv*  env,jclass cls){
 
     VkApplicationInfo appinfo = {};
     appinfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;

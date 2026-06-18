@@ -1,6 +1,6 @@
-package xedroid.hardware;
+package xendroid.hardware;
 
-// Created by xedroid on 2025/7/21.
+// Created by xendroid on 2025/7/21.
 // SPDX-License-Identifier: WTFPL
 public class ProcessorInfo {
     static {

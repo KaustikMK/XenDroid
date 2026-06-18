@@ -1,4 +1,4 @@
-package xedroid.compose;
+package xendroid.compose;
 
 import org.junit.Test;
 

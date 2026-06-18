@@ -1,6 +1,6 @@
-package xedroid.compose.ui.library
+package xendroid.compose.ui.library
 
-import xedroid.compose.core.R
+import xendroid.compose.core.R
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ShortcutInfo
@@ -12,11 +12,11 @@ import android.os.Build
 import androidx.core.content.getSystemService
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import xedroid.compose.core.EmulatorRuntime
-import xedroid.compose.data.Game
-import xedroid.compose.data.GameFormat
-import xedroid.compose.data.GameLibraryRepository
-import xedroid.compose.data.IconCache
+import xendroid.compose.core.EmulatorRuntime
+import xendroid.compose.data.Game
+import xendroid.compose.data.GameFormat
+import xendroid.compose.data.GameLibraryRepository
+import xendroid.compose.data.IconCache
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -26,7 +26,7 @@ import kotlinx.coroutines.withContext
 
 /** The launch action emitted on game tap. The host Activity that resolves it
  *  arrives in SP1-C; until then this Intent will not resolve (no-op resolveActivity). */
-const val ACTION_LAUNCH_GAME = "xedroid.intent.action.AX360E"
+const val ACTION_LAUNCH_GAME = "xendroid.intent.action.xendroid"
 const val EXTRA_GAME_URI = "game_uri"
 
 /** Async resolution of a game's title id (needed before the per-game settings editor

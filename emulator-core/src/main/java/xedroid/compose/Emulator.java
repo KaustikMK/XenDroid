@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: WTFPL
-package xedroid.compose;
+package xendroid.compose;
 
 import android.content.Context;
 import android.net.Uri;
@@ -13,7 +13,7 @@ import org.json.JSONObject;
 
 import java.util.Base64;
 
-public class Emulator extends xedroid.emulator.Emulator{
+public class Emulator extends xendroid.emulator.Emulator{
     public static Emulator get=null;
     public static void load_library(){
         if(get!=null)

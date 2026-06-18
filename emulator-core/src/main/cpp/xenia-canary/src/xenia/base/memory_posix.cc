@@ -24,12 +24,12 @@
 #include "xenia/base/platform.h"
 #include "xenia/base/string.h"
 
-#if XE_PLATFORM_AX360E
+#if XE_PLATFORM_xendroid
 #include <android/sharedmem.h>
 #endif
-// Both ANDROID and AX360E are defined on the fork; the allocation path below is
-// exclusive (#if AX360E #elif ANDROID), but upstream's standalone dlopen setup
-// block is bare #if ANDROID, so its includes must be available even on AX360E.
+// Both ANDROID and xendroid are defined on the fork; the allocation path below is
+// exclusive (#if xendroid #elif ANDROID), but upstream's standalone dlopen setup
+// block is bare #if ANDROID, so its includes must be available even on xendroid.
 #if XE_PLATFORM_ANDROID
 #include <dlfcn.h>
 #include <linux/ashmem.h>
@@ -122,7 +122,7 @@ std::vector<std::string> g_shm_file_names;
 std::mutex g_shm_file_names_mutex;
 static bool g_cleanup_handlers_installed = false;
 
-#if !XE_PLATFORM_ANDROID&& !XE_PLATFORM_AX360E
+#if !XE_PLATFORM_ANDROID&& !XE_PLATFORM_xendroid
 static void CleanupAtExit() {
   for (const auto& name : g_shm_file_names) {
     shm_unlink(name.c_str());
@@ -259,7 +259,7 @@ bool QueryProtect(void* base_address, size_t& length, PageAccess& access_out) {
 FileMappingHandle CreateFileMappingHandle(const std::filesystem::path& path,
                                           size_t length, PageAccess access,
                                           bool commit) {
-#if XE_PLATFORM_AX360E
+#if XE_PLATFORM_xendroid
     //XELOGI("CreateFileMappingHandle: {} 0x{:X}", path.string(), length);
     int sharedmem_fd = ASharedMemory_create(path.c_str(), length);
     return sharedmem_fd >= 0 ? sharedmem_fd : kFileMappingHandleInvalid;
@@ -327,7 +327,7 @@ FileMappingHandle CreateFileMappingHandle(const std::filesystem::path& path,
 void CloseFileMappingHandle(FileMappingHandle handle,
                             const std::filesystem::path& path) {
   close(handle);
-#if !XE_PLATFORM_ANDROID&& !XE_PLATFORM_AX360E
+#if !XE_PLATFORM_ANDROID&& !XE_PLATFORM_xendroid
   auto full_path = "/" / path;
   shm_unlink(full_path.c_str());
   // Remove from tracking

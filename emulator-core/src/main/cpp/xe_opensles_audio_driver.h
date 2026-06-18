@@ -6,8 +6,8 @@
  * Released under the BSD license - see LICENSE in the root for more details. *
  ******************************************************************************
  */
-#ifndef AX360E_XE_OPENSLES_AUDIO_DRIVER_H
-#define AX360E_XE_OPENSLES_AUDIO_DRIVER_H
+#ifndef xendroid_XE_OPENSLES_AUDIO_DRIVER_H
+#define xendroid_XE_OPENSLES_AUDIO_DRIVER_H
 
 #include <mutex>
 #include <queue>
@@ -64,4 +64,4 @@ namespace xe {
         }
     }
 }
-#endif //AX360E_XE_OPENSLES_AUDIO_DRIVER_H
+#endif //xendroid_XE_OPENSLES_AUDIO_DRIVER_H

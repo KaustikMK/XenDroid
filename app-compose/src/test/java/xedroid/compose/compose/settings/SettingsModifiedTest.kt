@@ -1,9 +1,9 @@
-package xedroid.compose.compose.settings
+package xendroid.compose.compose.settings
 
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
-import xedroid.compose.settings.modified
+import xendroid.compose.settings.modified
 
 /** Regression guard for the EmulatorSettings.java:591 NPE: a null live/template
  *  value must fall back to the schema default before comparing, never crash, and

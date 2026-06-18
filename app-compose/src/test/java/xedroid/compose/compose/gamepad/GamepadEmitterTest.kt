@@ -1,10 +1,10 @@
-package xedroid.compose.compose.gamepad
+package xendroid.compose.compose.gamepad
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
-import xedroid.compose.gamepad.GamepadEmitter
-import xedroid.compose.gamepad.Kc
+import xendroid.compose.gamepad.GamepadEmitter
+import xendroid.compose.gamepad.Kc
 import kotlin.math.abs
 
 private data class Ev(val code: Int, val pressed: Boolean, val value: Int)

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: WTFPL
-package xedroid.preference;
+package xendroid.preference;
 
 import android.content.Context;
 import android.content.DialogInterface;
@@ -209,7 +209,7 @@ public class SeekBarPreference extends DialogPreference {
     public SeekBarPreference(@NonNull Context context, @Nullable AttributeSet attrs, int defStyleAttr, int defStyleRes) {
         super(context, attrs, defStyleAttr, defStyleRes);
 
-        setDialogLayoutResource(xedroid.compose.R.layout.edit_seek_bar);
+        setDialogLayoutResource(xendroid.compose.R.layout.edit_seek_bar);
         TypedArray a = context.obtainStyledAttributes(
                 attrs, R.styleable.SeekBarPreference, defStyleAttr, defStyleRes);
 

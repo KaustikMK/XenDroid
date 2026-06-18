@@ -6,8 +6,8 @@
  * Released under the BSD license - see LICENSE in the root for more details. *
  ******************************************************************************
  */
-#ifndef AX360E_XE_SAF_DISC_IMAGE_ENTRY_H
-#define AX360E_XE_SAF_DISC_IMAGE_ENTRY_H
+#ifndef xendroid_XE_SAF_DISC_IMAGE_ENTRY_H
+#define xendroid_XE_SAF_DISC_IMAGE_ENTRY_H
 
 #include "xenia/vfs/entry.h"
 
@@ -48,4 +48,4 @@ namespace xe {
 
     }  // namespace vfs
 }  // namespace xe
-#endif //AX360E_XE_SAF_DISC_IMAGE_ENTRY_H
+#endif //xendroid_XE_SAF_DISC_IMAGE_ENTRY_H

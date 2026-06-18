@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: WTFPL
-package xedroid.compose;
+package xendroid.compose;
 
-// R lives in the module namespace (xedroid.compose.core), not this file's package.
-import xedroid.compose.core.R;
+// R lives in the module namespace (xendroid.compose.core), not this file's package.
+import xendroid.compose.core.R;
 
 import static android.os.Build.VERSION.SDK_INT;
 

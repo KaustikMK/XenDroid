@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: WTFPL
-#include "emulator_ax360e.h"
-#include "ax360e_emu.h"
+#include "emulator_xendroid.h"
+#include "xendroid_emu.h"
 
 #include <atomic>   // single-xe::Memory-per-process guard in extract_xex_meta
 
@@ -325,7 +325,7 @@ static XexMeta extract_xex_meta(const uint8_t* base, size_t size) {
     if (hdr->header_size.get() > size) return out;
 
     // xe::Memory owns a PROCESS-GLOBAL singleton (active_memory_) and, on
-    // XE_PLATFORM_AX360E, a single FIXED host-base mapping -- so only ONE may be
+    // XE_PLATFORM_xendroid, a single FIXED host-base mapping -- so only ONE may be
     // alive per process at a time. The only caller is the library scan, which runs
     // in the main/library process and never boots a game in-process (the emulator
     // runs in the separate :emu process, with its own per-process active_memory_),
@@ -550,7 +550,7 @@ static jobject j_meta_from_xex(JNIEnv* env, jobject self,
         return nullptr;
     }
 
-    jclass cls = env->FindClass("xedroid/compose/Emulator$GameInfo");
+    jclass cls = env->FindClass("xendroid/compose/Emulator$GameInfo");
     jmethodID ctor = env->GetMethodID(cls, "<init>", "()V");
     jfieldID fid_name = env->GetFieldID(cls, "name", "Ljava/lang/String;");
     jfieldID fid_uri = env->GetFieldID(cls, "uri", "Ljava/lang/String;");
@@ -584,7 +584,7 @@ static jobject j_meta_from_xex(JNIEnv* env, jobject self,
 }
 
 static jobject j_meta_info_from_god_game(JNIEnv* env,jobject self,jobject context,jstring uri_str ) {
-    jclass cls_Emulator$GameInfo = env->FindClass("xedroid/compose/Emulator$GameInfo");
+    jclass cls_Emulator$GameInfo = env->FindClass("xendroid/compose/Emulator$GameInfo");
     jmethodID mid_Emulator$GameInfo = env->GetMethodID(cls_Emulator$GameInfo, "<init>", "()V");
     jfieldID fid_name = env->GetFieldID(cls_Emulator$GameInfo, "name", "Ljava/lang/String;");
     jfieldID fid_uri = env->GetFieldID(cls_Emulator$GameInfo, "uri", "Ljava/lang/String;");
@@ -880,9 +880,9 @@ static const std::pair<std::string,range> gen_seekbar[]={
         //{"Video|internal_display_resolution_y",{1,1080}},
 };
 
-#define SEEKBAR_PREF_TAG "xedroid.preference.SeekBarPreference"
-#define CHECKBOX_PREF_TAG "xedroid.preference.CheckBoxPreference"
-#define LIST_PREF_TAG "xedroid.preference.ListPreference"
+#define SEEKBAR_PREF_TAG "xendroid.preference.SeekBarPreference"
+#define CHECKBOX_PREF_TAG "xendroid.preference.CheckBoxPreference"
+#define LIST_PREF_TAG "xendroid.preference.ListPreference"
 #if 1
 
 static jstring generate_config_xml(JNIEnv* env,jobject self,jstring toml_path){
@@ -1193,12 +1193,12 @@ static jboolean j_show_debug_overlay_enabled(JNIEnv* env, jobject thiz) {
     return cvars::show_debug_overlay ? JNI_TRUE : JNI_FALSE;
 }
 
-int register_ax360e_Emulator(JNIEnv* env){
+int register_xendroid_Emulator(JNIEnv* env){
 
     g_class_DocumentFile=env->FindClass("androidx/documentfile/provider/DocumentFile");
     g_class_DocumentFile=(jclass)env->NewGlobalRef(g_class_DocumentFile);
 
-    g_class_Emulator = env->FindClass("xedroid/compose/Emulator");
+    g_class_Emulator = env->FindClass("xendroid/compose/Emulator");
     g_class_Emulator = (jclass)env->NewGlobalRef(g_class_Emulator);
 
     //public static int nc_open_uri_fd(Context ctx,String uri)
@@ -1208,9 +1208,9 @@ int register_ax360e_Emulator(JNIEnv* env){
             { "setup_context", "(Landroid/content/Context;)V", (void *) j_setup_context },
             { "setup_document_file_tree", "(Landroidx/documentfile/provider/DocumentFile;)V", (void *) j_setup_document_file_tree },
             { "setup_launch_args", "([Ljava/lang/String;)V", (void *) j_setup_launch_args },
-            { "meta_info_from_god_game", "(Landroid/content/Context;Ljava/lang/String;)Lxedroid/compose/Emulator$GameInfo;", (void *) j_meta_info_from_god_game },
+            { "meta_info_from_god_game", "(Landroid/content/Context;Ljava/lang/String;)Lxendroid/compose/Emulator$GameInfo;", (void *) j_meta_info_from_god_game },
             { "title_id_from_uri", "(Landroid/content/Context;Ljava/lang/String;I)Ljava/lang/String;", (void *) j_title_id_from_uri },
-            { "meta_from_xex", "(Landroid/content/Context;Ljava/lang/String;I)Lxedroid/compose/Emulator$GameInfo;", (void *) j_meta_from_xex },
+            { "meta_from_xex", "(Landroid/content/Context;Ljava/lang/String;I)Lxendroid/compose/Emulator$GameInfo;", (void *) j_meta_from_xex },
             { "setup_uri_info_list_file", "(Ljava/lang/String;)V", (void *) j_setup_uri_info_list_file },
             {"simple_device_info", "()Ljava/lang/String;", (void *) j_simple_device_info}
             ,{"generate_config_xml", "(Ljava/lang/String;)Ljava/lang/String;", (void *) generate_config_xml}

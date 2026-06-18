@@ -1,4 +1,4 @@
-package xedroid.compose
+package xendroid.compose
 
 import android.content.Context
 import androidx.compose.foundation.background
@@ -29,7 +29,7 @@ import androidx.compose.material3.Text
 import kotlinx.coroutines.delay
 import java.util.Locale
 import kotlin.math.roundToInt
-import xedroid.compose.core.EmulatorSession
+import xendroid.compose.core.EmulatorSession
 
 /**
  * Small, draggable FPS / frame-time readout drawn over the Vulkan SurfaceView. Shows INSTANT fps

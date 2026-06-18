@@ -1,9 +1,9 @@
-package xedroid.compose.compose.data
+package xendroid.compose.compose.data
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
-import xedroid.compose.data.GameFormat
+import xendroid.compose.data.GameFormat
 
 class GameFormatTest {
     @Test fun iso_detected_by_extension() =

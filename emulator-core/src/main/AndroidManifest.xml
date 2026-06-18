@@ -7,7 +7,7 @@
          non-colliding authorities. -->
     <application>
         <provider
-            android:name="xedroid.compose.DocumentsProvider"
+            android:name="xendroid.compose.DocumentsProvider"
             android:authorities="${applicationId}.DocumentsProvider"
             android:exported="true"
             android:grantUriPermissions="true"

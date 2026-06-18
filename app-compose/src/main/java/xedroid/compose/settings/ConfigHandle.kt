@@ -1,6 +1,6 @@
-package xedroid.compose.settings
+package xendroid.compose.settings
 
-import xedroid.emulator.Emulator
+import xendroid.emulator.Emulator
 
 /** Build a "Section|name" tag (single '|' separator the native side splits on). */
 fun tag(section: String, name: String): String = "$section|$name"

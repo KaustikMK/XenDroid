@@ -1,9 +1,9 @@
-package xedroid.compose.compose.data
+package xendroid.compose.compose.data
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
-import xedroid.compose.data.IconCache
+import xendroid.compose.data.IconCache
 
 class IconCacheTest {
     @Test fun cacheNameIsStableForSameUri() {

@@ -4,7 +4,7 @@
 # local.properties and selected by the Gradle externalNativeBuild block).
 cmake_minimum_required(VERSION 3.30.3)
 
-project(ax360e LANGUAGES C CXX ASM)
+project(xendroid LANGUAGES C CXX ASM)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
@@ -30,10 +30,10 @@ target_link_options(emu PRIVATE -Wl,--exclude-libs,ALL)
 target_sources(emu
         PRIVATE
         aarch64_disasm.cpp
-        ax360e.cpp
-        ax360e_emu.cpp
+        xendroid.cpp
+        xendroid_emu.cpp
         emulator.cpp
-        emulator_ax360e.cpp
+        emulator_xendroid.cpp
         document_file.cpp
         xe_aaudio_audio_driver.cpp
         xe_aaudio_audio_system.cpp
@@ -54,7 +54,7 @@ target_sources(emu
         xe_saf_xex_device.cpp
         xe_saf_xex_entry.cpp
         xe_saf_xex_file.cpp
-        xe_system_ax360e.cpp
+        xe_system_xendroid.cpp
         xenia-canary/src/xenia/app/emulator_window.cc
         xenia-canary/src/xenia/app/profile_dialogs.cc
         xenia-canary/src/xenia/app/console_settings_dialog.cc

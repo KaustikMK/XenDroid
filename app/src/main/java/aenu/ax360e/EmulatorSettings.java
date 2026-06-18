@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: WTFPL
-package xedroid.compose;
+package xendroid.compose;
 
 import android.annotation.SuppressLint;
 import android.app.Activity;
@@ -26,9 +26,9 @@ import androidx.preference.PreferenceScreen;
 
 import org.json.JSONObject;
 
-import xedroid.preference.CheckBoxPreference;
-import xedroid.preference.ListPreference;
-import xedroid.preference.SeekBarPreference;
+import xendroid.preference.CheckBoxPreference;
+import xendroid.preference.ListPreference;
+import xendroid.preference.SeekBarPreference;
 
 
 import java.io.File;

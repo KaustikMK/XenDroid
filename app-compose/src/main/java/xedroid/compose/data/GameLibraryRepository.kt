@@ -1,12 +1,12 @@
-package xedroid.compose.data
+package xendroid.compose.data
 
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.util.Log
 import androidx.documentfile.provider.DocumentFile
-import xedroid.compose.core.EmulatorRuntime
-import xedroid.compose.core.GameMetadataSource
+import xendroid.compose.core.EmulatorRuntime
+import xendroid.compose.core.GameMetadataSource
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.sync.Mutex

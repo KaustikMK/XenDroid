@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: WTFPL
-package xedroid.compose;
+package xendroid.compose;
 
 import android.app.Activity;
 import android.content.Intent;

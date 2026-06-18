@@ -8,8 +8,8 @@
  */
 
 //存储访问框架 (SAF)
-#ifndef AX360E_XE_SAF_XEX_DEVICE_H
-#define AX360E_XE_SAF_XEX_DEVICE_H
+#ifndef xendroid_XE_SAF_XEX_DEVICE_H
+#define xendroid_XE_SAF_XEX_DEVICE_H
 
 #include <string>
 
@@ -52,4 +52,4 @@ namespace xe {
 
     }
 }
-#endif //AX360E_XE_SAF_XEX_DEVICE_H
+#endif //xendroid_XE_SAF_XEX_DEVICE_H

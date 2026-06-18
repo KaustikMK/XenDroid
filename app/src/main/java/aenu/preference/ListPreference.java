@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: WTFPL
-package xedroid.preference;
+package xendroid.preference;
 
 import android.content.Context;
 import android.content.res.TypedArray;

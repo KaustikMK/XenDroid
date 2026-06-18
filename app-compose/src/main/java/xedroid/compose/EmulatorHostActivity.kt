@@ -1,4 +1,4 @@
-package xedroid.compose
+package xendroid.compose
 
 import android.os.Bundle
 import android.util.Log
@@ -10,9 +10,9 @@ import android.view.SurfaceView
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.documentfile.provider.DocumentFile
-import xedroid.compose.core.EmulatorRuntime
-import xedroid.compose.core.EmulatorSession
-import xedroid.compose.data.PreferencesStore
+import xendroid.compose.core.EmulatorRuntime
+import xendroid.compose.core.EmulatorSession
+import xendroid.compose.data.PreferencesStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.firstOrNull
@@ -43,22 +43,22 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.viewinterop.AndroidView
-import xedroid.compose.ui.theme.Ax360eTheme
-import xedroid.compose.gamepad.GamepadConfigDto
-import xedroid.compose.gamepad.GamepadController
-import xedroid.compose.gamepad.GamepadOverlay
-import xedroid.compose.gamepad.Kc
-import xedroid.compose.gamepad.rememberAutoHide
-import xedroid.compose.data.GameButtons
-import xedroid.compose.data.KeymapStore
-import xedroid.compose.settings.ConfigStore
+import xendroid.compose.ui.theme.xendroidTheme
+import xendroid.compose.gamepad.GamepadConfigDto
+import xendroid.compose.gamepad.GamepadController
+import xendroid.compose.gamepad.GamepadOverlay
+import xendroid.compose.gamepad.Kc
+import xendroid.compose.gamepad.rememberAutoHide
+import xendroid.compose.data.GameButtons
+import xendroid.compose.data.KeymapStore
+import xendroid.compose.settings.ConfigStore
 
 /**
  * The :emu emulator host (separate process; see manifest). Reads game_uri from the
  * Intent, performs the PRE-surface native setup, hosts a Vulkan SurfaceView, and drives
  * the EXACT surface->boot ordering (SP0 makes destroy/recreate safe). Hardware input
  * (controller + keyboard) only; the on-screen touch pad is SP4. onDestroy hard-kills
- * the process. Mirrors legacy xedroid.compose.EmulatorActivity.
+ * the process. Mirrors legacy xendroid.compose.EmulatorActivity.
  */
 class EmulatorHostActivity : ComponentActivity(), SurfaceHolder.Callback {
 
@@ -160,7 +160,7 @@ class EmulatorHostActivity : ComponentActivity(), SurfaceHolder.Callback {
         }
     }
 
-    /** Reads the SP1-B persisted tree uri (DataStore "ax360e_prefs", key "game_dir"). */
+    /** Reads the SP1-B persisted tree uri (DataStore "xendroid_prefs", key "game_dir"). */
     private suspend fun readGameDirTreeUri(): Uri? {
         val s = PreferencesStore(applicationContext).gameDirUri.firstOrNull() ?: return null
         return Uri.parse(s)
@@ -259,7 +259,7 @@ class EmulatorHostActivity : ComponentActivity(), SurfaceHolder.Callback {
                     menuOpenState.value = true
                     if (session.booted) session.pause()
                 }
-                if (menuOpen) Ax360eTheme {
+                if (menuOpen) xendroidTheme {
                     AlertDialog(
                         onDismissRequest = {
                             menuOpenState.value = false

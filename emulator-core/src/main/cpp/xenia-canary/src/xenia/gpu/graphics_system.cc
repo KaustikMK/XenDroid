@@ -73,7 +73,7 @@ X_STATUS GraphicsSystem::Setup(cpu::Processor* processor,
 
   if (with_presentation && provider_) {
     // Safe if either the UI thread call or the presenter creation fails.
-#if !XE_PLATFORM_AX360E
+#if !XE_PLATFORM_xendroid
     if (app_context_) {
       app_context_->CallInUIThreadSynchronous([this]() {
         presenter_ = provider_->CreatePresenter(

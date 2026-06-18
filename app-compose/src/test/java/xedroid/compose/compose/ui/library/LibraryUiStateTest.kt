@@ -1,10 +1,10 @@
-package xedroid.compose.compose.ui.library
+package xendroid.compose.compose.ui.library
 
-import xedroid.compose.data.Game
-import xedroid.compose.data.GameFormat
+import xendroid.compose.data.Game
+import xendroid.compose.data.GameFormat
 import org.junit.Assert.assertTrue
 import org.junit.Test
-import xedroid.compose.ui.library.LibraryUiState
+import xendroid.compose.ui.library.LibraryUiState
 
 class LibraryUiStateTest {
     @Test fun loaded_with_games_is_not_empty() {

@@ -9,7 +9,7 @@
 #include "xenia/base/platform.h"
 #include "xenia/kernel/kernel_flags.h"
 
-#if XE_PLATFORM_AX360E
+#if XE_PLATFORM_xendroid
 DEFINE_bool(headless, true,
             "Don't display any UI, using defaults for prompts as needed.",
             "UI");

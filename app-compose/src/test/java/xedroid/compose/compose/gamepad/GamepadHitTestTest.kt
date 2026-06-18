@@ -1,4 +1,4 @@
-package xedroid.compose.compose.gamepad
+package xendroid.compose.compose.gamepad
 
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.unit.Density
@@ -6,12 +6,12 @@ import androidx.compose.ui.unit.IntSize
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
-import xedroid.compose.gamepad.ControlId
-import xedroid.compose.gamepad.Kc
-import xedroid.compose.gamepad.OnScreenControl
-import xedroid.compose.gamepad.controlCenterPx
-import xedroid.compose.gamepad.controlRadiusPx
-import xedroid.compose.gamepad.hitTest
+import xendroid.compose.gamepad.ControlId
+import xendroid.compose.gamepad.Kc
+import xendroid.compose.gamepad.OnScreenControl
+import xendroid.compose.gamepad.controlCenterPx
+import xendroid.compose.gamepad.controlRadiusPx
+import xendroid.compose.gamepad.hitTest
 
 class GamepadHitTestTest {
 

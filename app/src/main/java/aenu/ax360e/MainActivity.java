@@ -1,4 +1,4 @@
-package xedroid.compose;
+package xendroid.compose;
 
 import android.annotation.TargetApi;
 import android.app.Activity;
@@ -84,7 +84,7 @@ public class MainActivity extends AppCompatActivity {
 
             Emulator.GameInfo meta_info=((GameMetaInfoAdapter)l.getAdapter()).getMetaInfo(position);
 
-            Intent intent = new Intent("xedroid.intent.action.AX360E");
+            Intent intent = new Intent("xendroid.intent.action.xendroid");
             intent.setPackage(getPackageName());
 
             intent.putExtra(EmulatorActivity.EXTRA_GAME_URI,meta_info.uri);
@@ -156,7 +156,7 @@ public class MainActivity extends AppCompatActivity {
         list_view.setOnItemClickListener(item_click_l);
         list_view.setEmptyView(findViewById(R.id.game_list_is_empty));
 
-        if(getPackageName().equals("xedroid.compose"))
+        if(getPackageName().equals("xendroid.compose"))
         registerForContextMenu(list_view);
         //refresh_game_list();
         show_game_list();

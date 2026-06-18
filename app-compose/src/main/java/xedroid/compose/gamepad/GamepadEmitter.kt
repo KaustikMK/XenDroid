@@ -1,4 +1,4 @@
-package xedroid.compose.gamepad
+package xendroid.compose.gamepad
 
 import kotlin.math.abs
 import kotlin.math.hypot

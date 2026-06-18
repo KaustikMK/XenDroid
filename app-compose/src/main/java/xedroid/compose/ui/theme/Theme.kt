@@ -1,4 +1,4 @@
-package xedroid.compose.ui.theme
+package xendroid.compose.ui.theme
 
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
@@ -43,7 +43,7 @@ private val LightColors = lightColorScheme(
 
 /** Material 3 theme for the Compose frontend, themed to Xbox green. */
 @Composable
-fun Ax360eTheme(
+fun xendroidTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
     content: @Composable () -> Unit,
 ) {

@@ -1,4 +1,4 @@
-package xedroid.compose.ui.settings
+package xendroid.compose.ui.settings
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.clickable
@@ -16,8 +16,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
-import xedroid.compose.settings.GameSettingsViewModel
-import xedroid.compose.settings.SettingsCategory
+import xendroid.compose.settings.GameSettingsViewModel
+import xendroid.compose.settings.SettingsCategory
 
 /**
  * The per-game override editor: the same two-level INDEX -> DETAIL shape as

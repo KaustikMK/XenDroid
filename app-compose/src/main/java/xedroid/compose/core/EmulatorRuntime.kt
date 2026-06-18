@@ -1,8 +1,8 @@
-package xedroid.compose.core
+package xendroid.compose.core
 
 import android.util.Log
-import xedroid.compose.Application
-import xedroid.compose.Emulator
+import xendroid.compose.Application
+import xendroid.compose.Emulator
 
 /**
  * Thin Kotlin facade over the once-per-process native load + GPU probe.

@@ -1,9 +1,9 @@
-package xedroid.compose.settings
+package xendroid.compose.settings
 
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import xedroid.compose.core.EmulatorRuntime
+import xendroid.compose.core.EmulatorRuntime
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow

@@ -1,4 +1,4 @@
-package xedroid.compose.settings
+package xendroid.compose.settings
 
 import android.util.Log
 import java.io.File

@@ -1,4 +1,4 @@
-package xedroid.compose.gamepad
+package xendroid.compose.gamepad
 
 import android.graphics.Paint
 import androidx.compose.foundation.Canvas

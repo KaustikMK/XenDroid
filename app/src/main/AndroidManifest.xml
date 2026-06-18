@@ -13,7 +13,7 @@
     <uses-feature android:name="android.hardware.touchscreen" android:required="false"/>
 
     <application
-        android:name="xedroid.compose.Application"
+        android:name="xendroid.compose.Application"
         android:allowBackup="true"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:fullBackupContent="@xml/backup_rules"
@@ -31,7 +31,7 @@
 
 
 
-        <activity android:name="xedroid.compose.MainActivity"
+        <activity android:name="xendroid.compose.MainActivity"
 
             android:exported="true"
             android:launchMode="singleTask"
@@ -43,7 +43,7 @@
             </intent-filter>
         </activity>
 
-        <activity android:name="xedroid.compose.EmulatorActivity"
+        <activity android:name="xendroid.compose.EmulatorActivity"
 
             android:screenOrientation="sensorLandscape"
             android:launchMode="singleTask"
@@ -53,7 +53,7 @@
             android:process=":emu"
             >
             <intent-filter>
-                <action android:name="aenu.intent.action.AX360E" />
+                <action android:name="aenu.intent.action.xendroid" />
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
             <intent-filter>
@@ -61,19 +61,19 @@
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
         </activity>
-        <activity android:name="xedroid.compose.EmulatorSettings"
+        <activity android:name="xendroid.compose.EmulatorSettings"
             android:exported="false"
             android:label="@string/settings"/>
-        <activity android:name="xedroid.compose.KeyMapActivity"
+        <activity android:name="xendroid.compose.KeyMapActivity"
             android:exported="false"
             android:label="@string/key_mappers"/>
-        <activity android:name="xedroid.compose.VirtualControlEdit"
+        <activity android:name="xendroid.compose.VirtualControlEdit"
             android:screenOrientation="sensorLandscape"
             android:configChanges="layoutDirection|locale|orientation|uiMode|screenLayout|screenSize|smallestScreenSize|keyboard|keyboardHidden|navigation"
             android:exported="false"
             android:theme="@android:style/Theme.NoTitleBar.Fullscreen"
             android:launchMode="singleTask"/>
-        <activity android:name="xedroid.compose.AboutActivity" android:exported="false" android:label="@string/about"> </activity>
+        <activity android:name="xendroid.compose.AboutActivity" android:exported="false" android:label="@string/about"> </activity>
         <!-- DocumentsProvider now declared in :emulator-core's library manifest (merged in). -->
 
     </application>

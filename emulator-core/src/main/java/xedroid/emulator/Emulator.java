@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: WTFPL
-package xedroid.emulator;
+package xendroid.emulator;
 
 import android.view.Surface;
 

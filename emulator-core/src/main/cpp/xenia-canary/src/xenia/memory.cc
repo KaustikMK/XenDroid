@@ -206,7 +206,7 @@ bool Memory::Initialize() {
   // Attempt to create our views. This may fail at the first address
   // we pick, so try a few times.
   mapping_base_ = 0;
-#if !XE_PLATFORM_AX360E
+#if !XE_PLATFORM_xendroid
     for (size_t n = 32; n < 64; n++) {
       auto mapping_base = reinterpret_cast<uint8_t*>(1ull << n);
       if (!MapViews(mapping_base)) {

@@ -1,4 +1,4 @@
-package xedroid.compose.settings
+package xendroid.compose.settings
 
 import java.io.File
 
