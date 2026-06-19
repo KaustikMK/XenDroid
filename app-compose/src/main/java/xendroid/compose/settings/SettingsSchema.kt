@@ -34,6 +34,11 @@ object SettingsSchema {
             // next game launch.
             l("Vulkan", "turnip_debug", "Turnip debug mode", "sysmem",
                 "" to "None (no TU_DEBUG flags, GMEM)", "sysmem" to "sysmem (untiled, slower)"),
+            // Cross-draw texture/sampler descriptor-set reuse (perf). Master toggle gates reuse
+            // on/off; the edge toggle (only when reuse is on) picks edge's bitmask gate vs
+            // XenDroid's content-hash gate for A/B. Three-way: off / on+hash / on+edge.
+            b("Vulkan", "vulkan_cache_texture_descriptors", "Cache texture descriptors", true),
+            b("Vulkan", "vulkan_texture_descriptor_reuse_edge", "Texture descriptor gate: edge (off = hash)", false),
         )),
 
         SettingsCategory("Video", listOf(

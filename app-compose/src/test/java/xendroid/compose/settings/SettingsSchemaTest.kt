@@ -20,18 +20,20 @@ class SettingsSchemaTest {
     // a valid user choice. XenDroid then added two ListChoices (Vulkan|turnip_debug,
     // GPU|occlusion_query) and reclassified GPU|readback_resolve from Bool to ListChoice
     // (it is a string cvar: fast/some/full/none), then added GPU|vulkan_mid_frame_submission_draws
-    // as an IntRange (-> 8 IntRange). Net: 98 Bool + 8 IntRange + 18 ListChoice + 1 Action = 125.
-    @Test fun total_entry_count_is_125() {
-        assertEquals(125, all.size)
+    // as an IntRange (-> 8 IntRange), then added two Vulkan descriptor-cache Bools
+    // (vulkan_cache_texture_descriptors, vulkan_texture_descriptor_reuse_edge -> 100 Bool).
+    // Net: 100 Bool + 8 IntRange + 18 ListChoice + 1 Action = 127.
+    @Test fun total_entry_count_is_127() {
+        assertEquals(127, all.size)
         assertEquals(
-            125,
+            127,
             all.count { it is Setting.Bool } + all.count { it is Setting.IntRange } +
                 all.count { it is Setting.ListChoice } + all.count { it is Setting.Action },
         )
     }
 
     @Test fun counts_by_type_match_verified_inventory() {
-        assertEquals(98, all.count { it is Setting.Bool })
+        assertEquals(100, all.count { it is Setting.Bool })
         assertEquals(8, all.count { it is Setting.IntRange })
         assertEquals(18, all.count { it is Setting.ListChoice })
         assertEquals(1, all.count { it is Setting.Action })
