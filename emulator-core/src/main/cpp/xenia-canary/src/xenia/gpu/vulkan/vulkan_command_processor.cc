@@ -59,6 +59,20 @@ DEFINE_bool(
     "(pre-optimization behavior) for debugging texture corruption.",
     "Vulkan");
 
+// A/B selector for the cross-draw texture/sampler descriptor-set reuse gate.
+// Default (false) keeps XenDroid's content-hash gate; true switches to upstream
+// edge's bitmask+shader-pointer+sampler-vector gate. Only consulted when
+// vulkan_cache_texture_descriptors is on. Both schemes coexist so the cvar can
+// be flipped live for comparison (see the gate and write-back in UpdateBindings
+// for the switch-safety invariants).
+DEFINE_bool(
+    vulkan_texture_descriptor_reuse_edge, false,
+    "When vulkan_cache_texture_descriptors is on, use upstream edge's "
+    "bitmask+shader-pointer+sampler-vector descriptor-set reuse gate instead of "
+    "XenDroid's content-hash gate. For A/B comparison; default false = the hash "
+    "gate.",
+    "Vulkan");
+
 DEFINE_bool(
     vulkan_skip_redundant_fetch_constant_writes, true,
     "Don't invalidate texture bindings and the fetch/bool-loop constant "
@@ -7763,6 +7777,42 @@ bool VulkanCommandProcessor::UpdateBindings(const VulkanShader* vertex_shader,
   uint64_t texture_set_hash_vertex = 0;
   uint64_t texture_set_hash_pixel = 0;
   if (cvars::vulkan_cache_texture_descriptors) {
+    if (cvars::vulkan_texture_descriptor_reuse_edge) {
+      // A/B alternative: upstream edge's reuse gate (ported faithfully from
+      // edge b5275a6cb UpdateBindings ~lines 6976-6998). A stage's cached set
+      // is kept only when none of these changed since the last write: the
+      // shader (and thus its binding list), a used texture's resolved host
+      // image view (signalled by the texture cache's per-fetch-constant
+      // bindings-changed mask), or any sampler in the stage's vector. The
+      // content-hash (FNV) is intentionally NOT computed here so edge mode's
+      // gate cost equals edge's gate only.
+      uint32_t textures_changed = texture_cache_->texture_bindings_changed();
+      uint32_t used_texture_mask_vertex =
+          vertex_shader->GetUsedTextureMaskAfterTranslation();
+      uint32_t used_texture_mask_pixel =
+          pixel_shader ? pixel_shader->GetUsedTextureMaskAfterTranslation() : 0;
+      if ((current_graphics_descriptor_set_values_up_to_date_ &
+           (UINT32_C(1)
+            << SpirvShaderTranslator::kDescriptorSetTexturesVertex)) &&
+          (current_textures_vertex_shader_ != vertex_shader ||
+           (textures_changed & used_texture_mask_vertex) ||
+           current_written_samplers_vertex_ != current_samplers_vertex_)) {
+        current_graphics_descriptor_set_values_up_to_date_ &= ~(
+            UINT32_C(1) << SpirvShaderTranslator::kDescriptorSetTexturesVertex);
+      }
+      if ((current_graphics_descriptor_set_values_up_to_date_ &
+           (UINT32_C(1)
+            << SpirvShaderTranslator::kDescriptorSetTexturesPixel)) &&
+          (current_textures_pixel_shader_ != pixel_shader ||
+           (textures_changed & used_texture_mask_pixel) ||
+           current_written_samplers_pixel_ != current_samplers_pixel_)) {
+        current_graphics_descriptor_set_values_up_to_date_ &= ~(
+            UINT32_C(1) << SpirvShaderTranslator::kDescriptorSetTexturesPixel);
+      }
+      texture_cache_->ResetTextureBindingsChanged(used_texture_mask_vertex |
+                                                  used_texture_mask_pixel);
+    } else {
+    // XenDroid's content-hash gate (default).
     // Vertex stage.
     if (texture_count_vertex || sampler_count_vertex) {
       texture_set_hash_vertex = compute_texture_set_hash(
@@ -7787,6 +7837,7 @@ bool VulkanCommandProcessor::UpdateBindings(const VulkanShader* vertex_shader,
         current_graphics_descriptor_set_values_up_to_date_ &= ~(
             UINT32_C(1) << SpirvShaderTranslator::kDescriptorSetTexturesPixel);
       }
+    }
     }
   } else {
     // Opt-out: reproduce the original unconditional clear (re-write + re-bind
@@ -8048,11 +8099,23 @@ bool VulkanCommandProcessor::UpdateBindings(const VulkanShader* vertex_shader,
     current_graphics_descriptor_sets_
         [SpirvShaderTranslator::kDescriptorSetTexturesVertex] =
             write_textures[0].dstSet;
-    // Record the content hash of the set we just wrote so an unchanged next
-    // draw can skip the re-write+re-bind. Valid only until an invalidation
-    // (new frame / transient-pool reset / pipeline-layout change).
-    current_texture_descriptor_set_hash_vertex_ = texture_set_hash_vertex;
-    current_texture_descriptor_set_hash_valid_vertex_ = true;
+    // Dual write-back so a live cvar flip between the two reuse gates is safe:
+    // after this write BOTH schemes' state describe what was just written.
+    // Always refresh edge's shader-pointer + sampler-vector snapshot (cheap).
+    current_textures_vertex_shader_ = vertex_shader;
+    current_written_samplers_vertex_ = current_samplers_vertex_;
+    if (cvars::vulkan_texture_descriptor_reuse_edge) {
+      // Edge mode didn't compute the FNV hash, so mark it invalid to force a
+      // rebuild if the cvar is later flipped back to the hash gate.
+      current_texture_descriptor_set_hash_valid_vertex_ = false;
+    } else {
+      // Hash mode: record the content hash of the set we just wrote so an
+      // unchanged next draw can skip the re-write+re-bind. Valid only until an
+      // invalidation (new frame / transient-pool reset / pipeline-layout
+      // change).
+      current_texture_descriptor_set_hash_vertex_ = texture_set_hash_vertex;
+      current_texture_descriptor_set_hash_valid_vertex_ = true;
+    }
   }
   // Pixel shader textures and samplers.
   if (write_pixel_textures) {
@@ -8074,8 +8137,17 @@ bool VulkanCommandProcessor::UpdateBindings(const VulkanShader* vertex_shader,
     current_graphics_descriptor_sets_
         [SpirvShaderTranslator::kDescriptorSetTexturesPixel] =
             write_textures[0].dstSet;
-    current_texture_descriptor_set_hash_pixel_ = texture_set_hash_pixel;
-    current_texture_descriptor_set_hash_valid_pixel_ = true;
+    // Dual write-back (see the vertex stage above for the switch-safety
+    // rationale): always refresh edge's snapshot, then keep the hash state
+    // either correct-and-valid (hash mode) or marked invalid (edge mode).
+    current_textures_pixel_shader_ = pixel_shader;
+    current_written_samplers_pixel_ = current_samplers_pixel_;
+    if (cvars::vulkan_texture_descriptor_reuse_edge) {
+      current_texture_descriptor_set_hash_valid_pixel_ = false;
+    } else {
+      current_texture_descriptor_set_hash_pixel_ = texture_set_hash_pixel;
+      current_texture_descriptor_set_hash_valid_pixel_ = true;
+    }
   }
   // Write.
   if (write_descriptor_set_count) {
