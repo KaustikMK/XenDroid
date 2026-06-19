@@ -28,6 +28,12 @@ object SettingsSchema {
             i("Vulkan", "vulkan_pipeline_creation_threads", "Pipeline creation threads", 4, 0, 5),
             Action("Vulkan", "vulkan_lib_path", "Custom Vulkan driver", ""),
             b("Vulkan", "adrenotools_force_max_clocks", "Force max GPU clocks (adrenotools)", false),
+            // TU_DEBUG flags for the Turnip (Mesa freedreno) driver. Empty = driver default
+            // (GMEM/tiled, fast); 'sysmem' forces untiled rendering (much slower) but avoids a
+            // class of Adreno GPU hangs. Applied at vkCreateInstance, so it takes effect on the
+            // next game launch.
+            l("Vulkan", "turnip_debug", "Turnip debug mode", "",
+                "" to "None (no TU_DEBUG flags, GMEM)", "sysmem" to "sysmem (untiled, slower)"),
         )),
 
         SettingsCategory("Video", listOf(
