@@ -126,6 +126,14 @@ object SettingsSchema {
             b("GPU", "store_shaders", "Store shaders", true),
             b("GPU", "resolve_resolution_scale_fill_half_pixel_offset", "Resolve scale: fill half-pixel offset", true),
             b("GPU", "readback_resolve", "Readback resolve", false),
+            // How guest occlusion queries (PM4 EVENT_WRITE_ZPD) are serviced. 'fake' fabricates a
+            // result with zero GPU-query overhead (fastest; some effects e.g. lens flares may look
+            // slightly wrong); 'fast'/'fast-alt' issue real async Vulkan queries without stalling;
+            // 'strict' issues a real query and stalls the command thread until the GPU answers (most
+            // accurate, slowest). Live (SetZPDMode) -- takes effect without relaunch.
+            l("GPU", "occlusion_query", "Occlusion query mode", "fake",
+                "fake" to "Fake (no GPU query, fastest)", "fast" to "Fast (async query, no stall)",
+                "fast-alt" to "Fast-alt (async, precise zeros)", "strict" to "Strict (real query, stalls)"),
             b("GPU", "snorm16_render_target_full_range", "snorm16 render target full range", true),
             // min == the real TOML default (384); a higher floor would silently coerce the default up.
             i("GPU", "texture_cache_memory_limit_soft", "Texture cache soft limit (MB)", 384, 384, 4096),
