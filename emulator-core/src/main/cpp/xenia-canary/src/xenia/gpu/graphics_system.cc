@@ -13,6 +13,7 @@
 #include "xenia/base/clock.h"
 #include "xenia/base/logging.h"
 #include "xenia/base/math.h"
+#include "xenia/base/platform.h"
 #include "xenia/base/profiling.h"
 #include "xenia/base/threading.h"
 #include "xenia/config.h"
@@ -103,7 +104,11 @@ X_STATUS GraphicsSystem::Setup(cpu::Processor* processor,
                             internal_display_resolution_entries[8].first);
     OVERRIDE_PERSIST_uint32(internal_display_resolution_y,
                             internal_display_resolution_entries[8].second);
+#if !XE_PLATFORM_xendroid
+    // xendroid fork: never write config from the emulator process (corrupts the
+    // in-app editor's file with reseeded defaults); we FatalError below anyway.
     config::SaveConfig();
+#endif
     xe::FatalError(fmt::format(
         "Invalid custom resolution specified: {}x{}\n"
         "Width must be between 1-1920.\nHeight must be between 1-1080.",
@@ -275,7 +280,15 @@ void GraphicsSystem::OnHostGpuLossFromAnyThread(
     return;
   }
 
+#if !XE_PLATFORM_xendroid
+  // Android (xendroid) fork: do NOT rewrite the config from the emulator
+  // process. This path fires routinely on Adreno/Turnip device-loss, and
+  // SaveConfig() is a full-cvar dump that reseeds keys absent from the file to
+  // their DEFINE defaults and reformats it -- silently corrupting the in-app
+  // editor's config, right before we crash anyway. The editor is the only
+  // intended writer; the emulator reads at boot (see config.cc:57-64).
   config::SaveConfig();
+#endif
 
   xe::FatalError("Graphics device lost (probably due to an internal error)");
 }
