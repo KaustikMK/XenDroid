@@ -71,8 +71,70 @@ std::unique_ptr<DocumentFile> DocumentFile::find(JavaVM *vm,jobject uri) {
     return _find_file_in_tree(env, rootDocFile, uri);
 }
 
+std::unique_ptr<DocumentFile> DocumentFile::findByUriString(JavaVM *vm, const std::string& uri) {
+    if (uri.empty()) {
+        return nullptr;
+    }
+    JNIEnv *env = get_env(vm);
+    jclass uri_class = env->FindClass("android/net/Uri");
+    if (uri_class == nullptr) {
+        LOGE("findByUriString: cannot find android/net/Uri");
+        return nullptr;
+    }
+    jmethodID parse_method = env->GetStaticMethodID(
+            uri_class, "parse", "(Ljava/lang/String;)Landroid/net/Uri;");
+    if (parse_method == nullptr) {
+        LOGE("findByUriString: cannot find Uri.parse");
+        return nullptr;
+    }
+    jstring uri_string = env->NewStringUTF(uri.c_str());
+    jobject uri_obj = env->CallStaticObjectMethod(uri_class, parse_method, uri_string);
+    if (env->ExceptionCheck()) {
+        // Clear the pending exception so it can't trip a later CheckJNI abort
+        // (the device runs with -Xcheck:jni).
+        env->ExceptionClear();
+        LOGE("findByUriString: Uri.parse threw for '%s'", uri.c_str());
+        env->DeleteLocalRef(uri_string);
+        env->DeleteLocalRef(uri_class);
+        return nullptr;
+    }
+    std::unique_ptr<DocumentFile> result = find(vm, uri_obj);
+    env->DeleteLocalRef(uri_string);
+    env->DeleteLocalRef(uri_obj);
+    env->DeleteLocalRef(uri_class);
+    return result;
+}
+
 std::unique_ptr<DocumentFile> DocumentFile::clone(std::unique_ptr<DocumentFile>& file){
     return find(file->jvm_,file->getUri());
+}
+
+std::string DocumentFile::getUriString() const {
+    JNIEnv *env_ = get_env(jvm_);
+    jobject uri = getUri();
+    if (uri == nullptr) {
+        return "";
+    }
+    jclass uriClass = env_->GetObjectClass(uri);
+    jmethodID toStringMethod =
+            env_->GetMethodID(uriClass, "toString", "()Ljava/lang/String;");
+    if (toStringMethod == nullptr) {
+        LOGE("getUriString: cannot find Uri.toString");
+        env_->DeleteLocalRef(uri);
+        env_->DeleteLocalRef(uriClass);
+        return "";
+    }
+    jstring uriStr = (jstring) env_->CallObjectMethod(uri, toStringMethod);
+    std::string result;
+    if (uriStr != nullptr) {
+        const char *chars = env_->GetStringUTFChars(uriStr, nullptr);
+        result = chars;
+        env_->ReleaseStringUTFChars(uriStr, chars);
+        env_->DeleteLocalRef(uriStr);
+    }
+    env_->DeleteLocalRef(uriClass);
+    env_->DeleteLocalRef(uri);
+    return result;
 }
 
 bool DocumentFile::exists() const {

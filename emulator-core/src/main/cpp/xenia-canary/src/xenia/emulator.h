@@ -357,7 +357,16 @@ class Emulator {
   // then launches with new params. Must be called from a non-guest thread.
   void RelaunchTitle(const std::string& host_path,
                      const std::string& launch_module, uint32_t launch_flags,
-                     std::vector<uint8_t> launch_data);
+                     std::vector<uint8_t> launch_data
+#if XE_PLATFORM_xendroid
+                     ,
+                     // thread_id of the parked guest caller (the XThread that
+                     // called XamLoaderLaunchTitle and now sleeps forever). The
+                     // join barrier must skip it — GetCurrentThread() is null on
+                     // this detached thread so it can't be self-discovered.
+                     uint32_t caller_thread_id = 0
+#endif
+  );
 
   // Stops the current title and returns the kernel to a fresh, idle state
   // (no title loaded). Must be called from a non-guest thread.
@@ -447,6 +456,19 @@ class Emulator {
 
   std::filesystem::path command_line_;
   std::filesystem::path last_launch_path_;  // persists across relaunch
+#if XE_PLATFORM_xendroid
+  // Android in-process relaunch re-mounts the title from its SAF URI, not a
+  // host path (last_launch_path_ is always empty on Android). This retains a
+  // re-openable source captured by the SAF Launch* methods at boot; like
+  // last_launch_path_ it is a plain member, so Shutdown() never clears it and
+  // it survives the relaunch teardown.
+  struct SafLaunchSource {
+    std::string uri;            // re-parse via DocumentFile::findByUriString
+    std::string data_dir_uri;   // STFS multi-file data sibling; empty otherwise
+    FileSignatureType type = FileSignatureType::Unknown;
+    bool valid = false;
+  } saf_launch_source_;
+#endif
   DiscProvider disc_provider_;
   DiscRecorder disc_recorder_;
   std::filesystem::path storage_root_;

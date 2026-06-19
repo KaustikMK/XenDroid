@@ -554,10 +554,27 @@ void EmulatorApp::emu_thr_main() {
                     return debug_window_.get();
                 });
     }*/
+    emu->on_before_shutdown.AddListener([this]() {
+        // Mirror desktop xenia_main.cc:753 — null the persistent window's
+        // presenter BEFORE the graphics system (and its Presenter) is freed in
+        // Shutdown() (emulator.cc:212), so the EVENT_PAINT pump cannot paint
+        // through a dangling pointer. Must be synchronous: it has to complete
+        // before Shutdown() proceeds past on_before_shutdown() (emulator.cc:192).
+        XELOGI("on_before_shutdown[android]: tearing down presenter painting");
+        app_context().CallInUIThreadSynchronous(
+                [this]() { emu_window->ShutdownGraphicsSystemPresenterPainting(); });
+    });
 #if 1
     emu->on_launch.AddListener([&](auto title_id, const auto& game_title) {
         XELOGI("on_launch {}",
                game_title.empty() ? "Unknown Title" : std::string(game_title));
+        // Mirror desktop xenia_main.cc:722-731 — re-bind the presenter to the
+        // persistent ANativeWindow after a new graphics system is built (first
+        // boot OR in-process relaunch). Async mirrors the boot path (:448-449);
+        // the synchronous on_before_shutdown teardown already left the window
+        // presenter-less, so paint ticks before the re-bind are safe no-ops.
+        app_context().CallInUIThread(
+                [this]() { emu_window->SetupGraphicsSystemPresenterPainting(); });
         app_context().CallInUIThread([this]() { emu_window->UpdateTitle(); });
         emu_thr_event->Set();
     });

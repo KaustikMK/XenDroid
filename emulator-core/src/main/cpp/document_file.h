@@ -22,7 +22,15 @@ public:
     //static DocumentFile *fromSingleUri(JNIEnv *env, jobject context, jobject uri);
 
     static std::unique_ptr<DocumentFile> find(JavaVM *vm, jobject uri);
+    // Re-create a DocumentFile from a retained URI string (Uri.parse + find).
+    // Used by the in-process relaunch path to re-mount a SAF source whose
+    // original DocumentFile was already consumed (moved into a device).
+    static std::unique_ptr<DocumentFile> findByUriString(JavaVM *vm, const std::string& uri);
     static std::unique_ptr<DocumentFile> clone(std::unique_ptr<DocumentFile>& file);
+
+    // Returns this file's content URI serialized via Uri.toString(); empty on
+    // failure. Used to retain a re-openable source across relaunch.
+    std::string getUriString() const;
 
     bool exists() const;
 

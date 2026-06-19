@@ -228,6 +228,9 @@ void EmulatorWindow::SetupGraphicsSystemPresenterPainting() {
     return;
   }
 
+  XELOGI("SetupGraphicsSystemPresenterPainting: window={} presenter={}",
+         static_cast<void*>(window_.get()), static_cast<void*>(presenter));
+
   ApplyDisplayConfigForCvars();
 
   window_->SetPresenter(presenter);

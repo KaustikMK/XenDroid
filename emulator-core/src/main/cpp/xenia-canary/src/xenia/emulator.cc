@@ -118,6 +118,15 @@ DEFINE_int32(priority_class, 0,
              "values: 0 - Normal, 1 - Above normal, 2 - High",
              "General");
 
+#if XE_PLATFORM_xendroid
+// Process-wide JavaVM set in JNI_OnLoad (xendroid.cpp); declared at global scope
+// (matching xendroid_emu.cpp / emulator_xendroid.cpp) so the relaunch re-mount
+// can re-create a DocumentFile from a retained URI off the detached relaunch
+// thread. Declaring it inside namespace xe would mangle to a nonexistent
+// xe::g_jvm and fail to link.
+extern JavaVM* g_jvm;
+#endif
+
 namespace xe {
 using namespace xe::literals;
 
@@ -190,6 +199,9 @@ void Emulator::Shutdown() {
   // destructor — the UI loop may not be running.
   if (relaunching_) {
     on_before_shutdown();
+#if XE_PLATFORM_xendroid
+    XELOGI("Emulator::Shutdown: on_before_shutdown fired (relaunch teardown)");
+#endif
   }
 
   // Note that we delete things in the reverse order they were initialized.
@@ -394,6 +406,17 @@ X_STATUS Emulator::Setup(
       kernel_state_.get(), storage_root() / "plugins");
 
   ExceptionHandler::Install(Emulator::ExceptionCallbackThunk, this);
+
+#if XE_PLATFORM_xendroid
+  // On in-process relaunch, input_system_ persists across Shutdown/Setup (see
+  // the `if (!input_system_)` guard above), so the only success assignment on
+  // the first-boot path — `result = input_system_->Setup()` — is skipped,
+  // leaving `result` at its initial X_STATUS_UNSUCCESSFUL. Edge discards
+  // Setup()'s return on relaunch so this was latent; RelaunchTitle's status
+  // check (added for Android) surfaced it as a false abort. Every failure path
+  // above returns early, so reaching here means Setup genuinely succeeded.
+  result = X_STATUS_SUCCESS;
+#endif
 
   return result;
 }
@@ -836,6 +859,12 @@ X_STATUS Emulator::LaunchDefaultModule(const std::filesystem::path& path) {
     X_STATUS Emulator::LaunchXexFile(std::unique_ptr<DocumentFile> xex_path){
         auto file_name = xex_path->getName();
 
+        // Retain the SAF source for in-process relaunch re-mount (mirror of the
+        // desktop LaunchPath last_launch_path_ remember-step, emulator.cc:667).
+        // Capture BEFORE the std::move consumes xex_path into the device.
+        saf_launch_source_ = {xex_path->getUriString(), "",
+                              FileSignatureType::XEX1, true};
+
         X_STATUS result=MountPath(std::move(xex_path),nullptr
                 ,FileSignatureType::XEX1,"\\Device\\Harddisk0\\Partition1");
         if (XFAILED(result)) {
@@ -885,6 +914,9 @@ X_STATUS Emulator::LaunchDefaultModule(const std::filesystem::path& path) {
         return result;
 }
     X_STATUS Emulator::LaunchDiscImage(std::unique_ptr<DocumentFile> path){
+        // Retain the SAF source for relaunch re-mount before path is moved.
+        saf_launch_source_ = {path->getUriString(), "",
+                              FileSignatureType::XISO, true};
         X_STATUS result=MountPath(std::move(path),nullptr
                 ,FileSignatureType::XISO,"\\Device\\Cdrom0");
         if (XFAILED(result)) {
@@ -900,6 +932,9 @@ X_STATUS Emulator::LaunchDefaultModule(const std::filesystem::path& path) {
         return result;
 }
     X_STATUS Emulator::LaunchDiscArchive(std::unique_ptr<DocumentFile> path) {
+        // Retain the SAF source for relaunch re-mount before path is moved.
+        saf_launch_source_ = {path->getUriString(), "",
+                              FileSignatureType::ZAR, true};
         X_STATUS result=MountPath(std::move(path),nullptr
                 ,FileSignatureType::ZAR,"\\Device\\Cdrom0");
         if (XFAILED(result)) {
@@ -915,6 +950,11 @@ X_STATUS Emulator::LaunchDefaultModule(const std::filesystem::path& path) {
         return result;
     }
     X_STATUS Emulator::LaunchStfsContainer(std::unique_ptr<DocumentFile> path,std::unique_ptr<DocumentFile> data_dir) {
+        // Retain the SAF source for relaunch re-mount before path/data_dir are
+        // moved. data_dir is null for single-file STFS packages.
+        saf_launch_source_ = {path->getUriString(),
+                              data_dir ? data_dir->getUriString() : std::string(),
+                              FileSignatureType::LIVE, true};
         X_STATUS result=MountPath(std::move(path),std::move(data_dir)
                 ,FileSignatureType::LIVE,"\\Device\\Cdrom0");
         if (XFAILED(result)) {
@@ -1449,7 +1489,12 @@ bool Emulator::RestoreFromFile(const std::filesystem::path& path) {
 void Emulator::RelaunchTitle(const std::string& host_path,
                              const std::string& launch_module,
                              uint32_t launch_flags,
-                             std::vector<uint8_t> launch_data) {
+                             std::vector<uint8_t> launch_data
+#if XE_PLATFORM_xendroid
+                             ,
+                             uint32_t caller_thread_id
+#endif
+) {
   XELOGI(
       "RelaunchTitle: starting full in-process relaunch, target={}, module={}",
       host_path, launch_module);
@@ -1467,6 +1512,14 @@ void Emulator::RelaunchTitle(const std::string& host_path,
     graphics_system_->command_processor()->Shutdown();
   }
 
+#if XE_PLATFORM_xendroid
+  // Mirror ResetTitle (emulator.cc:1529): stop the cooperative dispatch threads
+  // before tearing down guest threads, whose fibers run on them. No-op if the
+  // scheduler never started. Absent here = latent UAF once the guest_scheduler
+  // cvar is enabled.
+  kernel_state_->guest_scheduler()->Shutdown();
+#endif
+
   // Force-terminate remaining threads.
   {
     auto threads =
@@ -1478,10 +1531,79 @@ void Emulator::RelaunchTitle(const std::string& host_path,
     }
   }
 
+#if XE_PLATFORM_xendroid
+  {
+    auto live =
+        kernel_state()->object_table()->GetObjectsByType<kernel::XThread>(
+            kernel::XObject::Type::Thread);
+    XELOGI("RelaunchTitle: post-terminate live XThread count={}", live.size());
+
+    // Tier-2 join barrier: Terminate() above does not block until the OS thread
+    // has actually exited, so Shutdown()/Setup() can race the still-live
+    // threads (the intermittent C0000001 early-Setup failure). Bounded-wait on
+    // each guest thread's wait handle, excluding the parked caller (it sleeps
+    // forever and would burn the whole timeout). Best-effort: log + proceed on
+    // timeout — the relaunching_ exception guard parks any faulting guest
+    // thread in the meantime.
+    std::vector<xe::threading::WaitHandle*> handles;
+    for (auto& thread : live) {
+      if (caller_thread_id && thread->thread_id() == caller_thread_id) {
+        continue;  // the parked XamLoaderLaunchTitle caller never signals
+      }
+      auto* handle = thread->wait_handle();
+      if (handle) {
+        handles.push_back(handle);
+      }
+    }
+    if (!handles.empty()) {
+      XELOGI("RelaunchTitle: joining {} guest threads (caller tid={:08X})",
+             handles.size(), caller_thread_id);
+      auto result = xe::threading::WaitAll(
+          handles.data(), handles.size(), /*is_alertable=*/false,
+          std::chrono::milliseconds(2000));
+      if (result == xe::threading::WaitResult::kTimeout) {
+        XELOGW(
+            "RelaunchTitle: join barrier timed out after 2s; proceeding "
+            "best-effort");
+      } else {
+        XELOGI("RelaunchTitle: join barrier complete (result={})",
+               static_cast<int>(result));
+      }
+    }
+  }
+#endif
+
   Shutdown();
+#if XE_PLATFORM_xendroid
+  X_STATUS setup_status =
+      Setup(nullptr, nullptr, require_cpu_backend_, nullptr, nullptr, nullptr);
+  XELOGI("RelaunchTitle: Setup status={:08X}", setup_status);
+  if (XFAILED(setup_status)) {
+    XELOGE("RelaunchTitle: Setup failed ({:08X}); aborting relaunch to dashboard",
+           setup_status);
+    // Clear relaunching_ before the abort so a nested Shutdown can't re-fire
+    // on_before_shutdown(). On Android no on_exit_to_dashboard_ handler is
+    // registered, so ExitToDashboard() resolves to TerminateTitle() ->
+    // quick_exit(): the early return is effectively a clean process kill,
+    // which is the intended fail-safe rather than proceeding into LaunchPath()
+    // on a half-initialized Memory. (Device-run item: if a dashboard handler is
+    // ever wired on Android, revisit — Suspend() on this non-guest thread would
+    // assert in GetCurrentThread().)
+    relaunching_ = false;
+    kernel_state_->ExitToDashboard();
+    return;
+  }
+#else
   Setup(nullptr, nullptr, require_cpu_backend_, nullptr, nullptr, nullptr);
+#endif
   MountStandardDrives();
   SetupSubsystems();
+#if XE_PLATFORM_xendroid
+  XELOGI("RelaunchTitle: post-subsystems graphics_system={} presenter={}",
+         static_cast<void*>(graphics_system()),
+         static_cast<void*>(graphics_system() ? graphics_system()->presenter()
+                                              : nullptr));
+#endif
 
   // Populate launch data on the fresh xam module.
   auto xam_new =
@@ -1498,12 +1620,88 @@ void Emulator::RelaunchTitle(const std::string& host_path,
   // CompleteLaunch reads this cvar to determine the executable module.
   cvars::launch_module = launch_module;
 
+#if XE_PLATFORM_xendroid
+  // Android divergence: the title source is a SAF URI, not a host path, so
+  // last_launch_path_ is always empty and host_path is a host fs string that
+  // resolves to no openable file. Re-mount the disc from the retained SAF URI
+  // and load the new sibling module — the same flow boot uses, mirroring edge's
+  // "re-mount -> CompleteLaunch(new module)". cvars::launch_module is already
+  // set above so FindLaunchModule() resolves the sibling off the re-mounted
+  // disc.
+  {
+    // For the same-disc-new-module case (SCDA SC4_Offline.xex) the requested
+    // module name is folded into host_path's filename and launch_module arrives
+    // empty (xam_info.cc:322-326). Derive the basename so FindLaunchModule can
+    // resolve the sibling.
+    if (cvars::launch_module.empty() && !host_path.empty()) {
+      cvars::launch_module =
+          xe::path_to_utf8(xe::to_path(host_path).filename());
+      XELOGI(
+          "RelaunchTitle: derived launch_module='{}' from host_path basename",
+          cvars::launch_module);
+    }
+
+    if (!saf_launch_source_.valid) {
+      XELOGE(
+          "RelaunchTitle: no retained SAF launch source; aborting relaunch to "
+          "dashboard");
+      relaunching_ = false;
+      kernel_state_->ExitToDashboard();
+      return;
+    }
+
+    XELOGI("RelaunchTitle: re-mounting SAF source uri='{}' type={} module='{}'",
+           saf_launch_source_.uri,
+           static_cast<int>(saf_launch_source_.type), cvars::launch_module);
+
+    auto doc = DocumentFile::findByUriString(g_jvm, saf_launch_source_.uri);
+    if (!doc) {
+      XELOGE(
+          "RelaunchTitle: failed to re-create DocumentFile from retained URI; "
+          "aborting relaunch to dashboard");
+      relaunching_ = false;
+      kernel_state_->ExitToDashboard();
+      return;
+    }
+
+    X_STATUS launch_result = X_STATUS_NOT_SUPPORTED;
+    switch (saf_launch_source_.type) {
+      case FileSignatureType::XEX1:
+      case FileSignatureType::XEX2:
+      case FileSignatureType::ELF:
+        launch_result = LaunchXexFile(std::move(doc));
+        break;
+      case FileSignatureType::XISO:
+        launch_result = LaunchDiscImage(std::move(doc));
+        break;
+      case FileSignatureType::ZAR:
+        launch_result = LaunchDiscArchive(std::move(doc));
+        break;
+      case FileSignatureType::LIVE:
+      case FileSignatureType::CON:
+      case FileSignatureType::PIRS: {
+        std::unique_ptr<DocumentFile> data_dir;
+        if (!saf_launch_source_.data_dir_uri.empty()) {
+          data_dir = DocumentFile::findByUriString(
+              g_jvm, saf_launch_source_.data_dir_uri);
+        }
+        launch_result = LaunchStfsContainer(std::move(doc), std::move(data_dir));
+      } break;
+      default:
+        XELOGE("RelaunchTitle: retained SAF source has unsupported type {}",
+               static_cast<int>(saf_launch_source_.type));
+        break;
+    }
+    XELOGI("RelaunchTitle: re-mount result={:08X}", launch_result);
+  }
+#else
   // Fall back to the initial launch path if host_path is empty (command-line
   // launch rather than loader_data-driven).
   auto launch_target =
       host_path.empty() ? last_launch_path_ : xe::to_path(host_path);
   XELOGI("RelaunchTitle: launching '{}'", xe::path_to_utf8(launch_target));
   LaunchPath(launch_target);
+#endif
 
   relaunching_ = false;
   XELOGI("RelaunchTitle: relaunch complete");

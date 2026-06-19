@@ -56,6 +56,13 @@ DEFINE_bool(in_process_title_relaunch, true,
             "Shutdown/Setup cycle instead of spawning a new emulator process.",
             "Kernel");
 
+#if XE_PLATFORM_xendroid
+// Process-wide JavaVM set in JNI_OnLoad (xendroid.cpp); declared at global scope
+// so the relaunch detach-current-thread guard resolves to ::g_jvm rather than a
+// nonexistent xe::kernel::xam::g_jvm (which would fail to link).
+extern JavaVM* g_jvm;
+#endif
+
 namespace xe {
 namespace kernel {
 namespace xam {
@@ -344,15 +351,46 @@ void XamLoaderLaunchTitle_entry(lpstring_t raw_name_ptr, dword_t flags) {
       auto new_flags = loader_data.launch_flags;
       auto new_data = loader_data.launch_data;
       auto current_thread = XThread::GetCurrentThread();
+#if XE_PLATFORM_xendroid
+      // The join barrier in RelaunchTitle must skip this caller (it parks
+      // forever below and never signals). GetCurrentThread() is null on the
+      // detached relaunch thread, so capture the caller's tid here and plumb it
+      // through.
+      uint32_t caller_thread_id =
+          current_thread ? current_thread->thread_id() : 0;
+#endif
 
       // Must dispatch from a non-guest thread — RelaunchTitle terminates
       // all guest threads including the caller.
       std::thread([emulator, new_host_path = std::move(new_host_path),
                    new_launch_module = std::move(new_launch_module), new_flags,
+#if XE_PLATFORM_xendroid
+                   caller_thread_id,
+#endif
                    new_data = std::move(new_data)]() mutable {
         emulator->RelaunchTitle(new_host_path, new_launch_module, new_flags,
-                                std::move(new_data));
+                                std::move(new_data)
+#if XE_PLATFORM_xendroid
+                                    ,
+                                caller_thread_id
+#endif
+        );
+#if XE_PLATFORM_xendroid
+        // The relaunch re-mount re-creates DocumentFiles + opens fds on this
+        // thread; DocumentFile::get_env auto-attaches but never detaches (the
+        // cleanup is commented out, document_file.cpp:32-34). Detach before the
+        // thread exits to avoid the "native thread exited without detaching"
+        // abort under CheckJNI/strict modes.
+        if (g_jvm) {
+          g_jvm->DetachCurrentThread();
+        }
+#endif
       }).detach();
+
+      XELOGI(
+          "XamLoaderLaunchTitle: dispatched RelaunchTitle on detached thread; "
+          "parking caller XThread tid={:08X}",
+          current_thread ? current_thread->thread_id() : 0);
 
       // Stop running guest code; RelaunchTitle terminates us. Suspend can
       // return on POSIX, so park rather than fall through to spawn.
