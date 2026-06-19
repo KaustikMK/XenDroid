@@ -4217,6 +4217,24 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
     }
   }
 
+  // Optionally split the frame into multiple submissions (every
+  // vulkan_mid_frame_submission_draws real draws) so the GPU starts rendering
+  // while the rest of the frame's command stream is still being built, instead
+  // of receiving the whole frame at swap time and idling until then. Counted
+  // here, at the tail of IssueDraw, so only genuine rasterizing draws are
+  // counted (kCopy/empty/no-VS paths return earlier). EndSubmission(false)
+  // closes the render pass and submits without closing the frame; the next
+  // IssueDraw's BeginSubmission(true) reopens the submission, and the same call
+  // resets draws_since_submission_ to 0. Guard mirrors OnPrimaryBufferEnd().
+  ++draws_since_submission_;
+  if (cvars::vulkan_mid_frame_submission_draws > 0 &&
+      draws_since_submission_ >=
+          uint32_t(cvars::vulkan_mid_frame_submission_draws) &&
+      submission_open_ && !scratch_buffer_used_ &&
+      CanEndSubmissionImmediately()) {
+    EndSubmission(false);
+  }
+
   return true;
 }
 
