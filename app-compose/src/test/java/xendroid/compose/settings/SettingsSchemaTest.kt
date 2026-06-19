@@ -19,12 +19,12 @@ class SettingsSchemaTest {
     // true on Android (forced natively) and false black-screens the app, so it is not
     // a valid user choice. XenDroid then added two ListChoices (Vulkan|turnip_debug,
     // GPU|occlusion_query) and reclassified GPU|readback_resolve from Bool to ListChoice
-    // (it is a string cvar: fast/some/full/none). Net: 98 Bool + 7 IntRange + 18 ListChoice
-    // + 1 Action = 124 total.
-    @Test fun total_entry_count_is_124() {
-        assertEquals(124, all.size)
+    // (it is a string cvar: fast/some/full/none), then added GPU|vulkan_mid_frame_submission_draws
+    // as an IntRange (-> 8 IntRange). Net: 98 Bool + 8 IntRange + 18 ListChoice + 1 Action = 125.
+    @Test fun total_entry_count_is_125() {
+        assertEquals(125, all.size)
         assertEquals(
-            124,
+            125,
             all.count { it is Setting.Bool } + all.count { it is Setting.IntRange } +
                 all.count { it is Setting.ListChoice } + all.count { it is Setting.Action },
         )
@@ -32,7 +32,7 @@ class SettingsSchemaTest {
 
     @Test fun counts_by_type_match_verified_inventory() {
         assertEquals(98, all.count { it is Setting.Bool })
-        assertEquals(7, all.count { it is Setting.IntRange })
+        assertEquals(8, all.count { it is Setting.IntRange })
         assertEquals(18, all.count { it is Setting.ListChoice })
         assertEquals(1, all.count { it is Setting.Action })
     }
