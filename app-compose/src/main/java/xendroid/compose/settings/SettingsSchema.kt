@@ -32,7 +32,7 @@ object SettingsSchema {
             // (GMEM/tiled, fast); 'sysmem' forces untiled rendering (much slower) but avoids a
             // class of Adreno GPU hangs. Applied at vkCreateInstance, so it takes effect on the
             // next game launch.
-            l("Vulkan", "turnip_debug", "Turnip debug mode", "",
+            l("Vulkan", "turnip_debug", "Turnip debug mode", "sysmem",
                 "" to "None (no TU_DEBUG flags, GMEM)", "sysmem" to "sysmem (untiled, slower)"),
         )),
 
@@ -125,7 +125,13 @@ object SettingsSchema {
             b("GPU", "vsync", "VSync", true),
             b("GPU", "store_shaders", "Store shaders", true),
             b("GPU", "resolve_resolution_scale_fill_half_pixel_offset", "Resolve scale: fill half-pixel offset", true),
-            b("GPU", "readback_resolve", "Readback resolve", false),
+            // readback_resolve is a STRING cvar (NOT a bool): CPU readback of render-to-texture
+            // resolve results. fast=copy every frame (cvar default); some=skip copy on cache hit;
+            // full=wait for GPU (accurate but a GPU-CPU sync stall); none=disable readback (some
+            // games render better without it, and it avoids the stall).
+            l("GPU", "readback_resolve", "Readback resolve", "fast",
+                "fast" to "Fast (copy every frame)", "some" to "Some (skip copy on cache hit)",
+                "full" to "Full (wait for GPU, slow)", "none" to "None (disabled)"),
             // How guest occlusion queries (PM4 EVENT_WRITE_ZPD) are serviced. 'fake' fabricates a
             // result with zero GPU-query overhead (fastest; some effects e.g. lens flares may look
             // slightly wrong); 'fast'/'fast-alt' issue real async Vulkan queries without stalling;

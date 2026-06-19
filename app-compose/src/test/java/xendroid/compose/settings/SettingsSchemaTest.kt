@@ -17,8 +17,10 @@ class SettingsSchemaTest {
     // (100 Bool + 7 IntRange + 15 ListChoice + 1 Action). One Bool, Display|
     // host_present_from_non_ui_thread, was since REMOVED from the schema: it must be
     // true on Android (forced natively) and false black-screens the app, so it is not
-    // a valid user choice (-> 99 Bool). XenDroid then added two ListChoices:
-    // Vulkan|turnip_debug and GPU|occlusion_query (-> 17 ListChoice), so 124 total.
+    // a valid user choice. XenDroid then added two ListChoices (Vulkan|turnip_debug,
+    // GPU|occlusion_query) and reclassified GPU|readback_resolve from Bool to ListChoice
+    // (it is a string cvar: fast/some/full/none). Net: 98 Bool + 7 IntRange + 18 ListChoice
+    // + 1 Action = 124 total.
     @Test fun total_entry_count_is_124() {
         assertEquals(124, all.size)
         assertEquals(
@@ -29,9 +31,9 @@ class SettingsSchemaTest {
     }
 
     @Test fun counts_by_type_match_verified_inventory() {
-        assertEquals(99, all.count { it is Setting.Bool })
+        assertEquals(98, all.count { it is Setting.Bool })
         assertEquals(7, all.count { it is Setting.IntRange })
-        assertEquals(17, all.count { it is Setting.ListChoice })
+        assertEquals(18, all.count { it is Setting.ListChoice })
         assertEquals(1, all.count { it is Setting.Action })
     }
 
