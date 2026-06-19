@@ -1039,6 +1039,10 @@ class VulkanCommandProcessor final : public CommandProcessor {
   uint64_t current_texture_descriptor_set_hash_pixel_ = 0;
   bool current_texture_descriptor_set_hash_valid_vertex_ = false;
   bool current_texture_descriptor_set_hash_valid_pixel_ = false;
+  // Scratch buffer for compute_texture_set_hash, reused across draws (cleared
+  // each call, capacity persists) to gather the reuse-input words for a single
+  // XXH3 call without a per-draw allocation. GPU-command-thread-only.
+  std::vector<uint64_t> texture_set_hash_scratch_;
   // Whether the descriptor sets currently bound to the command buffer - only
   // low bits for the descriptor set layouts that remained the same are kept
   // when changing the pipeline layout. May be out of sync with

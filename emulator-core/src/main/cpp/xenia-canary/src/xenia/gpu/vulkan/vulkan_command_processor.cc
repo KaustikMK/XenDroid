@@ -21,6 +21,7 @@
 #include "xenia/base/math.h"
 #include "xenia/base/memory.h"
 #include "xenia/base/profiling.h"
+#include "xenia/base/xxhash.h"
 #include "xenia/gpu/draw_util.h"
 #include "xenia/gpu/gpu_flags.h"
 #include "xenia/gpu/packet_disassembler.h"
@@ -7733,34 +7734,40 @@ bool VulkanCommandProcessor::UpdateBindings(const VulkanShader* vertex_shader,
   // is_vertex<<31), then each resolved VkImageView in shader binding order,
   // then each resolved VkSampler in order.
   auto compute_texture_set_hash =
-      [](uint32_t texture_count, uint32_t sampler_count, bool is_vertex,
-         const std::vector<VulkanShader::TextureBinding>* textures,
-         VulkanTextureCache* texture_cache,
-         const std::pair<VulkanTextureCache::SamplerParameters, VkSampler>*
-             samplers) -> uint64_t {
-    // 64-bit FNV-1a.
-    uint64_t hash = UINT64_C(14695981039346656037);
-    auto accumulate = [&hash](uint64_t value) {
-      for (uint32_t byte_index = 0; byte_index < sizeof(value); ++byte_index) {
-        hash ^= uint64_t(value & 0xFF);
-        hash *= UINT64_C(1099511628211);
-        value >>= 8;
-      }
-    };
-    accumulate(uint64_t(uint32_t(texture_count & 0xFFFF) |
-                        ((sampler_count & 0x7FFF) << 16) |
-                        (is_vertex ? (UINT32_C(1) << 31) : 0)));
+      [&scratch = texture_set_hash_scratch_](
+          uint32_t texture_count, uint32_t sampler_count, bool is_vertex,
+          const std::vector<VulkanShader::TextureBinding>* textures,
+          VulkanTextureCache* texture_cache,
+          const std::pair<VulkanTextureCache::SamplerParameters, VkSampler>*
+              samplers) -> uint64_t {
+    // Gather the reuse inputs (in this exact fixed order) into a reused scratch
+    // buffer and hash them with one XXH3 call - NEON-accelerated on arm64,
+    // matching the rest of the codebase instead of the old byte-at-a-time
+    // scalar FNV-1a. The result is only ever compared against a cached value
+    // from this same function, so swapping the algorithm is transparent to the
+    // reuse gate (different absolute values, identical same-inputs -> same-hash
+    // behavior).
+    scratch.clear();
+    // Packed layout key (texture_count | sampler_count<<16 | is_vertex<<31).
+    scratch.push_back(uint64_t(uint32_t(texture_count & 0xFFFF) |
+                               ((sampler_count & 0x7FFF) << 16) |
+                               (is_vertex ? (UINT32_C(1) << 31) : 0)));
     if (texture_count) {
+      // Each resolved VkImageView in shader binding order (the handle, never
+      // the fetch constant index - texture eviction/recreation re-resolves to a
+      // new handle before this point, so a content change always forces a
+      // re-write).
       for (const VulkanShader::TextureBinding& texture_binding : *textures) {
-        VkImageView image_view = texture_cache->GetActiveBindingOrNullImageView(
-            texture_binding.fetch_constant, texture_binding.dimension,
-            bool(texture_binding.is_signed));
-        accumulate(uint64_t(reinterpret_cast<uintptr_t>(image_view)));
+        scratch.push_back(uint64_t(reinterpret_cast<uintptr_t>(
+            texture_cache->GetActiveBindingOrNullImageView(
+                texture_binding.fetch_constant, texture_binding.dimension,
+                bool(texture_binding.is_signed)))));
       }
     }
     if (sampler_count) {
       for (uint32_t i = 0; i < sampler_count; ++i) {
-        accumulate(uint64_t(reinterpret_cast<uintptr_t>(samplers[i].second)));
+        scratch.push_back(
+            uint64_t(reinterpret_cast<uintptr_t>(samplers[i].second)));
       }
       // Handle values can be reused: a destroyed sampler's VkSampler value
       // may come back from vkCreateSampler for different parameters, which
@@ -7768,9 +7775,9 @@ bool VulkanCommandProcessor::UpdateBindings(const VulkanShader* vertex_shader,
       // internally referencing the destroyed object bound. Folding the
       // destroy generation in forces a rewrite after any sampler
       // destruction.
-      accumulate(texture_cache->sampler_destroy_generation());
+      scratch.push_back(texture_cache->sampler_destroy_generation());
     }
-    return hash;
+    return XXH3_64bits(scratch.data(), scratch.size() * sizeof(scratch[0]));
   };
   // Computed below when the cache is enabled; reused in the successful-write
   // blocks to store the new cache entry.
