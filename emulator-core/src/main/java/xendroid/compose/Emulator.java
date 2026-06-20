@@ -60,6 +60,20 @@ public class Emulator extends xendroid.emulator.Emulator{
     }
 
 
+    // Mount the ISO at isoUri (a content:// SAF uri == game.launchUri), walk its
+    // filesystem and pack it into a VERIFIED .zar at outZarPath (a REAL host
+    // path, e.g. an app cache/files dir). Returns X_STATUS (0 == success,
+    // non-zero == failure). The native side only reports success after the .zar
+    // re-opens and matches the source disc (file-count + total bytes); on any
+    // failure the partial .zar is removed and the caller MUST keep the ISO. MUST
+    // be called off the main thread (blocking VFS walk + zstd compress + verify):
+    // dispatch from a background coroutine (Dispatchers.IO).
+    public native int compressIsoToZar(String isoUri,String outZarPath);
+
+    // Fraction 0..1 of the ISO->.zar compression currently running on another
+    // thread (0 when none is in flight). Poll it for a determinate progress bar.
+    public native float compressProgress();
+
     public native GameInfo meta_info_from_god_game(Context ctx,String uri) throws RuntimeException;
 
     // Boot-free title-id read for ISO (format 0) / XEX_FOLDER (format 1) via a light

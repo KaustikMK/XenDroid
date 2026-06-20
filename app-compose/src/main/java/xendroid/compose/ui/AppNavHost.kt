@@ -11,10 +11,12 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import xendroid.compose.AppContainer
+import xendroid.compose.data.GameFormat
 import xendroid.compose.gamepad.GamepadController
 import xendroid.compose.gamepad.GamepadEditorScreen
 import xendroid.compose.settings.GameSettingsViewModel
 import xendroid.compose.settings.SettingsViewModel
+import xendroid.compose.ui.compress.GameCompressViewModel
 import xendroid.compose.ui.library.GameLibraryScreen
 import xendroid.compose.ui.library.GameLibraryViewModel
 import xendroid.compose.ui.settings.PerGameSettingsScreen
@@ -30,7 +32,8 @@ object Routes {
     const val ABOUT = "about"
     const val USERDATA = "userdata"   // action, not a destination (see GameLibraryScreen)
     const val GAMEPAD_EDITOR = "gamepad_editor"
-    const val PER_GAME_SETTINGS = "per_game_settings"   // "$PER_GAME_SETTINGS/{titleId}?name={name}"
+    // "$PER_GAME_SETTINGS/{titleId}?name={name}&format={format}&uri={uri}"
+    const val PER_GAME_SETTINGS = "per_game_settings"
 }
 
 @Composable
@@ -40,14 +43,22 @@ fun AppNavHost(container: AppContainer) {
         composable(Routes.LIBRARY) {
             val vm: GameLibraryViewModel =
                 viewModel(factory = container.libraryViewModelFactory())
+            val compressVm: GameCompressViewModel =
+                viewModel(factory = container.gameCompressViewModelFactory())
             GameLibraryScreen(
                 viewModel = vm,
+                compressVm = compressVm,
                 onOpenSettings = { nav.navigate(Routes.SETTINGS) },
                 onOpenKeymap = { nav.navigate(Routes.KEYMAP) },
                 onOpenAbout = { nav.navigate(Routes.ABOUT) },
                 onOpenTouchControls = { nav.navigate(Routes.GAMEPAD_EDITOR) },
-                onOpenPerGameSettings = { titleId, name ->
-                    nav.navigate("${Routes.PER_GAME_SETTINGS}/$titleId?name=${Uri.encode(name)}")
+                onOpenPerGameSettings = { titleId, name, format, launchUri ->
+                    nav.navigate(
+                        "${Routes.PER_GAME_SETTINGS}/$titleId" +
+                            "?name=${Uri.encode(name)}" +
+                            "&format=${format.name}" +
+                            "&uri=${Uri.encode(launchUri)}"
+                    )
                 },
             )
         }
@@ -69,17 +80,31 @@ fun AppNavHost(container: AppContainer) {
             GamepadEditorScreen(controller = controller, onDone = { nav.popBackStack() })
         }
         composable(
-            route = "${Routes.PER_GAME_SETTINGS}/{titleId}?name={name}",
+            route = "${Routes.PER_GAME_SETTINGS}/{titleId}?name={name}&format={format}&uri={uri}",
             arguments = listOf(
                 navArgument("titleId") { type = NavType.StringType },
                 navArgument("name") { type = NavType.StringType; nullable = true; defaultValue = null },
+                navArgument("format") { type = NavType.StringType; nullable = true; defaultValue = null },
+                navArgument("uri") { type = NavType.StringType; nullable = true; defaultValue = null },
             ),
         ) { backStackEntry ->
             val titleId = backStackEntry.arguments?.getString("titleId") ?: return@composable
             val gameName = backStackEntry.arguments?.getString("name") ?: ""
+            val format = backStackEntry.arguments?.getString("format")
+                ?.let { runCatching { GameFormat.valueOf(it) }.getOrNull() }
+            val launchUri = backStackEntry.arguments?.getString("uri")   // Nav already URL-decodes it
             val vm: GameSettingsViewModel =
                 viewModel(factory = container.gameSettingsViewModelFactory(titleId))
-            PerGameSettingsScreen(vm = vm, gameName = gameName, onBack = { nav.popBackStack() })
+            val compressVm: GameCompressViewModel =
+                viewModel(factory = container.gameCompressViewModelFactory())
+            PerGameSettingsScreen(
+                vm = vm,
+                gameName = gameName,
+                isIso = format == GameFormat.ISO,
+                launchUri = launchUri,
+                compressVm = compressVm,
+                onBack = { nav.popBackStack() },
+            )
         }
     }
 }

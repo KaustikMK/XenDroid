@@ -57,7 +57,8 @@ class GameMetadataSource {
      *  fields may still be empty/null (e.g. icon present but title unreadable). Heavier than
      *  readTitleId (full XEX decompress); MUST run off the main thread. */
     fun readXexMeta(ctx: Context, uri: String, format: GameFormat): XexMeta? {
-        if (format != GameFormat.ISO && format != GameFormat.XEX_FOLDER) return null
+        if (format != GameFormat.ISO && format != GameFormat.XEX_FOLDER &&
+            format != GameFormat.ZAR) return null
         val code = format.titleIdCode ?: return null
         val emu = EmulatorRuntime.emulator ?: return null
         return try {

@@ -4,6 +4,7 @@ import android.app.Activity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -27,6 +28,9 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import xendroid.compose.data.Game
+import xendroid.compose.data.GameFormat
+import xendroid.compose.ui.compress.GameCompressViewModel
+import xendroid.compose.ui.compress.GameCompressViewModel.CompressState
 import xendroid.compose.ui.userdata.openUserData
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -37,7 +41,8 @@ fun GameLibraryScreen(
     onOpenKeymap: () -> Unit,
     onOpenAbout: () -> Unit,
     onOpenTouchControls: () -> Unit,
-    onOpenPerGameSettings: (titleId: String, gameName: String) -> Unit,
+    onOpenPerGameSettings: (titleId: String, gameName: String, format: GameFormat, launchUri: String) -> Unit,
+    compressVm: GameCompressViewModel,
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val context = LocalContext.current
@@ -49,6 +54,9 @@ fun GameLibraryScreen(
 
     // The long-press menu target (per-game settings, optionally shortcut).
     var pendingGame by remember { mutableStateOf<Game?>(null) }
+    // Long-press "Compress to .zar" (ISO only): the game awaiting the confirm dialog.
+    var compressConfirmFor by remember { mutableStateOf<Game?>(null) }
+    val compressState by compressVm.state.collectAsStateWithLifecycle()
     val titleIdState by viewModel.titleIdState.collectAsStateWithLifecycle()
     val isRefreshing by viewModel.isRefreshing.collectAsStateWithLifecycle()
 
@@ -145,47 +153,143 @@ fun GameLibraryScreen(
 
     pendingGame?.let { game ->
         val dismiss = { pendingGame = null; viewModel.clearTitleIdRequest() }
-        AlertDialog(
+        val sheetState = rememberModalBottomSheetState()
+        ModalBottomSheet(
             onDismissRequest = dismiss,
-            title = { Text(game.name) },
-            text = {
-                when (val st = titleIdState) {
-                    is TitleIdState.Loading -> Row(verticalAlignment = Alignment.CenterVertically) {
-                        CircularProgressIndicator(Modifier.size(20.dp))
-                        Spacer(Modifier.width(12.dp))
-                        Text("Reading title id…")
-                    }
-                    is TitleIdState.Error -> Text(st.message)
-                    else -> Text("Configure settings that apply only to this game.")
-                }
-            },
-            confirmButton = {
-                TextButton(
-                    enabled = titleIdState !is TitleIdState.Loading,
-                    onClick = { viewModel.requestPerGameSettings(game) },
-                ) { Text("Per-game settings") }
-            },
-            dismissButton = {
-                Row {
-                    // Keep the shortcut affordance when a launchable host exists (SP1-C).
-                    if (viewModel.canLaunchGames && viewModel.isPinShortcutSupported) {
-                        TextButton(onClick = { viewModel.createShortcut(game); dismiss() }) {
-                            Text("Create shortcut")
+            sheetState = sheetState,
+        ) {
+            Column {
+                // Sheet header: prominent game name; the title-id status line shows ONLY
+                // while resolving or on error (no static subtitle otherwise).
+                val statusContent: (@Composable () -> Unit)? = when (val st = titleIdState) {
+                    is TitleIdState.Loading -> ({
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            CircularProgressIndicator(Modifier.size(16.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Text("Reading title id…")
                         }
-                    }
-                    TextButton(onClick = dismiss) { Text("Cancel") }
+                    })
+                    is TitleIdState.Error -> ({ Text(st.message) })
+                    else -> null
                 }
-            },
-        )
+                ListItem(
+                    headlineContent = {
+                        Text(game.name, style = MaterialTheme.typography.titleLarge)
+                    },
+                    supportingContent = statusContent,
+                )
+
+                // Per-game settings — disabled (and visually dimmed) while the title id resolves.
+                val perGameEnabled = titleIdState !is TitleIdState.Loading
+                ListItem(
+                    headlineContent = { Text("Per-game settings") },
+                    colors = if (perGameEnabled) {
+                        ListItemDefaults.colors()
+                    } else {
+                        ListItemDefaults.colors(
+                            headlineColor =
+                                MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f),
+                        )
+                    },
+                    modifier = Modifier.clickable(enabled = perGameEnabled) {
+                        viewModel.requestPerGameSettings(game)
+                    },
+                )
+
+                // ISO-only: pack this disc into a smaller .zar.
+                if (game.format == GameFormat.ISO) {
+                    ListItem(
+                        headlineContent = { Text("Compress to .zar") },
+                        modifier = Modifier.clickable {
+                            compressConfirmFor = game
+                            pendingGame = null
+                            viewModel.clearTitleIdRequest()
+                        },
+                    )
+                }
+
+                // Shortcut affordance when a launchable host exists (SP1-C).
+                if (viewModel.canLaunchGames && viewModel.isPinShortcutSupported) {
+                    ListItem(
+                        headlineContent = { Text("Create shortcut") },
+                        modifier = Modifier.clickable {
+                            viewModel.createShortcut(game)
+                            dismiss()
+                        },
+                    )
+                }
+            }
+        }
     }
 
     // Once resolved, navigate to the per-game editor and reset dialog + request state.
     LaunchedEffect(titleIdState) {
         (titleIdState as? TitleIdState.Resolved)?.let { r ->
-            onOpenPerGameSettings(r.titleId, r.game.name)
+            onOpenPerGameSettings(r.titleId, r.game.name, r.game.format, r.game.launchUri)
             pendingGame = null
             viewModel.clearTitleIdRequest()
         }
+    }
+
+    // ISO -> .zar compress, launched straight from the long-press popup. Confirm, then
+    // GameCompressViewModel runs the safe compress+verify+replace; refresh on Done so the
+    // .iso entry turns into the new .zar in the grid.
+    compressConfirmFor?.let { game ->
+        AlertDialog(
+            onDismissRequest = { compressConfirmFor = null },
+            title = { Text("Compress to .zar?") },
+            text = {
+                Text(
+                    "This packs the disc into a smaller .zar. The original .iso is deleted " +
+                        "only after the .zar is created and verified. The game stays in your library.")
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    compressConfirmFor = null
+                    compressVm.compress(game.launchUri)
+                }) { Text("Compress") }
+            },
+            dismissButton = {
+                TextButton(onClick = { compressConfirmFor = null }) { Text("Cancel") }
+            },
+        )
+    }
+
+    when (val s = compressState) {
+        is CompressState.Busy -> AlertDialog(
+            onDismissRequest = {},   // not cancelable while running
+            title = { Text(s.message) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (s.progress >= 0f) {
+                        LinearProgressIndicator(
+                            progress = { s.progress },
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        Text("${(s.progress * 100).toInt()}%  ·  this may take a while.")
+                    } else {
+                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                        Text("This may take a while.")
+                    }
+                }
+            },
+            confirmButton = {},
+        )
+        is CompressState.Done -> AlertDialog(
+            onDismissRequest = { compressVm.dismiss(); viewModel.refresh() },
+            title = { Text("Done") },
+            text = { Text(s.message) },
+            confirmButton = {
+                TextButton(onClick = { compressVm.dismiss(); viewModel.refresh() }) { Text("OK") }
+            },
+        )
+        is CompressState.Failed -> AlertDialog(
+            onDismissRequest = compressVm::dismiss,
+            title = { Text("Failed") },
+            text = { Text(s.message) },
+            confirmButton = { TextButton(onClick = compressVm::dismiss) { Text("OK") } },
+        )
+        else -> {}
     }
 }
 

@@ -15,6 +15,9 @@
 #if XE_PLATFORM_LINUX
 #include <fstream>
 #endif
+#if XE_PLATFORM_xendroid
+#include <queue>
+#endif
 #include "config.h"
 #include "third_party/fmt/include/fmt/format.h"
 #include "xenia/apu/audio_system.h"
@@ -65,6 +68,13 @@
 #include "xenia/vfs/entry.h"
 #include "xenia/vfs/file.h"
 #include "xenia/vfs/virtual_file_system.h"
+
+#if XE_PLATFORM_xendroid
+#include "third_party/zarchive/include/zarchive/zarchivecommon.h"
+#include "third_party/zarchive/include/zarchive/zarchivereader.h"
+#include "third_party/zarchive/include/zarchive/zarchivewriter.h"
+#include "third_party/zarchive/src/sha_256.h"
+#endif
 
 #if XE_ARCH_AMD64
 #include "xenia/cpu/backend/x64/x64_backend.h"
@@ -1327,6 +1337,243 @@ X_STATUS Emulator::InstallContentPackage(
 
   return error_code;
 }
+
+#if XE_PLATFORM_xendroid
+// Re-open the produced .zar and confirm it reproduces the source disc walk:
+// the reader must open, and the enumerated file-count + total uncompressed
+// bytes must equal what the pack pass measured. Catches truncation /
+// short-write / missing-entry corruption -- the realistic SAFE-replace failure
+// modes -- without a (slow on-device) per-file content rehash.
+static bool VerifyZarchiveAgainstDevice(const std::filesystem::path& outputFile,
+                                        uint64_t expected_files,
+                                        uint64_t expected_bytes) {
+  ZArchiveReader* reader = ZArchiveReader::OpenFromFile(outputFile);
+  if (!reader) {
+    return false;  // unreadable / truncated header
+  }
+
+  uint64_t got_files = 0;
+  uint64_t got_bytes = 0;
+
+  // BFS the archive tree starting at root ("").
+  std::queue<std::string> queue;
+  queue.push("");
+  bool ok = true;
+
+  while (ok && !queue.empty()) {
+    std::string path = std::move(queue.front());
+    queue.pop();
+
+    ZArchiveNodeHandle node = reader->LookUp(path, true, true);
+    if (node == ZARCHIVE_INVALID_NODE) {
+      ok = false;
+      break;
+    }
+
+    if (reader->IsFile(node)) {
+      got_bytes += reader->GetFileSize(node);
+      ++got_files;
+      continue;
+    }
+
+    uint32_t count = reader->GetDirEntryCount(node);
+    for (uint32_t i = 0; i < count; ++i) {
+      ZArchiveReader::DirEntry de;
+      if (!reader->GetDirEntry(node, i, de)) {
+        ok = false;
+        break;
+      }
+      std::string child = path.empty()
+                              ? std::string(de.name)
+                              : path + "/" + std::string(de.name);
+      queue.push(std::move(child));
+    }
+  }
+
+  delete reader;
+  return ok && got_files == expected_files && got_bytes == expected_bytes;
+}
+
+X_STATUS Emulator::CompressDiscToZarchive(
+    vfs::Device* device, const std::filesystem::path& outputFile,
+    std::atomic<uint64_t>* progress_done, std::atomic<uint64_t>* progress_total) {
+  if (!device) {
+    return X_STATUS_INVALID_PARAMETER;
+  }
+
+  PackContext packContext;
+  packContext.outputFilePath = outputFile;
+
+  // ZArchiveWriter streams output through these callbacks; zstd compression
+  // happens inside the writer.
+  ZArchiveWriter zWriter(
+      [](int32_t partIndex, void* ctx) {
+        PackContext* packContext = reinterpret_cast<PackContext*>(ctx);
+        packContext->currentOutputFile =
+            std::ofstream(packContext->outputFilePath, std::ios::binary);
+        if (!packContext->currentOutputFile.is_open()) {
+          XELOGI("Failed to create output file: {}\n",
+                 packContext->outputFilePath.string());
+          packContext->hasError = true;
+        }
+      },
+      [](const void* data, size_t length, void* ctx) {
+        PackContext* packContext = reinterpret_cast<PackContext*>(ctx);
+        packContext->currentOutputFile.write(
+            reinterpret_cast<const char*>(data), length);
+      },
+      &packContext);
+
+  if (packContext.hasError) {
+    return X_STATUS_UNSUCCESSFUL;
+  }
+
+  std::vector<uint8_t> buffer(4 * 1024 * 1024);  // 4 MiB, like ExtractContentFile.
+  uint64_t total_files = 0;
+  uint64_t total_bytes = 0;     // bytes actually read + appended into the archive
+  uint64_t expected_bytes = 0;  // sum of the disc's declared file sizes (independent)
+
+  // Breadth-first walk of the mounted disc, mirroring ExtractContentFiles.
+  vfs::Entry* root = device->ResolvePath("/");
+  if (!root) {
+    return X_STATUS_UNSUCCESSFUL;
+  }
+
+  // Pre-pass: sum the disc's declared file bytes so the UI can show a determinate
+  // progress bar. Metadata only (no reads) -- cheap.
+  if (progress_total || progress_done) {
+    uint64_t grand_total = 0;
+    std::queue<vfs::Entry*> sizeq;
+    for (auto& child : root->children()) {
+      sizeq.push(child.get());
+    }
+    while (!sizeq.empty()) {
+      vfs::Entry* e = sizeq.front();
+      sizeq.pop();
+      for (auto& c : e->children()) {
+        sizeq.push(c.get());
+      }
+      if (!(e->attributes() & vfs::kFileAttributeDirectory)) {
+        grand_total += e->size();
+      }
+    }
+    if (progress_total) progress_total->store(grand_total);
+    if (progress_done) progress_done->store(0);
+  }
+
+  std::queue<vfs::Entry*> queue;
+  for (auto& child : root->children()) {
+    queue.push(child.get());
+  }
+
+  while (!queue.empty()) {
+    vfs::Entry* entry = queue.front();
+    queue.pop();
+    for (auto& child : entry->children()) {
+      queue.push(child.get());
+    }
+
+    // entry->path() is a guest path with backslashes; ZArchiveWriter (and the
+    // DiscZarchiveDevice read-back) expect forward-slash RELATIVE paths.
+    std::string rel = xe::utf8::fix_path_separators(entry->path(), '/');
+    while (!rel.empty() && rel.front() == '/') {
+      rel.erase(rel.begin());
+    }
+    if (rel.empty()) {
+      continue;
+    }
+
+    if (entry->attributes() & vfs::kFileAttributeDirectory) {
+      if (!zWriter.MakeDir(rel.c_str(), false)) {
+        XELOGI("Failed to create archive directory {}\n", rel);
+        return X_STATUS_UNSUCCESSFUL;
+      }
+      continue;
+    }
+
+    if (!zWriter.StartNewFile(rel.c_str())) {
+      XELOGI("Failed to create archive file {}\n", rel);
+      return X_STATUS_UNSUCCESSFUL;
+    }
+
+    // Read via mmap fast-path or ReadSync, mirroring ExtractContentFile.
+    if (entry->can_map()) {
+      auto map = entry->OpenMapped(xe::MappedMemory::Mode::kRead);
+      if (!map) {
+        // A 0-byte file is a valid empty archive entry, not a failure.
+        if (entry->size() != 0) {
+          XELOGI("Failed to map archive file {}\n", rel);
+          return X_STATUS_UNSUCCESSFUL;
+        }
+      } else {
+        size_t remaining = map->size();
+        size_t offset = 0;
+        while (remaining > 0) {
+          const size_t n = std::min<size_t>(buffer.size(), remaining);
+          zWriter.AppendData(map->data() + offset, n);
+          offset += n;
+          remaining -= n;
+          total_bytes += n;
+          if (progress_done) progress_done->fetch_add(n);
+        }
+        map->Close();
+      }
+    } else {
+      vfs::File* in = nullptr;
+      if (entry->Open(vfs::FileAccess::kFileReadData, &in) != X_STATUS_SUCCESS) {
+        XELOGI("Failed to open archive file {}\n", rel);
+        return X_STATUS_UNSUCCESSFUL;
+      }
+      size_t remaining = entry->size();
+      size_t offset = 0;
+      while (remaining > 0) {
+        size_t got = 0;
+        in->ReadSync(std::span<uint8_t>(buffer.data(), buffer.size()), offset,
+                     &got);
+        if (got == 0) {
+          break;  // short / truncated source -- verify will catch the mismatch.
+        }
+        zWriter.AppendData(buffer.data(), got);
+        offset += got;
+        remaining -= got;
+        total_bytes += got;
+        if (progress_done) progress_done->fetch_add(got);
+      }
+      in->Destroy();
+    }
+
+    ++total_files;
+    expected_bytes += entry->size();
+
+    if (packContext.hasError) {
+      return X_STATUS_UNSUCCESSFUL;
+    }
+  }
+
+  zWriter.Finalize();
+  if (packContext.hasError) {
+    return X_STATUS_UNSUCCESSFUL;
+  }
+
+  // The reader must see a flushed + closed file.
+  packContext.currentOutputFile.flush();
+  packContext.currentOutputFile.close();
+
+  // Independent integrity check before declaring success: the bytes we actually
+  // read must equal the disc's declared file sizes (catches a short/truncated
+  // SOURCE read, which comparing the archive against the appended count alone
+  // cannot see), AND the produced .zar must re-open and reproduce that declared
+  // file count + byte total.
+  if (total_bytes != expected_bytes ||
+      !VerifyZarchiveAgainstDevice(outputFile, total_files, expected_bytes)) {
+    std::error_code ec;
+    std::filesystem::remove(outputFile, ec);  // never leave a bad .zar in place.
+    return X_STATUS_UNSUCCESSFUL;
+  }
+
+  return X_STATUS_SUCCESS;
+}
+#endif  // XE_PLATFORM_xendroid
 
 void Emulator::Pause() {
   if (paused_) {

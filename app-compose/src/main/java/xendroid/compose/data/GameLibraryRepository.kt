@@ -141,20 +141,15 @@ class GameLibraryRepository(
             GameFormat.ISO, GameFormat.ZAR -> {
                 val fmt = GameFormat.fromFileName(name)!!
                 val uri = child.uri.toString()
-                if (fmt == GameFormat.ISO) {
-                    // ISO: ONE native decompress yields the real XDBF title + icon from
-                    // default.xex; fall back to the filename-derived name if title unreadable.
-                    cachedOrExtract(uri, child, GameFormat.ISO) {
-                        val meta = metadata.readXexMeta(appContext, uri, GameFormat.ISO)
-                        val displayName = meta?.name?.takeIf { it.isNotEmpty() }
-                            ?: fmt.displayNameFor(name)
-                        val iconName = meta?.iconPng?.let { iconCache.write(uri, it) }
-                        displayName to iconName
-                    }
-                } else {
-                    // ZAR: no XEX -> no boot-free reader; filename name, no icon. NOT cached
-                    // (the filename derive is instant -- nothing to save).
-                    Game(uri, fmt.displayNameFor(name), fmt, null)
+                // ISO and ZAR both mount as a disc and read the real XDBF title + icon
+                // from default.xex (ZAR via the zarchive reader). One native decompress;
+                // fall back to the filename-derived name if the title is unreadable.
+                cachedOrExtract(uri, child, fmt) {
+                    val meta = metadata.readXexMeta(appContext, uri, fmt)
+                    val displayName = meta?.name?.takeIf { it.isNotEmpty() }
+                        ?: fmt.displayNameFor(name)
+                    val iconName = meta?.iconPng?.let { iconCache.write(uri, it) }
+                    displayName to iconName
                 }
             }
             GameFormat.GOD -> {

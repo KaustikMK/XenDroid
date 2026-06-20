@@ -879,11 +879,6 @@ void EmulatorWindow::ExtractZarchive() {
       XELOGI("Extracting zar package: {}\n",
              zarchive_file_path.filename().string());
 
-      // TODO(xendroid): rewire to edge's content-package API
-      // (ProcessContentPackageHeader/InstallContentPackage). Edge removed
-      // Emulator::ExtractZarchivePackage and its content-package API has
-      // different semantics (Xbox content packages, not .zar archives), so
-      // there is no clean mapping. Disabled as a no-op until reworked.
       X_STATUS result = X_STATUS_NOT_IMPLEMENTED;
 
       if (result != X_STATUS_SUCCESS) {
@@ -984,11 +979,6 @@ void EmulatorWindow::CreateZarchive() {
 
       XELOGI("Creating zar package: {}\n", zarchive_file.filename().string());
 
-      // TODO(xendroid): rewire to edge's content-package API
-      // (ProcessContentPackageHeader/InstallContentPackage). Edge removed
-      // Emulator::CreateZarchivePackage and its content-package API has
-      // different semantics (Xbox content packages, not .zar archives), so
-      // there is no clean mapping. Disabled as a no-op until reworked.
       X_STATUS result = X_STATUS_NOT_IMPLEMENTED;
 
       if (result != X_ERROR_SUCCESS) {

@@ -3,6 +3,7 @@
 #include "xendroid_emu.h"
 
 #include <atomic>   // single-xe::Memory-per-process guard in extract_xex_meta
+#include <filesystem>  // std::filesystem::path/u8path for the zar extract/create JNI bridge
 
 #include "xenia/app/emulator_window.h"
 #include "xenia/emulator.h"
@@ -22,6 +23,7 @@
 #include "xenia/cpu/processor.h"               // xe::cpu::Processor (bare, for XexModule ctor)
 #include "xenia/kernel/xam/xdbf/spa_info.h"    // xe::kernel::xam::SpaInfo + title_icon()
 #include "xe_saf_disc_image_device.h"         // SAF_DiscImageDevice (ISO)
+#include "xe_saf_disc_archive_device.h"       // SAF_DiscZarchiveDevice (.zar)
 #include "xe_saf_disc_image_entry.h"          // SAF_DiscImageEntry accessors (mmap/data_offset/data_size)
 #include "document_file.h"                    // DocumentFile::find / open_fd
 
@@ -45,7 +47,7 @@ jmethodID mid_open_uri_fd;
 extern JavaVM* g_jvm;
 
 // Title-id format codes -- MUST match GameFormat.titleIdCode in Kotlin.
-enum : jint { TID_FMT_ISO = 0, TID_FMT_XEX_FOLDER = 1 };
+enum : jint { TID_FMT_ISO = 0, TID_FMT_XEX_FOLDER = 1, TID_FMT_ZAR = 2 };
 
 std::vector<std::string> g_launch_args;
 std::string g_uri_info_list_file_path;
@@ -435,6 +437,38 @@ static jstring make_title_id_jstring(JNIEnv* env, bool ok, uint32_t title_id) {
     return env->NewStringUTF(fmt::format("{:08X}", title_id).c_str());
 }
 
+// Read default.xex out of a .zar (zarchive) disc into a buffer (empty on failure).
+// Zarchive entries are compressed (can_map()==false, no mmap), so read via
+// Open/ReadSync (decompresses). Shared by the ZAR title-id + metadata cases. SAF
+// devices are Android-only but this whole file is the xendroid JNI layer.
+static std::vector<uint8_t> read_zar_default_xex(jobject uri) {
+    using namespace xe;
+    std::vector<uint8_t> out;
+    std::unique_ptr<DocumentFile> file = DocumentFile::find(g_jvm, uri);
+    if (!file) return out;                              // not in granted tree
+    vfs::SAF_DiscZarchiveDevice dev("\\Device\\Cdrom0", std::move(file));
+    if (!dev.Initialize()) return out;                  // not a valid .zar
+    vfs::Entry* e = dev.ResolvePath("default.xex");
+    if (!e) return out;                                 // multi-disc / custom launch
+    vfs::File* in = nullptr;
+    if (e->Open(vfs::FileAccess::kFileReadData, &in) != X_STATUS_SUCCESS) return out;
+    const size_t size = e->size();
+    out.resize(size);
+    size_t total = 0;
+    while (total < size) {
+        size_t got = 0;
+        if (in->ReadSync(std::span<uint8_t>(out.data() + total, size - total),
+                         total, &got) != X_STATUS_SUCCESS ||
+            got == 0) {
+            break;
+        }
+        total += got;
+    }
+    in->Destroy();
+    out.resize(total);                                  // trim to bytes actually read
+    return out;
+}
+
 // public native String title_id_from_uri(Context ctx, String uri, int format)
 static jstring j_title_id_from_uri(JNIEnv* env, jobject self,
                                    jobject context, jstring uri_str, jint format) {
@@ -484,8 +518,13 @@ static jstring j_title_id_from_uri(JNIEnv* env, jobject self,
             ok = read_xex_title_id(base, span, &title_id);
             break;                                         // dev (mmap/fd) freed here
         }
+        case TID_FMT_ZAR: {
+            std::vector<uint8_t> xex = read_zar_default_xex(uri);
+            if (!xex.empty()) ok = read_xex_title_id(xex.data(), xex.size(), &title_id);
+            break;
+        }
         default:
-            break;                                         // GOD/ZAR not routed here
+            break;                                         // GOD not routed here
     }
 
     return make_title_id_jstring(env, ok, title_id);
@@ -541,8 +580,13 @@ static jobject j_meta_from_xex(JNIEnv* env, jobject self,
             meta = extract_xex_meta(dbase, span);
             break;                                         // dev (mmap/fd) freed here
         }
+        case TID_FMT_ZAR: {
+            std::vector<uint8_t> xex = read_zar_default_xex(uri);
+            if (!xex.empty()) meta = extract_xex_meta(xex.data(), xex.size());
+            break;
+        }
         default:
-            break;                                         // GOD/ZAR not routed here
+            break;                                         // GOD not routed here
     }
 
     // Nothing readable at all -> null (Kotlin keeps the filename name, no icon).
@@ -1193,6 +1237,75 @@ static jboolean j_show_debug_overlay_enabled(JNIEnv* env, jobject thiz) {
     return cvars::show_debug_overlay ? JNI_TRUE : JNI_FALSE;
 }
 
+//public native int compressIsoToZar(String isoUri,String outZarPath);
+// Mount the ISO at isoUri (a content:// SAF uri == game.launchUri), walk its
+// filesystem and pack it into a VERIFIED .zar at outZarPath (a real host path,
+// e.g. app cache/files dir). Returns X_STATUS (0 == success). The archive is
+// only declared good after it re-opens and matches the source disc walk
+// (file-count + total bytes); on any failure the partial .zar is removed and a
+// non-zero status is returned, so the Kotlin SAFE-replace path keeps the ISO.
+// Blocking VFS walk + zstd compression + verify -- the Kotlin caller MUST
+// dispatch this off the main thread (Dispatchers.IO).
+#if XE_PLATFORM_xendroid
+// Live ISO->.zar compress progress (file-static so the progress getter can read it
+// while j_compressIsoToZar blocks on another thread). Bytes packed / total bytes.
+static std::atomic<uint64_t> g_zar_progress_done{0};
+static std::atomic<uint64_t> g_zar_progress_total{0};
+#endif
+
+// Fraction 0..1 of the in-flight ISO->.zar compression (0 if none / not started).
+static jfloat j_compressProgress(JNIEnv* env, jobject self) {
+#if XE_PLATFORM_xendroid
+    const uint64_t total = g_zar_progress_total.load();
+    if (!total) return 0.0f;
+    return (jfloat)((double)g_zar_progress_done.load() / (double)total);
+#else
+    return 0.0f;
+#endif
+}
+
+static jint j_compressIsoToZar(JNIEnv* env, jobject self, jstring isoUri,
+                               jstring outZarPath) {
+#if XE_PLATFORM_xendroid
+    using namespace xe;  // X_STATUS (xbox.h) so the X_STATUS_* macros resolve.
+    if (!isoUri || !outZarPath) return (jint)X_STATUS_INVALID_PARAMETER;
+
+    const char* up = env->GetStringUTFChars(isoUri, nullptr);
+    const char* op = env->GetStringUTFChars(outZarPath, nullptr);
+    std::string uri_str(up);
+    std::filesystem::path out = std::string(op);
+    env->ReleaseStringUTFChars(isoUri, up);
+    env->ReleaseStringUTFChars(outZarPath, op);
+
+    // Resolve the SAF uri the same way j_title_id_from_uri does.
+    jclass uri_class = env->FindClass("android/net/Uri");
+    jmethodID parse_method = env->GetStaticMethodID(
+            uri_class, "parse", "(Ljava/lang/String;)Landroid/net/Uri;");
+    jstring juri = env->NewStringUTF(uri_str.c_str());
+    jobject uri = env->CallStaticObjectMethod(uri_class, parse_method, juri);
+    if (!uri) return (jint)X_STATUS_UNSUCCESSFUL;
+
+    // Mount the ISO exactly like the title-id / meta probes. RAII frees the
+    // SAF fd/mmap on scope exit; all SAF lifetime stays native.
+    std::unique_ptr<DocumentFile> file = DocumentFile::find(g_jvm, uri);
+    if (!file) return (jint)X_STATUS_NO_SUCH_FILE;  // uri not in granted tree
+    auto dev = std::make_unique<xe::vfs::SAF_DiscImageDevice>(
+            "\\Device\\Cdrom0", std::move(file));
+    if (!dev->Initialize()) return (jint)X_STATUS_UNSUCCESSFUL;  // not XDVDFS / corrupt
+
+    // Transient emulator: the zar ops touch no runtime state -- same pattern as
+    // the old j_createZar / j_meta_from_xex. It never boots a title.
+    auto emulator = std::make_unique<xe::Emulator>("", "", "", "");
+    g_zar_progress_total.store(0);  // reset so the getter reads 0 until the pre-walk
+    g_zar_progress_done.store(0);
+    xe::X_STATUS s = emulator->CompressDiscToZarchive(
+            dev.get(), out, &g_zar_progress_done, &g_zar_progress_total);
+    return (jint)s;  // dev (DocumentFile fd/mmap) freed here on scope exit
+#else
+    return (jint)X_STATUS_UNSUCCESSFUL;
+#endif
+}
+
 int register_xendroid_Emulator(JNIEnv* env){
 
     g_class_DocumentFile=env->FindClass("androidx/documentfile/provider/DocumentFile");
@@ -1218,6 +1331,8 @@ int register_xendroid_Emulator(JNIEnv* env){
             ,{"instant_fps", "()D", (void *) j_instant_fps}
             ,{"last_frame_time_ms", "()D", (void *) j_last_frame_time_ms}
             ,{"show_debug_overlay_enabled", "()Z", (void *) j_show_debug_overlay_enabled}
+            ,{"compressIsoToZar", "(Ljava/lang/String;Ljava/lang/String;)I", (void *) j_compressIsoToZar}
+            ,{"compressProgress", "()F", (void *) j_compressProgress}
     };
     return env->RegisterNatives(g_class_Emulator,methods, sizeof(methods)/sizeof(methods[0]));
 }

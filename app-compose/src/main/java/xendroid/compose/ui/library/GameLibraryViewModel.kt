@@ -86,17 +86,13 @@ class GameLibraryViewModel(
     }
 
     /** Resolve a game's title id off-main so the long-press dialog can open the per-game
-     *  editor. GOD/ISO/XEX_FOLDER have boot-free readers; ZAR short-circuits to an Error. */
+     *  editor. ISO/XEX_FOLDER/ZAR all have boot-free title-id readers (ZAR via the
+     *  zarchive reader); GOD uses its own GameInfo reader. */
     fun requestPerGameSettings(game: Game) {
         _titleId.value = TitleIdState.Loading(game)
         viewModelScope.launch(Dispatchers.IO) {
             _titleId.value = runCatching {
                 EmulatorRuntime.ensureLoaded()
-                if (game.format == GameFormat.ZAR) {
-                    return@runCatching TitleIdState.Error(
-                        game, "Per-game settings aren't available for ZAR games yet"
-                    )
-                }
                 val tid = repo.readTitleId(appContext, game)
                 // 00000000 is the unknown/placeholder title id (no real GOD carries it).
                 if (tid.isNullOrBlank() || tid == "00000000")

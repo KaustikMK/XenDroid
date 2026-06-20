@@ -13,6 +13,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <fstream>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -346,6 +347,27 @@ class Emulator {
   // Extract content of package to content specific directory.
   X_STATUS InstallContentPackage(const std::filesystem::path& path,
                                  ContentInstallEntry& installation_info);
+
+#if XE_PLATFORM_xendroid
+  // Walk an already-mounted disc device's VFS and pack every file/dir straight
+  // into a verified .zar at outputFile (no host temp extraction). The caller
+  // (JNI layer) owns the device + its backing SAF DocumentFile lifetime.
+  // Returns X_STATUS_SUCCESS only if the archive was created AND verified; on
+  // any failure the (possibly partial) .zar is removed so the SAFE-replace gate
+  // never sees a bad archive.
+  // progress_total/progress_done (if given) are filled for a determinate UI bar:
+  // total = sum of the disc's file bytes (set up front), done = bytes packed so far.
+  X_STATUS CompressDiscToZarchive(vfs::Device* device,
+                                  const std::filesystem::path& outputFile,
+                                  std::atomic<uint64_t>* progress_done = nullptr,
+                                  std::atomic<uint64_t>* progress_total = nullptr);
+
+  struct PackContext {
+    std::filesystem::path outputFilePath;
+    std::ofstream currentOutputFile;
+    bool hasError{false};
+  };
+#endif
 
   void Pause();
   void Resume();
