@@ -7,11 +7,8 @@
  ******************************************************************************
  */
 
-#include <atomic>
-
 #include "xenia/base/debugging.h"
 #include "xenia/base/logging.h"
-#include "xenia/base/memory.h"
 #include "xenia/cpu/ppc/ppc_context.h"
 #include "xenia/kernel/kernel_state.h"
 #include "xenia/kernel/util/shim_utils.h"
@@ -37,50 +34,7 @@ void KeDebugMonitorCallback(cpu::ppc::PPCContext* ppc_context,
   auto id = static_cast<DebugMonitorCommand>(ppc_context->r[3] & 0xFFFFFFFFu);
   auto arg = static_cast<uint32_t>(ppc_context->r[4] & 0xFFFFFFFFu);
 
-  // Titles stuck at boot can spam command 94 from runtime worker callbacks
-  // every tick - log the first payloads in full (the record contents name
-  // what the runtime is reporting), then throttle the plain line.
-  static std::atomic<uint32_t> id94_count{0};
-  if (id == DebugMonitorCommand::Unknown94) {
-    uint32_t n = id94_count.fetch_add(1);
-    if (n < 8 || (n & 0xFFF) == 0) {
-      auto* mem = kernel_state->memory();
-      std::string payload;
-      if (arg && mem->LookupHeap(arg)) {
-        auto* p = mem->TranslateVirtual<const uint8_t*>(arg);
-        for (uint32_t i = 0; i < 0x40; i += 4) {
-          payload += fmt::format(" {:08X}", xe::load_and_swap<uint32_t>(p + i));
-        }
-      }
-      XELOGI("KeDebugMonitorCallback(94, {:08X}) #{} lr={:08X} payload:{}",
-             arg, n, uint32_t(ppc_context->lr), payload);
-    }
-  } else {
-    XELOGI("KeDebugMonitorCallback({}, {:08X})", static_cast<uint32_t>(id),
-           arg);
-  }
-
-  switch (id) {
-    case DebugMonitorCommand::PIXCommandResult:
-    case DebugMonitorCommand::SetPIXCallback:
-    case DebugMonitorCommand::Unknown66:
-    case DebugMonitorCommand::Unknown89:
-    case DebugMonitorCommand::Unknown94:
-      break;
-    default:
-      // Unknown commands include the XDK stall reporter (id 82) that titles
-      // spam while stuck in GPU sync waits. The caller's nonvolatile
-      // registers identify the wait context (D3D device, target counter) -
-      // log them so a frozen title can be diagnosed from xe.log alone.
-      XELOGI(
-          "KeDebugMonitorCallback: unknown id {} r1={:08X} r5={:08X} "
-          "r6={:08X} r29={:08X} r30={:08X} r31={:08X} lr={:08X}",
-          static_cast<uint32_t>(id), uint32_t(ppc_context->r[1]),
-          uint32_t(ppc_context->r[5]), uint32_t(ppc_context->r[6]),
-          uint32_t(ppc_context->r[29]), uint32_t(ppc_context->r[30]),
-          uint32_t(ppc_context->r[31]), uint32_t(ppc_context->lr));
-      break;
-  }
+  XELOGI("KeDebugMonitorCallback({}, {:08X})", static_cast<uint32_t>(id), arg);
 
   if (!cvars::kernel_pix) {
     SHIM_SET_RETURN_32(-1);

@@ -346,6 +346,9 @@ uint32_t LoadGameConfigForFile(const std::filesystem::path& game_path) {
     }
 
     XELOGI("Applied {} game config override(s)", override_count);
+    // A per-game overlay is now live on the cvars; lock out SaveConfig() so the
+    // global config_path never gets this title's sparse overrides baked in.
+    game_config_loaded = true;
   } catch (const std::exception& e) {
     XELOGE("Failed to parse game config {}: {}",
            xe::path_to_utf8(game_config_path), e.what());
