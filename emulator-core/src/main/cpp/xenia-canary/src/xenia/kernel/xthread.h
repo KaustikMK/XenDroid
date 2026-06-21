@@ -449,18 +449,10 @@ class XThread : public XObject, public cpu::Thread {
   int32_t QueryPriority();
   void SetPriority(int32_t increment);
 
-  // Called periodically (~20ms) by KernelState's timestamp timer to simulate
-  // the Xenon scheduler's quantum-based priority decay for non-real-time
-  // threads (base_priority < 18).  Threads that run for longer than one
-  // quantum (~20ms) have their effective priority decayed toward the base,
-  // which causes them to drop into lower host priority buckets and prevents
-  // starvation.  On the first decay step the accumulated priority boost is
-  // also drained.
-  void CheckQuantumAndDecay();
   // Called when a thread wakes from a kernel wait.  Applies a priority
   // boost of |increment| above base_priority (matching the Xenon kernel's
   // unwait-boost behavior) and restarts the quantum timer.  The boost is
-  // drained on the next quantum expiry via CheckQuantumAndDecay().
+  // drained on the next quantum expiry.
   // If increment is 0 or the thread has boost disabled, the priority is
   // simply restored to base_priority.
   void BoostOnWake(int32_t increment);

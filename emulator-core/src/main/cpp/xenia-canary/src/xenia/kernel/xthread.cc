@@ -863,51 +863,6 @@ void XThread::SetPriority(int32_t increment) {
   }
 }
 
-void XThread::CheckQuantumAndDecay() {
-  if (cvars::ignore_thread_priorities) {
-    return;
-  }
-  // Real-time threads (current priority >= 0x12) don't decay on Xenon.
-  if (priority_ >= 18) {
-    return;
-  }
-
-  uint64_t now = Clock::QueryHostUptimeMillis();
-  uint64_t elapsed = now - quantum_start_ms_;
-  // On Xenon, the clock interrupt fires every ~1ms and decrements the
-  // thread's quantum by 3.  The process quantum is 60, so it takes ~20ms
-  // for quantum to expire.  When it does, the scheduler decays the
-  // effective priority by exactly 1 and resets quantum.  We approximate
-  // this by decaying 1 priority level per 20ms of elapsed wall-clock time.
-  constexpr uint64_t kQuantumPeriodMs = 20;
-  if (elapsed < kQuantumPeriodMs) {
-    return;
-  }
-
-  int32_t decay_steps = static_cast<int32_t>(elapsed / kQuantumPeriodMs);
-  // On the first decay step, drain the accumulated priority boost as well.
-  // The real kernel computes: new_prio = priority - boost_accumulator - 1
-  // then zeroes the accumulator.  Additional decay steps (if the timer
-  // callback was late) each subtract 1 more.
-  int32_t total_decay = boost_amount_ + decay_steps;
-  boost_amount_ = 0;
-
-  int32_t new_priority = priority_ - total_decay;
-  if (new_priority < base_priority_) {
-    new_priority = base_priority_;
-  }
-  if (new_priority != priority_) {
-    priority_ = new_priority;
-    if (is_guest_thread()) {
-      guest_object<X_KTHREAD>()->priority = static_cast<uint8_t>(new_priority);
-    }
-    if (thread_) {
-      thread_->set_priority(GuestPriorityToHost(new_priority));
-    }
-  }
-  quantum_start_ms_ = now;
-}
-
 void XThread::BoostOnWake(int32_t increment) {
   if (cvars::ignore_thread_priorities) {
     return;

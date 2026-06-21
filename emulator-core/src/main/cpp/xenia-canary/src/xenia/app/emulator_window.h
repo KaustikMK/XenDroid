@@ -153,10 +153,19 @@ class EmulatorWindow {
     EmulatorWindow& emulator_window_;
   };
 
-  // XenDroid: edge removed Emulator::GameConfigLoadCallback (per-game config was
-  // redesigned). The DisplayConfigGameConfigLoadCallback that auto-refreshed the
-  // display config on per-game config load is dropped here.
-  // TODO(xendroid): re-hook display-config refresh into edge's new per-game config flow.
+  // XenDroid: edge removed Emulator::GameConfigLoadCallback during its per-game
+  // config redesign, dropping the DisplayConfigGameConfigLoadCallback that
+  // re-applied the display config when a per-game config was overlaid onto live
+  // cvars. Not re-hooked on purpose: on Android no path overlays per-game config
+  // onto live cvars in the running process. config::LoadGameConfigForFile is
+  // desktop-only (called only from xenia_main.cc, which is NOT in the Android
+  // build per emulator-core/.../cpp/CMakeLists.txt); EmulatorApp::OnInitialize
+  // only calls config::SetupConfig at boot, and Jetpack Compose is the sole
+  // writer of the config files (process-per-game model). The display cvars are
+  // (re)applied on every launch AND in-process relaunch because the on_launch
+  // listener (xendroid_emu.cpp) re-runs SetupGraphicsSystemPresenterPainting(),
+  // which calls ApplyDisplayConfigForCvars() (emulator_window.cc). No gap to
+  // close.
   //
   // XenDroid: the native Dear ImGui config dialogs (content-install, display /
   // post-processing, XMP player, profile, and console-settings dialogs) were

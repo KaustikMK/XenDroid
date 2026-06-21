@@ -321,7 +321,9 @@ void EmulatorWindow::EmulatorWindowListener::OnUsbDeviceChanged(
 }
 
 // XenDroid: DisplayConfigGameConfigLoadCallback::PostGameConfigLoad removed —
-// edge deleted Emulator::GameConfigLoadCallback. See emulator_window.h TODO.
+// edge deleted Emulator::GameConfigLoadCallback. Intentionally not re-hooked on
+// Android (no live per-game cvar overlay; display config is reapplied on every
+// launch/relaunch via SetupGraphicsSystemPresenterPainting). See emulator_window.h.
 //
 // XenDroid: the display / content-install / XMP config dialog OnDraw
 // implementations were dropped here -- the native ImGui config dialogs are
