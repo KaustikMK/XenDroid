@@ -140,7 +140,7 @@ fun GameLibraryScreen(
                         viewModel = viewModel,
                         onLaunch = { game ->
                             runCatching { context.startActivity(viewModel.buildLaunchIntent(game)) }
-                            // SP1-C provides the resolving host; until then this is a no-op.
+                            // No-op until a host Activity resolves the launch action.
                         },
                         // Long-press opens the per-game menu (independent of canLaunchGames,
                         // which only gates the shortcut affordance inside the dialog).
@@ -208,7 +208,7 @@ fun GameLibraryScreen(
                     )
                 }
 
-                // Shortcut affordance when a launchable host exists (SP1-C).
+                // Shortcut affordance when a launchable host exists.
                 if (viewModel.canLaunchGames && viewModel.isPinShortcutSupported) {
                     ListItem(
                         headlineContent = { Text("Create shortcut") },

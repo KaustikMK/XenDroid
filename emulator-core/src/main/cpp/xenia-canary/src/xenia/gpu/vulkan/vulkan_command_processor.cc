@@ -363,7 +363,7 @@ bool VulkanCommandProcessor::SetupContext() {
     return false;
   }
   // Guest draw constants.
-  // Tier 2 #5 capability gate, resolved once before the constants layout is
+  // Dynamic constant buffers capability gate, resolved once before the constants layout is
   // created and held constant for the device lifetime. The Vulkan-guaranteed
   // minimum for maxDescriptorSetUniformBuffersDynamic is 8, so this passes on
   // all conformant hardware; if it ever fails, the binding stays plain

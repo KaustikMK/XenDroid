@@ -148,7 +148,7 @@ object SettingsSchema {
             // Mid-frame command-buffer split: if >0, end+submit every N real draws so the GPU
             // overlaps rendering with CPU command-building instead of idling until swap. 0 = one
             // submission per frame (off). ~half the per-frame draw count is a good start; too-small
-            // values hurt tiled GPUs. Re-ported feature (lost in the xenia-edge rebase).
+            // values hurt tiled GPUs.
             i("GPU", "vulkan_mid_frame_submission_draws", "Mid-frame submission (draws, 0=off)", 0, 0, 4096),
             b("GPU", "snorm16_render_target_full_range", "snorm16 render target full range", true),
             // min == the real TOML default (384); a higher floor would silently coerce the default up.

@@ -24,8 +24,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-/** The launch action emitted on game tap. The host Activity that resolves it
- *  arrives in SP1-C; until then this Intent will not resolve (no-op resolveActivity). */
+/** The launch action emitted on game tap. Resolves once a host Activity registers
+ *  for this action; until then the Intent will not resolve (no-op resolveActivity). */
 const val ACTION_LAUNCH_GAME = "xendroid.intent.action.xendroid"
 const val EXTRA_GAME_URI = "game_uri"
 
@@ -104,7 +104,7 @@ class GameLibraryViewModel(
 
     fun clearTitleIdRequest() { _titleId.value = TitleIdState.Idle }
 
-    /** Build the launch Intent (host pending in SP1-C). Caller startActivity()s it. */
+    /** Build the launch Intent that the host Activity resolves. Caller startActivity()s it. */
     fun buildLaunchIntent(game: Game): Intent =
         Intent(ACTION_LAUNCH_GAME).apply {
             setPackage(appContext.packageName)          // self; host is in this app
@@ -123,7 +123,7 @@ class GameLibraryViewModel(
         get() = appContext.getSystemService<ShortcutManager>()
             ?.isRequestPinShortcutSupported == true
 
-    /** True once a host Activity resolves the launch action (arrives in SP1-C).
+    /** True once a host Activity resolves the launch action.
      *  Until then, suppress launch-dependent affordances so we never pin a dead shortcut. */
     val canLaunchGames: Boolean
         get() = Intent(ACTION_LAUNCH_GAME)
@@ -136,7 +136,7 @@ class GameLibraryViewModel(
         if (!isPinShortcutSupported || Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
         val sm = appContext.getSystemService<ShortcutManager>() ?: return
         val intent = buildLaunchIntent(game).apply { action = Intent.ACTION_VIEW }
-        // SP1-C provides the resolving host; don't pin a shortcut that goes nowhere.
+        // No resolving host yet; don't pin a shortcut that goes nowhere.
         if (intent.resolveActivity(appContext.packageManager) == null) return
         val icon = game.iconCacheName
             ?.let { iconCache.fileFor(it) }

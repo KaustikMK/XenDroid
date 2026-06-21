@@ -978,7 +978,7 @@ class VulkanCommandProcessor final : public CommandProcessor {
   // Whether up-to-date data has been written to constant (uniform) buffers, and
   // the buffer infos in current_constant_buffer_infos_ point to them.
   uint32_t current_constant_buffers_up_to_date_;
-  // Tier 2 #5: when true (gated at SetupContext on the device reporting
+  // Dynamic constant buffers: when true (gated at SetupContext on the device reporting
   // maxDescriptorSetUniformBuffersDynamic >= kConstantBufferCount and the
   // vulkan_dynamic_constant_buffers cvar), the kDescriptorSetConstants set uses
   // VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC: the descriptor base offset is 0

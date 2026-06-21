@@ -176,9 +176,8 @@ void AndroidWindowedAppContext::main_loop(){
             EmulatorApp* app=reinterpret_cast<EmulatorApp*>(ae::g_windowed_app.get());
             // emu_window is an EmulatorWindow, NOT an AndroidWindow -- the real
             // ui::Window (the AndroidWindow that SetPresenter() was called on) is
-            // emu_window->window(). The old reinterpret_cast read presenter_ at the
-            // wrong offset (a latent UB that only stopped being a harmless no-op
-            // once the EmulatorWindow/Window layout changed in the edge rebase).
+            // emu_window->window(). A reinterpret_cast here would read presenter_ at
+            // the wrong offset (latent UB), so go through emu_window->window().
             AndroidWindow* win = app->emu_window
                 ? static_cast<AndroidWindow*>(app->emu_window->window()) : nullptr;
             if(win) win->Paint();
@@ -196,7 +195,7 @@ void AndroidWindowedAppContext::main_loop(){
     // NotifyUILoopOfPendingFunctions / PlatformQuitFromUIThread so a synchronous
     // surface_detach (or any CallInUIThread) can't hang forever during teardown --
     // their closures were already drained by QuitFromUIThread or a prior iteration.
-    // (SP0 adversarial-review fix: quit-vs-detach lost wakeup.)
+    // (Guards against a lost wakeup when quit races a synchronous detach.)
     pthread_mutex_lock(&mutex);
     ui_loop_exited = true;
     exec_completed = exec_requested;
@@ -806,8 +805,8 @@ namespace ae{
         if(!e) return;
         xe::gpu::GraphicsSystem* gs = e->graphics_system();
         if(!gs) return;
-        // TODO(rebase): re-enable once the persistent VkPipelineCache opt is
-        // re-grafted onto the upstream baseline (FlushPipelineCache was deferred).
+        // TODO: re-enable once the persistent VkPipelineCache flush is available
+        // (GraphicsSystem::FlushPipelineCache is not present on this baseline).
         // gs->FlushPipelineCache(/*timeout_ms=*/1500);
         (void)gs;
     }
@@ -820,8 +819,8 @@ namespace ae{
         // idempotent and blocks internally on the audio pause_fence_ + the GPU-worker
         // fence; the only requirement is the caller is not the audio worker, the GPU
         // worker, or a guest XThread -- the main thread satisfies all three. Do NOT
-        // marshal via CallInUIThread (that is the SP0 surface path; redundant + would
-        // stall the paint pump). g_windowed_app_ref->emu is null until the detached
+        // marshal via CallInUIThread (that is the surface-marshaling path; redundant +
+        // would stall the paint pump). g_windowed_app_ref->emu is null until the detached
         // boot thread populates it, so guard exactly like is_paused()/is_running().
         if(g_windowed_app_ref && g_windowed_app_ref->emu)
             g_windowed_app_ref->emu->Pause();
@@ -897,8 +896,8 @@ namespace ae{
         std::lock_guard<std::mutex> lk(window_mutex);
         window_width = width;
         window_height = height;
-        // SP0: size is re-queried from the live ANativeWindow on swapchain
-        // recreate, so no separate resize marshal is needed here (spec OQ3).
+        // Size is re-queried from the live ANativeWindow on swapchain recreate,
+        // so no separate resize marshal is needed here.
     }
 
 }

@@ -54,7 +54,7 @@ class GameCompressViewModel(
      */
     fun compress(launchUri: String) = viewModelScope.launch {
         _state.value = CompressState.Busy("Compressing…", 0f)
-        // Poll native compress progress while the pack phase blocks an IO thread
+        // Poll native compress progress while the pack stage blocks an IO thread
         // (the getter reads file-static atomics, so concurrent reads are safe).
         val poll = launch {
             while (isActive) {

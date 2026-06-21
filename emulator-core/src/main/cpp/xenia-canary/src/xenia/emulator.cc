@@ -1785,7 +1785,7 @@ void Emulator::RelaunchTitle(const std::string& host_path,
             kernel::XObject::Type::Thread);
     XELOGI("RelaunchTitle: post-terminate live XThread count={}", live.size());
 
-    // Tier-2 join barrier: Terminate() above does not block until the OS thread
+    // Bounded join barrier: Terminate() above does not block until the OS thread
     // has actually exited, so Shutdown()/Setup() can race the still-live
     // threads (the intermittent C0000001 early-Setup failure). Bounded-wait on
     // each guest thread's wait handle, excluding the parked caller (it sleeps
