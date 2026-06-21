@@ -45,6 +45,13 @@ class InputSystem {
   void AddDriver(std::unique_ptr<InputDriver> driver);
   void ClearDrivers() { drivers_.clear(); }
   size_t driver_count() const { return drivers_.size(); }
+#if XE_PLATFORM_xendroid
+  // XenDroid: the JNI input bridge (xendroid_emu.cpp) needs the raw driver
+  // pointer to forward Android motion/key events. Guarded so edge desktop stays
+  // byte-identical (replaces an earlier accidental blanket `public:` that flipped
+  // the whole trailing member section public on all platforms).
+  InputDriver* driver(size_t index) const { return drivers_[index].get(); }
+#endif
 
   X_RESULT GetCapabilities(uint32_t user_index, uint32_t flags,
                            X_INPUT_CAPABILITIES* out_caps);
@@ -144,7 +151,7 @@ class InputSystem {
   void LoadSlotBindingsFromPassthrough();
 
   xe::ui::Window* window_ = nullptr;
-public:
+
   std::vector<std::unique_ptr<InputDriver>> drivers_;
 
   std::unique_ptr<Portal> portal_;

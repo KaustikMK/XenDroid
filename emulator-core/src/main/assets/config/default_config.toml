@@ -5,7 +5,6 @@ enable_xmp = true                                 	# Enables Music Player playba
 ffmpeg_verbose = false                            	# Verbose FFmpeg output (debug and above)
 mute = false                                      	# Mutes all audio output.
 use_dedicated_xma_thread = true                   	# Enables XMA decoding on separate thread. Disabled should produce better results, but decrease performance a bit.
-use_new_decoder = false                           	# Enables usage of new experimental XMA audio decoder.
 xma_decoder = "new"                               	# Decoder version used to process XMA audio. Use: [fake, master, old, new]. 'old' has an edge-case stall on some streams; 'new' is the maintained default.
 xmp_default_volume = 70                           	# Default music volume if game doesn't set it [0-100].
 
@@ -183,20 +182,20 @@ vulkan_mid_frame_submission_draws = 0  # If >0, end+submit the command buffer ev
 query_occlusion_sample_lower_threshold = 80       	# If set to -1 no sample counts are written, games may hang. Else, the sample count of every tile will be incremented on every EVENT_WRITE_ZPD by this number. Setting this to 0 means everything is reported as occluded.
 query_occlusion_sample_upper_threshold = 100      	# Set to higher number than query_occlusion_sample_lower_threshold. This value is ignored if query_occlusion_sample_lower_threshold is set to -1.
 readback_memexport = false                        	# [D3D12 Only] Read data written by memory export in shaders on the CPU. This may be needed in some games (but many only access exported data on the GPU, and this flag isn't needed to handle such behavior), but causes mid-frame synchronization, so it has a huge performance impact.
-readback_resolve = false                          	# [D3D12 Only] Read render-to-texture results on the CPU. This may be needed in some games, for instance, for screenshots in saved games, but causes mid-frame synchronization, so it has a huge performance impact.
-render_target_path_vulkan = ""                    	# Render target emulation path to use on Vulkan.
-                                                  	# Use: [any, fbo, fsi]
-                                                  	#  fbo:
-                                                  	#   Host framebuffers and fixed-function blending and depth / stencil testing, copying between render targets when needed.
+readback_resolve = "fast"                         	# CPU readback of render-to-texture resolve results. Use: [fast, some, full, none]. Causes mid-frame synchronization, so it has a huge performance impact.
+render_target_path = "performance"                	# Render target emulation path to use across all GPU backends.
+                                                  	# Use: [performance, accuracy]
+                                                  	#  performance:
+                                                  	#   Host render targets and fixed-function blending and depth / stencil testing, copying between render targets when needed.
                                                   	#   Lower accuracy (limited pixel format support).
                                                   	#   Performance limited primarily by render target layout changes requiring copying, but generally higher.
-                                                  	#  fsi:
+                                                  	#   Maps to 'fbo' on Vulkan and 'rtv' on D3D12.
+                                                  	#  accuracy:
                                                   	#   Manual pixel packing, blending and depth / stencil testing, with free render target layout changes.
-                                                  	#   Requires a GPU supporting fragment shader interlock.
+                                                  	#   Requires a GPU supporting fragment shader interlock (Vulkan) or rasterizer-ordered views (D3D12).
                                                   	#   Highest accuracy (all pixel formats handled in software).
                                                   	#   Performance limited primarily by overdraw.
-                                                  	#  Any other value:
-                                                  	#   Choose what is considered the most optimal for the system (currently always FB because the FSI path is much slower now).
+                                                  	#   Maps to 'fsi' on Vulkan and 'rov' on D3D12.
 
 resolve_resolution_scale_fill_half_pixel_offset = true	# When using resolution scaling, apply the hack that stretches the first surely covered host pixel in the left and top sides of render target resolve areas to eliminate the gap caused by the half-pixel offset (this is necessary for certain games to display the scene graphics).
 snorm16_render_target_full_range = true           	# When the host can only support 16_16 and 16_16_16_16 render targets as -1...1, remap -32...32 to -1...1 to use the full possible range of values, at the expense of multiplicative blending correctness.
@@ -209,7 +208,7 @@ texture_cache_memory_limit_soft = 384             	# Maximum host texture memory
 texture_cache_memory_limit_soft_lifetime = 30     	# Seconds a texture should be unused to be considered old enough to be deleted if texture memory usage exceeds texture_cache_memory_limit_soft.
 trace_gpu_prefix = "scratch/gpu/"                 	# Prefix path for GPU trace files.
 trace_gpu_stream = false                          	# Trace all GPU packets.
-vsync = true                                      	# Enable VSYNC.
+guest_display_refresh_cap = true                  	# Cap guest display refresh (VSYNC): fixed-rate vblanks (50Hz PAL / 60Hz NTSC).
 
 
 [General]

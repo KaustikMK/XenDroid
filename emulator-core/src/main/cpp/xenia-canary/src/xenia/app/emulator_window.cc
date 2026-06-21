@@ -228,8 +228,10 @@ void EmulatorWindow::SetupGraphicsSystemPresenterPainting() {
     return;
   }
 
+#if XE_PLATFORM_xendroid
   XELOGI("SetupGraphicsSystemPresenterPainting: window={} presenter={}",
          static_cast<void*>(window_.get()), static_cast<void*>(presenter));
+#endif
 
   ApplyDisplayConfigForCvars();
 

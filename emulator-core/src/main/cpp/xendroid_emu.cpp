@@ -792,7 +792,7 @@ namespace ae{
     void key_event(int key_code,bool pressed,int value){
         static const bool is_android=cvars::hid=="android";
         if(is_android){
-            xe::hid::android::AndroidInputDriver* driver=reinterpret_cast<xe::hid::android::AndroidInputDriver*>(g_windowed_app_ref->emu->input_system()->drivers_[0].get());
+            xe::hid::android::AndroidInputDriver* driver=reinterpret_cast<xe::hid::android::AndroidInputDriver*>(g_windowed_app_ref->emu->input_system()->driver(0));
             driver->OnKey(key_code,pressed,value);
         }
     }

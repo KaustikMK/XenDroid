@@ -22,7 +22,12 @@ class SettingsSchemaTest {
     // (it is a string cvar: fast/some/full/none), then added GPU|vulkan_mid_frame_submission_draws
     // as an IntRange (-> 8 IntRange), then added two Vulkan descriptor-cache Bools
     // (vulkan_cache_texture_descriptors, vulkan_texture_descriptor_reuse_edge -> 100 Bool).
-    // Net: 100 Bool + 8 IntRange + 18 ListChoice + 1 Action = 127.
+    // Then the xenia-edge rebase renamed APU|use_new_decoder (Bool) to the string cvar
+    // APU|xma_decoder, so it was reclassified Bool -> ListChoice (-1 Bool, +1 ListChoice ->
+    // 99 Bool, 19 ListChoice). (GPU|vsync -> guest_display_refresh_cap and
+    // GPU|render_target_path_vulkan -> render_target_path were like-for-like renames, no
+    // type change.)
+    // Net: 99 Bool + 8 IntRange + 19 ListChoice + 1 Action = 127.
     @Test fun total_entry_count_is_127() {
         assertEquals(127, all.size)
         assertEquals(
@@ -33,9 +38,9 @@ class SettingsSchemaTest {
     }
 
     @Test fun counts_by_type_match_verified_inventory() {
-        assertEquals(100, all.count { it is Setting.Bool })
+        assertEquals(99, all.count { it is Setting.Bool })
         assertEquals(8, all.count { it is Setting.IntRange })
-        assertEquals(18, all.count { it is Setting.ListChoice })
+        assertEquals(19, all.count { it is Setting.ListChoice })
         assertEquals(1, all.count { it is Setting.Action })
     }
 

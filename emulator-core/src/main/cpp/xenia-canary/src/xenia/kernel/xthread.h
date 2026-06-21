@@ -263,14 +263,7 @@ struct X_KTHREAD {
       mutants_list;                  // 0x10
   X_KTIMER wait_timeout_timer;       // 0x18
   X_KWAIT_BLOCK wait_timeout_block;  // 0x40
-  // Per-thread millisecond tick (KernelTime mirror, advanced by the clock
-  // interrupt on real hardware). The XDK D3D runtime computes its blocking
-  // waits' watchdog timeouts from deltas of this field (guest 0x83737AE0 in
-  // Ninja Gaiden 2: 5000 ticks -> GPU-hang recovery); spin-then-block idle
-  // primitives (Forza and others) measure their spin patience with it too.
-  // Left at zero, those watchdogs never fire and guest-recoverable stalls
-  // become hard freezes. Updated from UpdateKeTimestampBundle.
-  xe::be<uint32_t> ms_tick;  // 0x58
+  uint8_t unk_58[0x4];               // 0x58
   xe::be<uint32_t> stack_base;       // 0x5C
   xe::be<uint32_t> stack_limit;      // 0x60
   xe::be<uint32_t> stack_kernel;     // 0x64

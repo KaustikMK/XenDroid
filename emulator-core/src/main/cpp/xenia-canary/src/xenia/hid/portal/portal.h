@@ -10,6 +10,7 @@
 #ifndef XENIA_HID_PORTAL_PORTAL_H_
 #define XENIA_HID_PORTAL_PORTAL_H_
 
+#include <atomic>
 #include <span>
 
 #include "xenia/base/mutex.h"
@@ -35,7 +36,7 @@ class Portal {
   virtual void OnDeviceRemoval() = 0;
 
  protected:
-  bool connected_ = false;
+  std::atomic<bool> connected_ = false;
 
  private:
   virtual void OpenDevice() = 0;

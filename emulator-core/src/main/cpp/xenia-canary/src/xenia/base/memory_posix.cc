@@ -215,7 +215,6 @@ void* AllocFixed(void* base_address, size_t length,
     flags |= MAP_FIXED;
   }
 
-  XELOGI("AllocFixed {:x} -> {:x}", reinterpret_cast<uint64_t >(base_address),reinterpret_cast<uint64_t >(base_address)+length);
   void* result = mmap(base_address, length, prot, flags, -1, 0);
 
   if (result == MAP_FAILED) {
@@ -514,7 +513,6 @@ void* MapFileView(FileMappingHandle handle, void* base_address, size_t length,
   if (base_address != nullptr) {
       flags |= MAP_FIXED;
   }
-    XELOGI("MapFileView {:x} -> {:x}", reinterpret_cast<uint64_t >(base_address),reinterpret_cast<uint64_t >(base_address)+length);
 
     void* result = mmap(base_address, length, prot, flags, handle, file_offset);
 

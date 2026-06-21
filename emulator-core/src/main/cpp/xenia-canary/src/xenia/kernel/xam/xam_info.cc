@@ -387,10 +387,12 @@ void XamLoaderLaunchTitle_entry(lpstring_t raw_name_ptr, dword_t flags) {
 #endif
       }).detach();
 
+#if XE_PLATFORM_xendroid
       XELOGI(
           "XamLoaderLaunchTitle: dispatched RelaunchTitle on detached thread; "
           "parking caller XThread tid={:08X}",
           current_thread ? current_thread->thread_id() : 0);
+#endif
 
       // Stop running guest code; RelaunchTitle terminates us. Suspend can
       // return on POSIX, so park rather than fall through to spawn.

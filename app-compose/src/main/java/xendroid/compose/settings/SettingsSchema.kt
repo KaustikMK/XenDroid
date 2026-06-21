@@ -127,7 +127,7 @@ object SettingsSchema {
         )),
 
         SettingsCategory("GPU", listOf(
-            b("GPU", "vsync", "VSync", true),
+            b("GPU", "guest_display_refresh_cap", "Cap guest display refresh (VSync)", true),
             b("GPU", "store_shaders", "Store shaders", true),
             b("GPU", "resolve_resolution_scale_fill_half_pixel_offset", "Resolve scale: fill half-pixel offset", true),
             // readback_resolve is a STRING cvar (NOT a bool): CPU readback of render-to-texture
@@ -154,8 +154,8 @@ object SettingsSchema {
             // min == the real TOML default (384); a higher floor would silently coerce the default up.
             i("GPU", "texture_cache_memory_limit_soft", "Texture cache soft limit (MB)", 384, 384, 4096),
             b("GPU", "native_2x_msaa", "Native 2x MSAA", true),
-            l("GPU", "render_target_path_vulkan", "Render target path (Vulkan)", "",
-                "any" to "any", "fbo" to "fbo", "fsi" to "fsi"),  // "" => any/FB
+            l("GPU", "render_target_path", "Render target path", "performance",
+                "performance" to "performance", "accuracy" to "accuracy"),
             b("GPU", "half_pixel_offset", "Half-pixel offset", true),
             b("GPU", "log_ringbuffer_kickoff_initiator_bts", "Log ringbuffer kickoff initiator BTs", false),
             i("GPU", "texture_cache_memory_limit_hard", "Texture cache hard limit (MB)", 768, 512, 4096),
@@ -233,7 +233,8 @@ object SettingsSchema {
             b("APU", "mute", "Mute", false),
             i("APU", "apu_max_queued_frames", "Max queued frames", 8, 4, 64),
             b("APU", "enable_xmp", "Enable XMP", true),
-            b("APU", "use_new_decoder", "Use new decoder", false),
+            l("APU", "xma_decoder", "XMA decoder", "new",
+                "new" to "new", "old" to "old", "master" to "master", "fake" to "fake"),
             b("APU", "use_dedicated_xma_thread", "Use dedicated XMA thread", true),
             l("APU", "apu", "APU backend", "aaudio",
                 "nop" to "nop", "aaudio" to "aaudio", "opensles" to "opensles"),
