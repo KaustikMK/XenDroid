@@ -434,13 +434,7 @@ static void j_setup_game_path(JNIEnv* env,jobject self,jobject path ){
     if(env->IsInstanceOf(path,path_cls=env->FindClass("xendroid/emulator/Emulator$Path"))){
         jfieldID f_fd  = env->GetFieldID(path_cls, "fd", "I");
         ae::boot_game_fd=env->GetIntField(path, f_fd);
-        if(ae::boot_game_fd!=-1)
-            ae::boot_type=ae::BOOT_TYPE_WITH_FD;
-        else{
-            jfieldID f_uri  = env->GetFieldID(path_cls, "uri", "Ljava/lang/String;");
-            ae::boot_game_uri=std::string(env->GetStringUTFChars(reinterpret_cast<jstring>(env->GetObjectField(path, f_uri)), nullptr));
-            ae::boot_type=ae::BOOT_TYPE_WITH_URI;
-        }
+        ae::boot_type=ae::BOOT_TYPE_WITH_FD;
     }
     else if(env->IsInstanceOf(path,path_cls=env->FindClass("java/lang/String"))){
         const char*  _path = env->GetStringUTFChars(reinterpret_cast<jstring>(path), nullptr);

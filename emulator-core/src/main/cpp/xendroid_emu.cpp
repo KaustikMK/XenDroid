@@ -16,6 +16,7 @@
 #include <android/log.h>
 #include <jni.h>
 #include <array>
+#include <filesystem>
 #include <memory>
 #include <sys/prctl.h>
 
@@ -39,7 +40,6 @@
 #include "xe_android_input_driver.h"
 #include "xe_opensles_audio_system.h"
 #include "xe_aaudio_audio_system.h"
-#include "document_file.h"
 
 #include "xendroid_emu.h"
 //#include "nlohmann/json.hpp"
@@ -627,42 +627,13 @@ void EmulatorApp::emu_thr_main() {
     }
 
     if (!path.empty()) {
-        jclass uri_class = env->FindClass("android/net/Uri");
-        jmethodID parse_method = env->GetStaticMethodID(uri_class, "parse", "(Ljava/lang/String;)Landroid/net/Uri;");
-        jstring uri_string = env->NewStringUTF(path.c_str());
-        jobject uri = env->CallStaticObjectMethod(uri_class, parse_method, uri_string);
-
-        std::unique_ptr<DocumentFile> file =
-                DocumentFile::find(g_jvm,uri);
-
-        std::string name = file->getName();
-
-
-        if(name.ends_with(".xex")){
-            result = app_context().CallInUIThread(
-                    [this, &file]() { return emu->LaunchXexFile(std::move(file)); });
-        }
-        else if(name.ends_with(".iso")){
-            result = app_context().CallInUIThread(
-                    [this, &file]() { return emu->LaunchDiscImage(std::move(file)); });
-        }
-        else if(name.ends_with(".zar")){
-            result = app_context().CallInUIThread(
-                    [this, &file]() { return emu->LaunchDiscArchive(std::move(file)); });
-        }
-        else{
-            std::string data_dir = path+".data";
-            jstring data_dir_str = env->NewStringUTF(data_dir.c_str());
-            jobject data_dir_uri = env->CallStaticObjectMethod(uri_class, parse_method, data_dir_str);
-
-            std::unique_ptr<DocumentFile> data_dir_file =
-                    DocumentFile::find(g_jvm,data_dir_uri);
-            result = app_context().CallInUIThread(
-                    [this, &file,&data_dir_file]() { return emu->LaunchStfsContainer(std::move(file), std::move(data_dir_file)); });
-        }
-
-        /*result = emu->LaunchPath(abs_path);*//*app_context().CallInUIThread(
-                [this, abs_path]() { return emu_window->RunTitle(abs_path); });*/
+        // Real-path mode (All Files Access): `path` is an absolute host path.
+        // LaunchPath does GetFileSignature + MountPath + the correct real-path
+        // Launch* overload by extension, and stashes last_launch_path_ for
+        // relaunch.
+        std::filesystem::path abs = std::filesystem::u8path(path);
+        result = app_context().CallInUIThread(
+                [this, abs]() { return emu->LaunchPath(abs); });
 
         if (XFAILED(result)) {
             xe::FatalError(fmt::format("Failed to launch target: {:08X}", result));
@@ -707,7 +678,6 @@ namespace ae{
 
     std::string boot_game_path;
     int boot_game_fd;
-    std::string boot_game_uri;
 
     ANativeWindow* window;
     int window_width;
@@ -773,7 +743,9 @@ namespace ae{
         for(auto& i:g_launch_args){
             args.push_back((char*)i.c_str());
         }
-        static std::string boot_target=std::string("--target=")+ae::boot_game_uri;
+        // Real-path mode (All Files Access) feeds an absolute host path to the
+        // target cvar parser.
+        static std::string boot_target=std::string("--target=")+ae::boot_game_path;
         args.push_back((char*)boot_target.c_str());
 
         int argc=args.size();

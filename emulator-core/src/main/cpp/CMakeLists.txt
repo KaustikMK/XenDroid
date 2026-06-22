@@ -34,7 +34,6 @@ target_sources(emu
         xendroid_emu.cpp
         emulator.cpp
         emulator_xendroid.cpp
-        document_file.cpp
         xe_aaudio_audio_driver.cpp
         xe_aaudio_audio_system.cpp
         xe_android_hid.cpp
@@ -42,18 +41,6 @@ target_sources(emu
         xe_android_util.cpp
         xe_opensles_audio_driver.cpp
         xe_opensles_audio_system.cpp
-        xe_saf_disc_image_device.cpp
-        xe_saf_disc_image_entry.cpp
-        xe_saf_disc_image_file.cpp
-        xe_saf_disc_archive_file.cpp
-        xe_saf_disc_archive_device.cpp
-        xe_saf_disc_archive_entry.cpp
-        xe_saf_stfs_device.cpp
-        xe_saf_stfs_entry.cpp
-        xe_saf_stfs_file.cpp
-        xe_saf_xex_device.cpp
-        xe_saf_xex_entry.cpp
-        xe_saf_xex_file.cpp
         xe_system_xendroid.cpp
         xenia-canary/src/xenia/app/emulator_window.cc
         xenia-canary/src/xenia/ui/file_picker_android.cc

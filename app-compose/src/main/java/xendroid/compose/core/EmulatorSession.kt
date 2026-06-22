@@ -2,7 +2,6 @@ package xendroid.compose.core
 
 import android.content.Context
 import android.view.Surface
-import androidx.documentfile.provider.DocumentFile
 import xendroid.compose.Emulator
 import xendroid.emulator.Emulator as BaseEmulator
 
@@ -12,7 +11,7 @@ import xendroid.emulator.Emulator as BaseEmulator
  * boot-once invariant. One instance per EmulatorHostActivity (one process / one core).
  *
  * Contract (caller MUST keep order; native enforces nothing):
- *   prepare() -> {setupContext, setupDocumentFileTree, setupGamePath, setupLaunchArgs,
+ *   prepare() -> {setupContext, setupGamePathReal, setupLaunchArgs,
  *                 setupUriInfoListFile}                           [PRE-surface]
  *   attachSurface(s) -> bootOnce()                                [first surface only]
  *   changeSurface(w,h)                                            [surfaceChanged]
@@ -36,11 +35,10 @@ class EmulatorSession {
 
     fun setupContext(ctx: Context) = core.setup_context(ctx)
 
-    fun setupDocumentFileTree(tree: DocumentFile) = core.setup_document_file_tree(tree)
-
-    /** Per-game launch uri; fd = -1 so native opens the SAF descriptor itself. */
-    fun setupGamePath(gameUri: String) =
-        core.setup_game_path(BaseEmulator.Path.from(gameUri, -1))
+    /** Real-path (All Files Access) launch: an ABSOLUTE host path. The String overload routes
+     *  native -> BOOT_TYPE_WITH_PATH (Emulator::LaunchPath), which mounts the right real-path
+     *  device by extension. */
+    fun setupGamePathReal(absPath: String) = core.setup_game_path(absPath)
 
     fun setupLaunchArgs(args: Array<String>) = core.setup_launch_args(args)
 

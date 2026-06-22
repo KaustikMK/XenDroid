@@ -69,8 +69,8 @@ class AppContainer(context: Context) {
             }
         }
 
-    /** Per-game ISO->.zar compressor. No ctor args (the uri is passed into compress()
-     *  at call time) so the VM is reusable across games. */
+    /** Per-game ISO->.zar compressor. The launch path is passed into compress() at call
+     *  time so the VM is reusable across games. */
     fun gameCompressViewModelFactory(): ViewModelProvider.Factory =
         object : ViewModelProvider.Factory {
             @Suppress("UNCHECKED_CAST")
@@ -78,7 +78,7 @@ class AppContainer(context: Context) {
                 require(modelClass == GameCompressViewModel::class.java) {
                     "Unknown ViewModel ${modelClass.name}"
                 }
-                return GameCompressViewModel(appContext, repository) as T
+                return GameCompressViewModel(appContext) as T
             }
         }
 

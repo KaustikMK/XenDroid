@@ -93,8 +93,8 @@ class GameMetadataCache(cacheDir: File) {
     }
 
     /**
-     * A game file's change signature. Both fields come from SAF (DocumentFile.length()
-     * / lastModified()), which MAY return 0 or -1 for either field. Such a signature is
+     * A game file's change signature. Both fields come from the real host file
+     * (File.length() / lastModified()), which MAY return 0 or -1 for either field. Such a signature is
      * [cacheable] == false: we can't detect a change, so we never cache it (extract every
      * scan). Only a signature with BOTH fields strictly > 0 is trustworthy.
      */

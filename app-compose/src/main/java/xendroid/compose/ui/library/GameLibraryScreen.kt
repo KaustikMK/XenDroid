@@ -1,8 +1,6 @@
 package xendroid.compose.ui.library
 
 import android.app.Activity
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
@@ -27,6 +25,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
+import xendroid.compose.core.AllFilesAccess
 import xendroid.compose.data.Game
 import xendroid.compose.data.GameFormat
 import xendroid.compose.ui.compress.GameCompressViewModel
@@ -47,11 +46,6 @@ fun GameLibraryScreen(
     val state by viewModel.state.collectAsStateWithLifecycle()
     val context = LocalContext.current
 
-    // OPEN_DOCUMENT_TREE picker; on result persist + rescan.
-    val pickDir = rememberLauncherForActivityResult(
-        ActivityResultContracts.OpenDocumentTree()
-    ) { uri -> uri?.let(viewModel::onDirectoryPicked) }
-
     // The long-press menu target (per-game settings, optionally shortcut).
     var pendingGame by remember { mutableStateOf<Game?>(null) }
     // Long-press "Compress to .zar" (ISO only): the game awaiting the confirm dialog.
@@ -59,6 +53,17 @@ fun GameLibraryScreen(
     val compressState by compressVm.state.collectAsStateWithLifecycle()
     val titleIdState by viewModel.titleIdState.collectAsStateWithLifecycle()
     val isRefreshing by viewModel.isRefreshing.collectAsStateWithLifecycle()
+
+    // Real-path (All Files Access) mode: hosts the built-in File browser when shown.
+    // Re-checked on ON_START so a grant made in Settings is observed on return.
+    var showBrowser by remember { mutableStateOf(false) }
+    var allFilesGranted by remember { mutableStateOf(AllFilesAccess.isGranted()) }
+    // Start real-path mode: if not yet granted, send the user to Settings; once granted,
+    // open the in-app folder browser. (Grant returns no result -> observed on ON_START.)
+    val startRealPathMode: () -> Unit = {
+        if (AllFilesAccess.isGranted()) showBrowser = true
+        else AllFilesAccess.requestAccess(context)
+    }
 
     // Re-scan when the app returns to the foreground (picks up games added while it was
     // backgrounded). The ViewModel's init does the first cold-start load, so the first
@@ -68,11 +73,27 @@ fun GameLibraryScreen(
         var firstStart = true
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_START) {
+                // Re-check the All Files Access grant (no result payload): a grant made in
+                // Settings while we were backgrounded is observed here on return.
+                allFilesGranted = AllFilesAccess.isGranted()
                 if (firstStart) firstStart = false else viewModel.refresh()
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    // Real-path mode: the built-in File folder browser takes over the screen while open.
+    // Choosing a folder persists it (switching to real-path mode) + rescans, then closes.
+    if (showBrowser) {
+        FolderBrowserScreen(
+            onFolderChosen = { path ->
+                showBrowser = false
+                viewModel.onRealPathFolderPicked(path)
+            },
+            onCancel = { showBrowser = false },
+        )
+        return
     }
 
     Scaffold(
@@ -88,10 +109,14 @@ fun GameLibraryScreen(
                         Icon(Icons.Default.MoreVert, contentDescription = "More")
                     }
                     DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-                        DropdownMenuItem(
-                            text = { Text("Set game folder") },
-                            onClick = { menuOpen = false; pickDir.launch(null) },
-                        )
+                        // Set game folder via All Files Access (real-path). Only offered where
+                        // All Files Access exists (API 30+); on API 29 the empty state explains why.
+                        if (AllFilesAccess.isSupported) {
+                            DropdownMenuItem(
+                                text = { Text("Set game folder") },
+                                onClick = { menuOpen = false; startRealPathMode() },
+                            )
+                        }
                         DropdownMenuItem(
                             text = { Text("Key mapping") },
                             onClick = { menuOpen = false; onOpenKeymap() },
@@ -122,19 +147,31 @@ fun GameLibraryScreen(
             modifier = Modifier.fillMaxSize().padding(padding),
         ) {
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            // The folder is set via All Files Access (real-path). The primary empty-state
+            // button starts that flow; its label reflects whether the grant is already held.
+            val setFolderLabel = if (allFilesGranted) "Set game folder" else "Grant All Files Access"
             when (val s = state) {
                 LibraryUiState.NoVulkan ->
                     NoVulkanDialog(onQuit = { (context as? Activity)?.finish() })
                 LibraryUiState.Loading -> CircularProgressIndicator()
+                // All Files Access is API 30+; on API 29 there is no games path at all.
                 LibraryUiState.NoFolder ->
-                    EmptyMessage("No game folder set", "Pick folder", onAction = { pickDir.launch(null) })
+                    if (AllFilesAccess.isSupported)
+                        EmptyMessage("No game folder set", setFolderLabel,
+                            onAction = startRealPathMode)
+                    else
+                        EmptyMessage(
+                            "Setting a game folder requires Android 11 or newer.",
+                            "OK", onAction = {})
                 LibraryUiState.PermissionLost ->
-                    EmptyMessage("Folder access lost", "Re-pick folder", onAction = { pickDir.launch(null) })
+                    EmptyMessage("Folder access lost", setFolderLabel,
+                        onAction = startRealPathMode)
                 is LibraryUiState.Error ->
                     EmptyMessage(s.message, "Retry", onAction = { viewModel.refresh() })
                 is LibraryUiState.Loaded ->
                     if (s.games.isEmpty())
-                        EmptyMessage("No games in this folder", "Pick another", onAction = { pickDir.launch(null) })
+                        EmptyMessage("No games in this folder", "Choose another",
+                            onAction = startRealPathMode)
                     else GameGrid(
                         games = s.games,
                         viewModel = viewModel,
@@ -348,7 +385,11 @@ private fun GameCell(
 }
 
 @Composable
-private fun EmptyMessage(text: String, action: String, onAction: () -> Unit) {
+private fun EmptyMessage(
+    text: String,
+    action: String,
+    onAction: () -> Unit,
+) {
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
         Text(text, style = MaterialTheme.typography.bodyLarge)
         Spacer(Modifier.height(12.dp))

@@ -7,7 +7,6 @@ import android.content.pm.ShortcutInfo
 import android.content.pm.ShortcutManager
 import android.graphics.BitmapFactory
 import android.graphics.drawable.Icon
-import android.net.Uri
 import android.os.Build
 import androidx.core.content.getSystemService
 import androidx.lifecycle.ViewModel
@@ -78,9 +77,11 @@ class GameLibraryViewModel(
         }
     }
 
-    fun onDirectoryPicked(treeUri: Uri) {
+    /** Real-path (All Files Access) folder chosen in the built-in browser: persist the
+     *  abs path + rescan. */
+    fun onRealPathFolderPicked(path: String) {
         viewModelScope.launch {
-            repo.saveGameDir(treeUri)
+            repo.saveGameDirPath(path)
             refresh()
         }
     }

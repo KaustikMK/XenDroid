@@ -57,6 +57,7 @@ DEFINE_bool(in_process_title_relaunch, true,
             "Kernel");
 
 #if XE_PLATFORM_xendroid
+#include <jni.h>
 // Process-wide JavaVM set in JNI_OnLoad (xendroid.cpp); declared at global scope
 // so the relaunch detach-current-thread guard resolves to ::g_jvm rather than a
 // nonexistent xe::kernel::xam::g_jvm (which would fail to link).
@@ -376,11 +377,10 @@ void XamLoaderLaunchTitle_entry(lpstring_t raw_name_ptr, dword_t flags) {
 #endif
         );
 #if XE_PLATFORM_xendroid
-        // The relaunch re-mount re-creates DocumentFiles + opens fds on this
-        // thread; DocumentFile::get_env auto-attaches but never detaches (the
-        // cleanup is commented out, document_file.cpp:32-34). Detach before the
+        // The relaunch runs on this detached thread; if any JNI attach happened
+        // (e.g. a callback into Java), the JNIEnv must be detached before the
         // thread exits to avoid the "native thread exited without detaching"
-        // abort under CheckJNI/strict modes.
+        // abort under CheckJNI/strict modes. Harmless no-op when never attached.
         if (g_jvm) {
           g_jvm->DetachCurrentThread();
         }

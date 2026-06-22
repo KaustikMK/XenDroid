@@ -128,14 +128,6 @@ DEFINE_int32(priority_class, 0,
              "values: 0 - Normal, 1 - Above normal, 2 - High",
              "General");
 
-#if XE_PLATFORM_xendroid
-// Process-wide JavaVM set in JNI_OnLoad (xendroid.cpp); declared at global scope
-// (matching xendroid_emu.cpp / emulator_xendroid.cpp) so the relaunch re-mount
-// can re-create a DocumentFile from a retained URI off the detached relaunch
-// thread. Declaring it inside namespace xe would mangle to a nonexistent
-// xe::g_jvm and fail to link.
-extern JavaVM* g_jvm;
-#endif
 
 namespace xe {
 using namespace xe::literals;
@@ -812,174 +804,6 @@ X_STATUS Emulator::LaunchDefaultModule(const std::filesystem::path& path) {
   }
   return result;
 }
-#if XE_PLATFORM_xendroid
-
-    const std::unique_ptr<vfs::Device> Emulator::CreateVfsDevice(
-            std::unique_ptr<DocumentFile> path,std::unique_ptr<DocumentFile> data_dir,FileSignatureType type, const std::string_view mount_path) {
-        // Must check if the type has changed e.g. XamSwapDisc
-        switch (type) {
-            case FileSignatureType::XEX1:
-            case FileSignatureType::XEX2:
-            case FileSignatureType::ELF: {
-                auto parent_path = path->getParentFile();
-                return std::make_unique<vfs::SAF_XexDevice>(mount_path, std::move(parent_path));
-            } break;
-            case FileSignatureType::LIVE:
-            case FileSignatureType::CON:
-            case FileSignatureType::PIRS: {
-                return std::make_unique<vfs::SAF_StfsDevice>(mount_path, std::move(path),std::move(data_dir));
-            } break;
-            case FileSignatureType::XISO: {
-                return std::make_unique<vfs::SAF_DiscImageDevice>(mount_path, std::move(path));
-            } break;
-            case FileSignatureType::ZAR: {
-                return std::make_unique<vfs::SAF_DiscZarchiveDevice>(mount_path, std::move(path));
-            } break;
-            case FileSignatureType::EXE:
-            case FileSignatureType::Unknown:
-            default:
-                return nullptr;
-                break;
-        }
-    }
-    X_STATUS Emulator::MountPath(std::unique_ptr<DocumentFile> path,std::unique_ptr<DocumentFile> data_dir,FileSignatureType type,
-                                 const std::string_view mount_path){
-        auto device = CreateVfsDevice(std::move(path),std::move(data_dir),type, mount_path);
-        if (!device || !device->Initialize()) {
-            XELOGE(
-                    "Unable to mount the selected file, it is an unsupported format or "
-                    "corrupted.");
-            return X_STATUS_NO_SUCH_FILE;
-        }
-        if (!file_system_->RegisterDevice(std::move(device))) {
-            XELOGE("Unable to register the input file to {}.", mount_path);
-            return X_STATUS_NO_SUCH_FILE;
-        }
-
-        file_system_->UnregisterSymbolicLink(kDefaultPartitionSymbolicLink);
-        file_system_->UnregisterSymbolicLink(kDefaultGameSymbolicLink);
-        file_system_->UnregisterSymbolicLink("plugins:");
-
-        // Create symlinks to the device.
-        file_system_->RegisterSymbolicLink(kDefaultGameSymbolicLink, mount_path);
-        file_system_->RegisterSymbolicLink(kDefaultPartitionSymbolicLink, mount_path);
-
-        return X_STATUS_SUCCESS;
-    }
-    X_STATUS Emulator::LaunchXexFile(std::unique_ptr<DocumentFile> xex_path){
-        auto file_name = xex_path->getName();
-
-        // Retain the SAF source for in-process relaunch re-mount (mirror of the
-        // desktop LaunchPath last_launch_path_ remember-step, emulator.cc:667).
-        // Capture BEFORE the std::move consumes xex_path into the device.
-        saf_launch_source_ = {xex_path->getUriString(), "",
-                              FileSignatureType::XEX1, true};
-
-        X_STATUS result=MountPath(std::move(xex_path),nullptr
-                ,FileSignatureType::XEX1,"\\Device\\Harddisk0\\Partition1");
-        if (XFAILED(result)) {
-            return result;
-        }
-        
-        // We create a virtual filesystem pointing to its directory and symlink
-        // that to the game filesystem.
-        // e.g., /my/files/foo.xex will get a local fs at:
-        // \\Device\\Harddisk0\\Partition1
-        // and then get that symlinked to game:\, so
-        // -> game:\foo.xex
-        // Get just the filename (foo.xex).
-
-        // Launch the game.
-        auto fs_path = fmt::format("{}\\", kDefaultGameSymbolicLink) +
-                       xe::path_to_utf8(file_name);
-        result = CompleteLaunch("", fs_path);
-
-        if (XFAILED(result)) {
-            return result;
-        }
-
-        kernel_state_->deployment_type_ = XDeploymentType::kInstalledToHDD;
-
-        if (!kernel::IsSystemTitle(kernel_state_->title_id())) {
-            return result;
-        }
-
-        const std::string mount_path =
-                utf8::find_base_guest_path(kernel_state_->GetExecutableModule()->path());
-
-        // System related symlinks. This should point to dashboard location in the
-        // future.
-        file_system_->RegisterSymbolicLink("\\SystemRoot", mount_path);
-
-        auto module = kernel_state_->LoadUserModule("xam.xex");
-
-        if (!module) {
-            module = kernel_state_->LoadUserModule("$flash_xam.xex");
-        }
-
-        if (module) {
-            result = kernel_state_->FinishLoadingUserModule(module, false);
-        }
-
-        return result;
-}
-    X_STATUS Emulator::LaunchDiscImage(std::unique_ptr<DocumentFile> path){
-        // Retain the SAF source for relaunch re-mount before path is moved.
-        saf_launch_source_ = {path->getUriString(), "",
-                              FileSignatureType::XISO, true};
-        X_STATUS result=MountPath(std::move(path),nullptr
-                ,FileSignatureType::XISO,"\\Device\\Cdrom0");
-        if (XFAILED(result)) {
-            return result;
-        }
-        std::string module_path = FindLaunchModule();
-         result = CompleteLaunch("", module_path);
-
-        if (result == X_STATUS_NOT_FOUND && !cvars::launch_module.empty()) {
-            return LaunchDefaultModule("");
-        }
-        kernel_state_->deployment_type_ = XDeploymentType::kOpticalDisc;
-        return result;
-}
-    X_STATUS Emulator::LaunchDiscArchive(std::unique_ptr<DocumentFile> path) {
-        // Retain the SAF source for relaunch re-mount before path is moved.
-        saf_launch_source_ = {path->getUriString(), "",
-                              FileSignatureType::ZAR, true};
-        X_STATUS result=MountPath(std::move(path),nullptr
-                ,FileSignatureType::ZAR,"\\Device\\Cdrom0");
-        if (XFAILED(result)) {
-            return result;
-        }
-        std::string module_path = FindLaunchModule();
-         result = CompleteLaunch("", module_path);
-
-        if (result == X_STATUS_NOT_FOUND && !cvars::launch_module.empty()) {
-            return LaunchDefaultModule("");
-        }
-        kernel_state_->deployment_type_ = XDeploymentType::kOpticalDisc;
-        return result;
-    }
-    X_STATUS Emulator::LaunchStfsContainer(std::unique_ptr<DocumentFile> path,std::unique_ptr<DocumentFile> data_dir) {
-        // Retain the SAF source for relaunch re-mount before path/data_dir are
-        // moved. data_dir is null for single-file STFS packages.
-        saf_launch_source_ = {path->getUriString(),
-                              data_dir ? data_dir->getUriString() : std::string(),
-                              FileSignatureType::LIVE, true};
-        X_STATUS result=MountPath(std::move(path),std::move(data_dir)
-                ,FileSignatureType::LIVE,"\\Device\\Cdrom0");
-        if (XFAILED(result)) {
-            return result;
-        }
-        std::string module_path = FindLaunchModule();
-         result = CompleteLaunch("", module_path);
-
-        if (result == X_STATUS_NOT_FOUND && !cvars::launch_module.empty()) {
-            return LaunchDefaultModule("");
-        }
-        kernel_state_->deployment_type_ = XDeploymentType::kDownload;
-        return result;
-}
-#endif
 X_STATUS Emulator::DataMigration(const uint64_t xuid) {
   uint32_t failure_count = 0;
   const std::string xuid_string = fmt::format("{:016X}", xuid);
@@ -1868,87 +1692,26 @@ void Emulator::RelaunchTitle(const std::string& host_path,
   cvars::launch_module = launch_module;
 
 #if XE_PLATFORM_xendroid
-  // Android divergence: the title source is a SAF URI, not a host path, so
-  // last_launch_path_ is always empty and host_path is a host fs string that
-  // resolves to no openable file. Re-mount the disc from the retained SAF URI
-  // and load the new sibling module — the same flow boot uses, mirroring edge's
-  // "re-mount -> CompleteLaunch(new module)". cvars::launch_module is already
-  // set above so FindLaunchModule() resolves the sibling off the re-mounted
-  // disc.
-  {
-    // For the same-disc-new-module case (SCDA SC4_Offline.xex) the requested
-    // module name is folded into host_path's filename and launch_module arrives
-    // empty (xam_info.cc:322-326). Derive the basename so FindLaunchModule can
-    // resolve the sibling.
-    if (cvars::launch_module.empty() && !host_path.empty()) {
-      cvars::launch_module =
-          xe::path_to_utf8(xe::to_path(host_path).filename());
-      XELOGI(
-          "RelaunchTitle: derived launch_module='{}' from host_path basename",
-          cvars::launch_module);
-    }
-
-    if (!saf_launch_source_.valid) {
-      XELOGE(
-          "RelaunchTitle: no retained SAF launch source; aborting relaunch to "
-          "dashboard");
-      relaunching_ = false;
-      kernel_state_->ExitToDashboard();
-      return;
-    }
-
-    XELOGI("RelaunchTitle: re-mounting SAF source uri='{}' type={} module='{}'",
-           saf_launch_source_.uri,
-           static_cast<int>(saf_launch_source_.type), cvars::launch_module);
-
-    auto doc = DocumentFile::findByUriString(g_jvm, saf_launch_source_.uri);
-    if (!doc) {
-      XELOGE(
-          "RelaunchTitle: failed to re-create DocumentFile from retained URI; "
-          "aborting relaunch to dashboard");
-      relaunching_ = false;
-      kernel_state_->ExitToDashboard();
-      return;
-    }
-
-    X_STATUS launch_result = X_STATUS_NOT_SUPPORTED;
-    switch (saf_launch_source_.type) {
-      case FileSignatureType::XEX1:
-      case FileSignatureType::XEX2:
-      case FileSignatureType::ELF:
-        launch_result = LaunchXexFile(std::move(doc));
-        break;
-      case FileSignatureType::XISO:
-        launch_result = LaunchDiscImage(std::move(doc));
-        break;
-      case FileSignatureType::ZAR:
-        launch_result = LaunchDiscArchive(std::move(doc));
-        break;
-      case FileSignatureType::LIVE:
-      case FileSignatureType::CON:
-      case FileSignatureType::PIRS: {
-        std::unique_ptr<DocumentFile> data_dir;
-        if (!saf_launch_source_.data_dir_uri.empty()) {
-          data_dir = DocumentFile::findByUriString(
-              g_jvm, saf_launch_source_.data_dir_uri);
-        }
-        launch_result = LaunchStfsContainer(std::move(doc), std::move(data_dir));
-      } break;
-      default:
-        XELOGE("RelaunchTitle: retained SAF source has unsupported type {}",
-               static_cast<int>(saf_launch_source_.type));
-        break;
-    }
-    XELOGI("RelaunchTitle: re-mount result={:08X}", launch_result);
+  // For the same-disc-new-module case (SCDA SC4_Offline.xex) the requested
+  // module name is folded into host_path's filename and launch_module arrives
+  // empty (xam_info.cc:322-326). Derive the basename so FindLaunchModule (run
+  // by LaunchPath -> the disc Launch* overload) can resolve the sibling off the
+  // re-mounted disc. Real-path mode re-opens the title from last_launch_path_
+  // (stashed by LaunchPath at boot), so this matches the boot flow.
+  if (cvars::launch_module.empty() && !host_path.empty()) {
+    cvars::launch_module = xe::path_to_utf8(xe::to_path(host_path).filename());
+    XELOGI("RelaunchTitle: derived launch_module='{}' from host_path basename",
+           cvars::launch_module);
   }
-#else
+#endif
+
   // Fall back to the initial launch path if host_path is empty (command-line
-  // launch rather than loader_data-driven).
+  // launch rather than loader_data-driven). last_launch_path_ is populated by
+  // LaunchPath (emulator.cc:686) so the empty-host_path fallback is sound.
   auto launch_target =
       host_path.empty() ? last_launch_path_ : xe::to_path(host_path);
   XELOGI("RelaunchTitle: launching '{}'", xe::path_to_utf8(launch_target));
   LaunchPath(launch_target);
-#endif
 
   relaunching_ = false;
   XELOGI("RelaunchTitle: relaunch complete");

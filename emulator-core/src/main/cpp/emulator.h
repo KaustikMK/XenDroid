@@ -10,12 +10,10 @@
 namespace ae{
     constexpr int BOOT_TYPE_WITH_PATH=1;
     constexpr int BOOT_TYPE_WITH_FD=2;
-    constexpr int BOOT_TYPE_WITH_URI=3;
     extern int boot_type;
 
     extern std::string boot_game_path;
     extern int boot_game_fd;
-    extern std::string boot_game_uri;
 
     extern ANativeWindow* window;       // guarded by window_mutex
     extern int window_width;            // guarded by window_mutex

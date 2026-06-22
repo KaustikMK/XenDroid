@@ -9,6 +9,11 @@
         android:maxSdkVersion="32" />
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
         android:maxSdkVersion="29" />
+    <!-- All Files Access (API 30+) real-path mode: an ALTERNATIVE to scoped SAF for
+         devices (MIUI/HyperOS) whose OPEN_DOCUMENT_TREE picker refuses every folder.
+         When granted, the library scans + boots from a real filesystem path instead of
+         content:// SAF uris (no /proc/self/fd open). SAF stays the default mode. -->
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
     <!-- Controller rumble (host Activity, SP1-C; declared now so core code never NPEs). -->
     <uses-permission android:name="android.permission.VIBRATE" />
 

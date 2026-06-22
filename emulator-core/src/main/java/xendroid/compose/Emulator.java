@@ -2,11 +2,6 @@
 package xendroid.compose;
 
 import android.content.Context;
-import android.net.Uri;
-import android.os.ParcelFileDescriptor;
-import android.util.Log;
-
-import androidx.documentfile.provider.DocumentFile;
 
 import org.json.JSONException;
 import org.json.JSONObject;
@@ -29,7 +24,6 @@ public class Emulator extends xendroid.emulator.Emulator{
     }*/
 
     public native void setup_context(Context ctx);
-    public native void setup_document_file_tree(DocumentFile tree);
     public native void setup_launch_args(String[] args);
     public  native void setup_uri_info_list_file(String path);
     public native String simple_device_info();
@@ -47,47 +41,40 @@ public class Emulator extends xendroid.emulator.Emulator{
     // overlay applied by LoadGameConfig at boot). Poll post-boot: the per-game override
     // lands on the detached boot thread, so this only reflects it after the game loads.
     public native boolean show_debug_overlay_enabled();
-    public static int nc_open_uri_fd(Context ctx,Uri uri) {
-        try {
-            ParcelFileDescriptor pfd_ = ctx.getContentResolver().openFileDescriptor(uri, "r");
-            int game_fd=pfd_.detachFd();
-            pfd_.close();
-            return game_fd;
-        } catch (Exception e) {
-            Log.e("compose",e.toString());
-            return -1;
-        }
-    }
 
-
-    // Mount the ISO at isoUri (a content:// SAF uri == game.launchUri), walk its
-    // filesystem and pack it into a VERIFIED .zar at outZarPath (a REAL host
-    // path, e.g. an app cache/files dir). Returns X_STATUS (0 == success,
-    // non-zero == failure). The native side only reports success after the .zar
-    // re-opens and matches the source disc (file-count + total bytes); on any
-    // failure the partial .zar is removed and the caller MUST keep the ISO. MUST
-    // be called off the main thread (blocking VFS walk + zstd compress + verify):
-    // dispatch from a background coroutine (Dispatchers.IO).
-    public native int compressIsoToZar(String isoUri,String outZarPath);
+    // Mount the ISO at isoPath (a REAL host ISO path == game.launchUri in
+    // real-path mode), walk its filesystem and pack it into a VERIFIED .zar at
+    // outZarPath (also a real host path, e.g. beside the .iso). Returns X_STATUS
+    // (0 == success, non-zero == failure). The native side only reports success
+    // after the .zar re-opens and matches the source disc (file-count + total
+    // bytes); on any failure the partial .zar is removed and the caller MUST keep
+    // the ISO. MUST be called off the main thread (blocking VFS walk + zstd
+    // compress + verify): dispatch from a background coroutine (Dispatchers.IO).
+    public native int compressIsoToZar(String isoPath,String outZarPath);
 
     // Fraction 0..1 of the ISO->.zar compression currently running on another
     // thread (0 when none is in flight). Poll it for a determinate progress bar.
     public native float compressProgress();
 
-    public native GameInfo meta_info_from_god_game(Context ctx,String uri) throws RuntimeException;
+    // ---- Real-path (All Files Access) scan probes: take an ABSOLUTE host path
+    // (no Context: no ContentResolver / fd). The core's real-path DiscImageDevice /
+    // DiscZarchiveDevice / Extract*Metadata back these. format: 0=ISO, 1=XEX_FOLDER,
+    // 2=ZAR (== TID_FMT_* in C++, == GameFormat.titleIdCode). GameInfo.uri is echoed
+    // back as the input abs path.
 
-    // Boot-free title-id read for ISO (format 0) / XEX_FOLDER (format 1) via a light
-    // XEX2 header parse. uri = ISO container uri or default.xex child uri. Returns
-    // an 8-char uppercase-hex id, or null for unsupported/unreadable/00000000.
-    public native String title_id_from_uri(Context ctx,String uri,int format) throws RuntimeException;
+    // Header-only title-id read for ISO / XEX_FOLDER / ZAR from a real path. path = the ISO
+    // file (ISO), default.xex (XEX_FOLDER) or .zar file (ZAR). 8-char uppercase-hex id, or
+    // null for unsupported/unreadable/00000000.
+    public native String   title_id_from_path(String path,int format) throws RuntimeException;
 
-    // Boot-free combined meta read for ISO (format 0) / XEX_FOLDER (format 1): decompresses
-    // default.xex ONCE into a transient guest address space and pulls the XDBF/SPA title NAME,
-    // title icon PNG, and title id in a single pass. uri = ISO container uri or default.xex
-    // child uri. Returns a GameInfo (its name/icon/titleId fields may individually be null when
-    // absent/unreadable), or null when nothing was readable. Heavier than title_id_from_uri
-    // (full XEX decompress); MUST run off the main thread.
-    public native GameInfo meta_from_xex(Context ctx,String uri,int format) throws RuntimeException;
+    // Combined name+icon(+titleId) read for ISO / XEX_FOLDER / ZAR from a real path (one XEX
+    // decompress + XDBF/SPA parse). Returns a GameInfo (fields may individually be null), or
+    // null when nothing was readable. MUST run off the main thread.
+    public native GameInfo meta_from_path(String path,int format)     throws RuntimeException;
+
+    // GOD container header read from a real path: title_name + icon + title id. Returns a
+    // GameInfo, or null for a non-GOD/unreadable container. MUST run off the main thread.
+    public native GameInfo meta_info_from_god_path(String path)       throws RuntimeException;
 
 
     public static class GameInfo{

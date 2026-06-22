@@ -35,14 +35,6 @@
 #include "xenia/vfs/virtual_file_system.h"
 #include "xenia/xbox.h"
 
-#if XE_PLATFORM_xendroid
-#include "../document_file.h"
-#include "../xe_saf_xex_device.h"
-#include "../xe_saf_stfs_device.h"
-#include "../xe_saf_disc_image_device.h"
-#include "../xe_saf_disc_archive_device.h"
-#endif
-
 namespace xe {
 namespace apu {
 class AudioSystem;
@@ -252,16 +244,6 @@ class Emulator {
   X_STATUS LaunchStfsContainer(const std::filesystem::path& path);
 
   X_STATUS LaunchDefaultModule(const std::filesystem::path& path);
-#if XE_PLATFORM_xendroid
-        const std::unique_ptr<vfs::Device> CreateVfsDevice(
-                std::unique_ptr<DocumentFile> path,std::unique_ptr<DocumentFile> data_dir,FileSignatureType type, const std::string_view mount_path);
-        X_STATUS MountPath(std::unique_ptr<DocumentFile> path,std::unique_ptr<DocumentFile> data_dir,FileSignatureType type,
-                           const std::string_view mount_path);
-        X_STATUS LaunchXexFile(std::unique_ptr<DocumentFile> xex_path);
-        X_STATUS LaunchDiscImage(std::unique_ptr<DocumentFile> path);
-        X_STATUS LaunchDiscArchive(std::unique_ptr<DocumentFile> path);
-        X_STATUS LaunchStfsContainer(std::unique_ptr<DocumentFile> path,std::unique_ptr<DocumentFile> data_dir);
-#endif
   enum class InstallState : uint8_t {
     preparing,
     pending,
@@ -351,7 +333,7 @@ class Emulator {
 #if XE_PLATFORM_xendroid
   // Walk an already-mounted disc device's VFS and pack every file/dir straight
   // into a verified .zar at outputFile (no host temp extraction). The caller
-  // (JNI layer) owns the device + its backing SAF DocumentFile lifetime.
+  // (JNI layer) owns the device + its backing real-path mmap lifetime.
   // Returns X_STATUS_SUCCESS only if the archive was created AND verified; on
   // any failure the (possibly partial) .zar is removed so the SAFE-replace gate
   // never sees a bad archive.
@@ -478,19 +460,6 @@ class Emulator {
 
   std::filesystem::path command_line_;
   std::filesystem::path last_launch_path_;  // persists across relaunch
-#if XE_PLATFORM_xendroid
-  // Android in-process relaunch re-mounts the title from its SAF URI, not a
-  // host path (last_launch_path_ is always empty on Android). This retains a
-  // re-openable source captured by the SAF Launch* methods at boot; like
-  // last_launch_path_ it is a plain member, so Shutdown() never clears it and
-  // it survives the relaunch teardown.
-  struct SafLaunchSource {
-    std::string uri;            // re-parse via DocumentFile::findByUriString
-    std::string data_dir_uri;   // STFS multi-file data sibling; empty otherwise
-    FileSignatureType type = FileSignatureType::Unknown;
-    bool valid = false;
-  } saf_launch_source_;
-#endif
   DiscProvider disc_provider_;
   DiscRecorder disc_recorder_;
   std::filesystem::path storage_root_;

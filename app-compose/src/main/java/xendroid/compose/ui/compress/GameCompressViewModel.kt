@@ -1,8 +1,6 @@
 package xendroid.compose.ui.compress
 
 import android.content.Context
-import android.net.Uri
-import androidx.documentfile.provider.DocumentFile
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
@@ -14,24 +12,21 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import xendroid.compose.core.EmulatorRuntime
-import xendroid.compose.data.GameLibraryRepository
 import java.io.File
-import java.io.IOException
 
 /**
  * Drives the per-game "Compress to .zar" safe-replace flow. The native
- * [xendroid.compose.Emulator.compressIsoToZar] mounts the ISO by its SAF uri,
- * packs its VFS into a temp .zar AND verifies it (re-opens the archive and
- * compares file-count + total bytes against the source disc); it returns
- * X_STATUS, 0 == success. Only after that verified .zar is physically placed
- * in the game folder is the original .iso deleted. Every failure / early-return
- * path leaves the .iso intact. The native call blocks (VFS walk + zstd +
- * verify), so it runs on [Dispatchers.IO]; the temp .zar lives in cacheDir and
- * is always removed in a finally.
+ * [xendroid.compose.Emulator.compressIsoToZar] mounts the ISO by its absolute
+ * host path, packs its VFS into a temp .zar AND verifies it (re-opens the
+ * archive and compares file-count + total bytes against the source disc); it
+ * returns X_STATUS, 0 == success. Only after that verified .zar is physically
+ * placed beside the .iso is the original .iso deleted. Every failure /
+ * early-return path leaves the .iso intact. The native call blocks (VFS walk +
+ * zstd + verify), so it runs on [Dispatchers.IO]; the temp .zar lives in
+ * cacheDir and is always removed in a finally.
  */
 class GameCompressViewModel(
     private val appContext: Context,
-    private val repo: GameLibraryRepository,
 ) : ViewModel() {
 
     sealed interface CompressState {
@@ -49,8 +44,8 @@ class GameCompressViewModel(
     fun dismiss() { _state.value = CompressState.Idle }
 
     /**
-     * Compress the ISO at [launchUri] (a content:// SAF uri) into a verified
-     * .zar in the same game folder, then delete the .iso — and ONLY then.
+     * Compress the ISO at [launchUri] (an absolute host path) into a verified
+     * .zar beside the .iso, then delete the .iso — and ONLY then.
      */
     fun compress(launchUri: String) = viewModelScope.launch {
         _state.value = CompressState.Busy("Compressing…", 0f)
@@ -76,45 +71,39 @@ class GameCompressViewModel(
             ?: return CompressState.Failed("Emulator not loaded. .iso is unchanged.")
 
         // Resolve-only prologue — NOTHING is mutated yet.
-        val isoUri = Uri.parse(launchUri)
-        val isoDoc = DocumentFile.fromSingleUri(appContext, isoUri)
-            ?: return CompressState.Failed("Couldn't open the ISO. .iso is unchanged.")
-        val gameDir = repo.currentGameDirUri()
-            ?: return CompressState.Failed("Set a game folder first. .iso is unchanged.")
-        val tree = DocumentFile.fromTreeUri(appContext, gameDir)?.takeIf { it.canWrite() }
+        val isoFile = File(launchUri)
+        if (!isoFile.isFile)
+            return CompressState.Failed("Couldn't open the ISO. .iso is unchanged.")
+        // Place the .zar beside the .iso (the "same folder" semantics of the old SAF flow).
+        val parent = isoFile.parentFile?.takeIf { it.canWrite() }
             ?: return CompressState.Failed("Game folder isn't writable. .iso is unchanged.")
 
-        val isoName = isoDoc.name ?: "game.iso"
+        val isoName = isoFile.name
         val baseName = isoName.removeSuffix(".iso").removeSuffix(".ISO").ifBlank { "game" }
         val zarName = "$baseName.zar"
-        if (tree.findFile(zarName) != null)
+        if (File(parent, zarName).exists())
             return CompressState.Failed("A “$zarName” already exists in the folder. .iso is unchanged.")
 
         val tempZar = File.createTempFile("compress", ".zar", appContext.cacheDir)
         tempZar.delete()   // native creates the output; it must not pre-exist
-        var placed: DocumentFile? = null
+        var placed: File? = null
         try {
-            // (1) PACK + VERIFY: native mounts the ISO by uri, walks its VFS into the
+            // (1) PACK + VERIFY: native mounts the ISO by path, walks its VFS into the
             //     temp .zar, then re-opens + verifies it. 0 == created AND verified.
-            val packStatus = emulator.compressIsoToZar(launchUri, tempZar.absolutePath)
+            val packStatus = emulator.compressIsoToZar(isoFile.absolutePath, tempZar.absolutePath)
             if (packStatus != 0)
                 return CompressState.Failed(
                     "Compression failed (0x${packStatus.toUInt().toString(16)}). .iso is unchanged.")
 
-            // (3) PLACE: copy the verified temp .zar INTO the game folder. .iso STILL present.
+            // (3) PLACE: copy the verified temp .zar BESIDE the .iso. .iso STILL present.
             _state.value = CompressState.Busy("Replacing…")
-            val dest = tree.createFile("application/octet-stream", zarName)
-                ?: return CompressState.Failed("Couldn't create the .zar in the folder. .iso is unchanged.")
-            placed = dest
-            val copied = runCatching {
-                appContext.contentResolver.openOutputStream(dest.uri, "wt")?.use { os ->
-                    tempZar.inputStream().use { it.copyTo(os) }
-                } ?: throw IOException("no output stream")
-            }.isSuccess
+            val dest = File(parent, zarName)
+            val copied = runCatching { tempZar.copyTo(dest, overwrite = false) }.isSuccess
             if (!copied) {
                 dest.delete(); placed = null
                 return CompressState.Failed("Couldn't write the .zar. .iso is unchanged.")
             }
+            placed = dest
             // (3b) sanity: the placed .zar is non-empty and its size matches the temp.
             if (dest.length() <= 0L || dest.length() != tempZar.length()) {
                 dest.delete(); placed = null
@@ -122,7 +111,7 @@ class GameCompressViewModel(
             }
 
             // (4) DELETE THE ISO — and ONLY NOW. A verified .zar is already in the folder.
-            val isoDeleted = DocumentFile.fromSingleUri(appContext, isoUri)?.delete() == true
+            val isoDeleted = isoFile.delete()
             return if (!isoDeleted)
                 CompressState.Done(
                     "Created “$zarName”, but the .iso couldn't be deleted automatically. " +
