@@ -14,12 +14,12 @@ object SettingsSchema {
 
         SettingsCategory("Vulkan", listOf(
             b("Vulkan", "vulkan_sparse_shared_memory", "Sparse shared memory", true),
-            b("Vulkan", "vulkan_log_debug_messages", "Log debug messages", true),
+            b("Vulkan", "vulkan_log_debug_messages", "Log debug messages", false),
             b("Vulkan", "vulkan_validation", "Validation layers", false),
             b("Vulkan", "vulkan_allow_present_mode_immediate", "Allow present mode: immediate", true),
             b("Vulkan", "vulkan_allow_present_mode_mailbox", "Allow present mode: mailbox", true),
             b("Vulkan", "vulkan_allow_present_mode_fifo_relaxed", "Allow present mode: FIFO relaxed", true),
-            b("Vulkan", "vulkan_async_skip_draws", "Async skip draws", false),
+            b("Vulkan", "vulkan_async_skip_draws", "Async skip draws", true),
             b("Vulkan", "vulkan_extended_dynamic_state3_blend", "EDS3: blend", true),
             b("Vulkan", "vulkan_extended_dynamic_state3_topology", "EDS3: topology", true),
             // Numeric thread count (0 = synchronous, 1..5 = explicit) -> a slider, not a
@@ -32,7 +32,7 @@ object SettingsSchema {
             // (GMEM/tiled, fast); 'sysmem' forces untiled rendering (much slower) but avoids a
             // class of Adreno GPU hangs. Applied at vkCreateInstance, so it takes effect on the
             // next game launch.
-            l("Vulkan", "turnip_debug", "Turnip debug mode", "sysmem",
+            l("Vulkan", "turnip_debug", "Turnip debug mode", "",
                 "" to "None (no TU_DEBUG flags, GMEM)", "sysmem" to "sysmem (untiled, slower)"),
             // Cross-draw texture/sampler descriptor-set reuse (perf). Master toggle gates reuse
             // on/off; the edge toggle (only when reuse is on) picks edge's bitmask gate vs
@@ -134,7 +134,7 @@ object SettingsSchema {
             // resolve results. fast=copy every frame (cvar default); some=skip copy on cache hit;
             // full=wait for GPU (accurate but a GPU-CPU sync stall); none=disable readback (some
             // games render better without it, and it avoids the stall).
-            l("GPU", "readback_resolve", "Readback resolve", "fast",
+            l("GPU", "readback_resolve", "Readback resolve", "none",
                 "fast" to "Fast (copy every frame)", "some" to "Some (skip copy on cache hit)",
                 "full" to "Full (wait for GPU, slow)", "none" to "None (disabled)"),
             // How guest occlusion queries (PM4 EVENT_WRITE_ZPD) are serviced. 'fake' fabricates a
@@ -142,7 +142,7 @@ object SettingsSchema {
             // slightly wrong); 'fast'/'fast-alt' issue real async Vulkan queries without stalling;
             // 'strict' issues a real query and stalls the command thread until the GPU answers (most
             // accurate, slowest). Live (SetZPDMode) -- takes effect without relaunch.
-            l("GPU", "occlusion_query", "Occlusion query mode", "fake",
+            l("GPU", "occlusion_query", "Occlusion query mode", "fast",
                 "fake" to "Fake (no GPU query, fastest)", "fast" to "Fast (async query, no stall)",
                 "fast-alt" to "Fast-alt (async, precise zeros)", "strict" to "Strict (real query, stalls)"),
             // Mid-frame command-buffer split: if >0, end+submit every N real draws so the GPU
