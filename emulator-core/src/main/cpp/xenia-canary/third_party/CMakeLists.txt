@@ -496,6 +496,18 @@ target_include_directories(pugixml PUBLIC pugixml/src)
 # ==============================================================================
 # snappy
 # ==============================================================================
+if(ANDROID)
+  set(_xe_nested_configure_args
+    -G "${CMAKE_GENERATOR}"
+    "-DCMAKE_MAKE_PROGRAM=${CMAKE_MAKE_PROGRAM}"
+    "-DCMAKE_TOOLCHAIN_FILE=${CMAKE_TOOLCHAIN_FILE}"
+    "-DANDROID_ABI=${ANDROID_ABI}"
+    "-DANDROID_PLATFORM=${ANDROID_PLATFORM}"
+    "-DANDROID_NDK=${ANDROID_NDK}"
+    "-DCMAKE_SYSTEM_NAME=${CMAKE_SYSTEM_NAME}"
+    "-DCMAKE_SYSTEM_VERSION=${CMAKE_SYSTEM_VERSION}")
+endif()
+
 # Generate snappy-stubs-public.h if missing
 if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/snappy/snappy-stubs-public.h")
   if(XE_TARGET_X86_64)
@@ -505,6 +517,7 @@ if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/snappy/snappy-stubs-public.h")
   endif()
   execute_process(
     COMMAND ${CMAKE_COMMAND}
+      ${_xe_nested_configure_args}
       -DSNAPPY_BUILD_TESTS=OFF
       -DSNAPPY_BUILD_BENCHMARKS=OFF
       ${_snappy_avx_flag}
@@ -587,6 +600,7 @@ endforeach()
 if(_zlibng_needs_configure)
   execute_process(
     COMMAND ${CMAKE_COMMAND}
+      ${_xe_nested_configure_args}
       -DZLIB_ENABLE_TESTS=OFF
       -DWITH_GTEST=OFF
       ${CMAKE_CURRENT_SOURCE_DIR}/zlib-ng
