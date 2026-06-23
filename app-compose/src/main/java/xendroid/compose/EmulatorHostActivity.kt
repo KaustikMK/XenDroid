@@ -9,8 +9,10 @@ import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.SurfaceHolder
 import android.view.SurfaceView
-import android.view.WindowManager
 import androidx.activity.ComponentActivity
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import xendroid.compose.core.EmulatorRuntime
 import xendroid.compose.core.EmulatorSession
 import kotlinx.coroutines.Dispatchers
@@ -101,12 +103,9 @@ class EmulatorHostActivity : ComponentActivity(), SurfaceHolder.Callback {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // Fullscreen: legacy uses NoTitleBar.Fullscreen; keep the swapchain owning the
-        // whole window. (Theme is also fullscreen; this is belt-and-braces immersive.)
-        window.setFlags(
-            WindowManager.LayoutParams.FLAG_FULLSCREEN,
-            WindowManager.LayoutParams.FLAG_FULLSCREEN,
-        )
+        // Immersive fullscreen: hide BOTH system bars. The legacy FLAG_FULLSCREEN
+        // only hid the status bar, leaving the nav buttons overlaid on the game.
+        enterImmersiveMode()
 
         val gameUri = intent?.getStringExtra(EXTRA_GAME_URI)
         if (gameUri.isNullOrEmpty()) {
@@ -145,6 +144,24 @@ class EmulatorHostActivity : ComponentActivity(), SurfaceHolder.Callback {
             }
             prepareNativeRealPath(gameUri)                // back on main (lifecycleScope = Main)
             installSurfaceView()
+        }
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        // The system restores the bars when the window regains focus (after a
+        // dialog, the notification shade, an app switch); re-assert immersive.
+        if (hasFocus) enterImmersiveMode()
+    }
+
+    /** Edge-to-edge immersive: hides the status AND navigation bars, with the
+     *  bars swipe-to-reveal transiently. */
+    private fun enterImmersiveMode() {
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        WindowInsetsControllerCompat(window, window.decorView).apply {
+            systemBarsBehavior =
+                WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            hide(WindowInsetsCompat.Type.systemBars())
         }
     }
 
