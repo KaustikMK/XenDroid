@@ -1718,10 +1718,23 @@ void* PosixCondition<Thread>::ThreadStartRoutine(void* parameter) {
   }
 
   if (create_suspended) {
+#if XE_PLATFORM_xendroid
+    // XenDroid: park on the SIGRT suspend semaphore (the same one the suspend
+    // signal handler and Resume use) instead of the state condvar. The condvar
+    // path left suspend_sem_ with a leftover count after the startup Resume's
+    // sem_post, so the FIRST real suspend's sem_wait returned immediately and
+    // the thread never actually parked -> background freeze didn't stop the guest.
+    {
+      std::unique_lock lock(thread->handle_.state_mutex_);
+      thread->handle_.suspend_count_ = 1;
+    }
+    thread->handle_.WaitSuspended();
+#else
     std::unique_lock lock(thread->handle_.state_mutex_);
     thread->handle_.suspend_count_ = 1;
     thread->handle_.state_signal_.wait(
         lock, [thread] { return thread->handle_.suspend_count_ == 0; });
+#endif
   }
 
   try {
