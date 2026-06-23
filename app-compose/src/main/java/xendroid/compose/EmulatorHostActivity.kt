@@ -149,9 +149,18 @@ class EmulatorHostActivity : ComponentActivity(), SurfaceHolder.Callback {
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
-        // The system restores the bars when the window regains focus (after a
-        // dialog, the notification shade, an app switch); re-assert immersive.
-        if (hasFocus) enterImmersiveMode()
+        if (hasFocus) {
+            // Regained focus: re-assert immersive (the system restores the bars after a
+            // dialog / shade / app switch) and resume the guest, unless the in-game menu
+            // is open (don't run the game behind the menu).
+            enterImmersiveMode()
+            if (session.booted && !menuOpenState.value) session.resumeIfPaused()
+        } else {
+            // Lost focus while still visible (notification shade, dialog, multi-window,
+            // app switcher): freeze the guest. onStop only fires when the activity is
+            // fully hidden, so without this the emulation keeps running in the background.
+            if (session.booted) session.pause()
+        }
     }
 
     /** Edge-to-edge immersive: hides the status AND navigation bars, with the
