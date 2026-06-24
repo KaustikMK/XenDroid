@@ -301,6 +301,15 @@ bool EmulatorApp::OnInitialize() {
 
     config::SetupConfig(storage_root);
 
+    // Apply the per-game config overlay (config/<TITLEID>.config.toml) onto the live cvars, like
+    // desktop's launch path (xenia_main.cc). Must run after the global load and before any cvar is
+    // read; the present-mode force below runs after, so it still wins.
+    if (!cvars::target.empty()) {
+        std::string game_path = cvars::target;
+        config::LoadGameConfigForFile(
+            std::filesystem::absolute(std::filesystem::u8path(game_path)));
+    }
+
     // Android has no UI-thread paint pump that the kUIThreadOnRequest present mode
     // needs, so this must be true regardless of what the (possibly stale/edited)
     // global config says -- otherwise nothing presents (black screen, audio/input OK).
