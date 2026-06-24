@@ -149,7 +149,7 @@ private fun PerGameCategoryDetail(
                 OverrideRow(
                     host = vm,
                     s = setting,
-                    overridden = overrides.containsKey(setting.key),
+                    overrideValue = overrides[setting.key],
                     onOverrideToggle = { vm.setOverride(setting, it) },
                 )
                 HorizontalDivider()
