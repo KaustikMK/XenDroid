@@ -1423,7 +1423,15 @@ void Emulator::Pause() {
     }
 
     if (thread->is_running()) {
+#if XE_PLATFORM_xendroid
+      // Arbitrate against the self-suspend gate in XThread::Execute so a thread
+      // that just started running is suspended exactly once (and resumed once).
+      if (thread->emu_try_pause()) {
+        thread->thread()->Suspend(nullptr);
+      }
+#else
       thread->thread()->Suspend(nullptr);
+#endif
     }
   }
 
@@ -1449,9 +1457,18 @@ void Emulator::Resume() {
       continue;
     }
 
+#if XE_PLATFORM_xendroid
+    // Resume exactly the threads Pause or the Execute gate suspended. (A
+    // suspended thread keeps is_running()==true, since running_ is only cleared
+    // at thread exit, so the !is_running() gate below can't identify them.)
+    if (thread->emu_clear_pause()) {
+      thread->thread()->Resume(nullptr);
+    }
+#else
     if (!thread->is_running()) {
       thread->thread()->Resume(nullptr);
     }
+#endif
   }
 }
 
