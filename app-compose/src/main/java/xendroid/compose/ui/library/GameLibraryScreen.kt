@@ -41,6 +41,7 @@ fun GameLibraryScreen(
     onOpenAbout: () -> Unit,
     onOpenTouchControls: () -> Unit,
     onOpenPerGameSettings: (titleId: String, gameName: String, format: GameFormat, launchUri: String) -> Unit,
+    onOpenGamePatches: (titleId: String, gameName: String) -> Unit,
     compressVm: GameCompressViewModel,
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -233,6 +234,25 @@ fun GameLibraryScreen(
                     },
                 )
 
+                // Game patches — bundled xenia patches for this title. Hidden for ZAR (its
+                // title id can't be resolved without booting, so patches can't be matched).
+                if (game.format != GameFormat.ZAR) {
+                    ListItem(
+                        headlineContent = { Text("Game patches") },
+                        colors = if (perGameEnabled) {
+                            ListItemDefaults.colors()
+                        } else {
+                            ListItemDefaults.colors(
+                                headlineColor =
+                                    MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f),
+                            )
+                        },
+                        modifier = Modifier.clickable(enabled = perGameEnabled) {
+                            viewModel.requestGamePatches(game)
+                        },
+                    )
+                }
+
                 // ISO-only: pack this disc into a smaller .zar.
                 if (game.format == GameFormat.ISO) {
                     ListItem(
@@ -259,10 +279,15 @@ fun GameLibraryScreen(
         }
     }
 
-    // Once resolved, navigate to the per-game editor and reset dialog + request state.
+    // Once resolved, navigate to the editor or the patches screen, then reset dialog + request.
     LaunchedEffect(titleIdState) {
         (titleIdState as? TitleIdState.Resolved)?.let { r ->
-            onOpenPerGameSettings(r.titleId, r.game.name, r.game.format, r.game.launchUri)
+            when (r.action) {
+                GameAction.PER_GAME_SETTINGS ->
+                    onOpenPerGameSettings(r.titleId, r.game.name, r.game.format, r.game.launchUri)
+                GameAction.GAME_PATCHES ->
+                    onOpenGamePatches(r.titleId, r.game.name)
+            }
             pendingGame = null
             viewModel.clearTitleIdRequest()
         }

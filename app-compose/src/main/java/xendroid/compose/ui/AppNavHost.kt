@@ -24,6 +24,8 @@ import xendroid.compose.ui.settings.SettingsScreen
 import xendroid.compose.ui.about.AboutScreen
 import xendroid.compose.ui.keymap.KeymapScreen
 import xendroid.compose.ui.keymap.KeymapViewModel
+import xendroid.compose.patches.GamePatchesViewModel
+import xendroid.compose.ui.patches.GamePatchesScreen
 
 object Routes {
     const val LIBRARY = "library"
@@ -34,6 +36,8 @@ object Routes {
     const val GAMEPAD_EDITOR = "gamepad_editor"
     // "$PER_GAME_SETTINGS/{titleId}?name={name}&format={format}&uri={uri}"
     const val PER_GAME_SETTINGS = "per_game_settings"
+    // "$GAME_PATCHES/{titleId}?name={name}"
+    const val GAME_PATCHES = "game_patches"
 }
 
 @Composable
@@ -59,6 +63,9 @@ fun AppNavHost(container: AppContainer) {
                             "&format=${format.name}" +
                             "&uri=${Uri.encode(launchUri)}"
                     )
+                },
+                onOpenGamePatches = { titleId, name ->
+                    nav.navigate("${Routes.GAME_PATCHES}/$titleId?name=${Uri.encode(name)}")
                 },
             )
         }
@@ -105,6 +112,19 @@ fun AppNavHost(container: AppContainer) {
                 compressVm = compressVm,
                 onBack = { nav.popBackStack() },
             )
+        }
+        composable(
+            route = "${Routes.GAME_PATCHES}/{titleId}?name={name}",
+            arguments = listOf(
+                navArgument("titleId") { type = NavType.StringType },
+                navArgument("name") { type = NavType.StringType; nullable = true; defaultValue = null },
+            ),
+        ) { backStackEntry ->
+            val titleId = backStackEntry.arguments?.getString("titleId") ?: return@composable
+            val gameName = backStackEntry.arguments?.getString("name") ?: ""
+            val vm: GamePatchesViewModel =
+                viewModel(factory = container.gamePatchesViewModelFactory(titleId))
+            GamePatchesScreen(vm = vm, gameName = gameName, onBack = { nav.popBackStack() })
         }
     }
 }

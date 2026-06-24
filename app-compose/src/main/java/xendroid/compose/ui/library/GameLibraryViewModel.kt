@@ -28,12 +28,15 @@ import kotlinx.coroutines.withContext
 const val ACTION_LAUNCH_GAME = "xendroid.intent.action.xendroid"
 const val EXTRA_GAME_URI = "game_uri"
 
-/** Async resolution of a game's title id (needed before the per-game settings editor
- *  can open). Driven by the long-press dialog; only GOD resolves (see [GameLibraryRepository.readTitleId]). */
+/** Which long-press action triggered title-id resolution (both need the id, then branch). */
+enum class GameAction { PER_GAME_SETTINGS, GAME_PATCHES }
+
+/** Async resolution of a game's title id (needed before the per-game settings editor or the
+ *  patches screen can open). Driven by the long-press dialog; ZAR has no boot-free reader. */
 sealed interface TitleIdState {
     data object Idle : TitleIdState
-    data class Loading(val game: Game) : TitleIdState
-    data class Resolved(val game: Game, val titleId: String) : TitleIdState
+    data class Loading(val game: Game, val action: GameAction) : TitleIdState
+    data class Resolved(val game: Game, val titleId: String, val action: GameAction) : TitleIdState
     data class Error(val game: Game, val message: String) : TitleIdState
 }
 
@@ -86,19 +89,20 @@ class GameLibraryViewModel(
         }
     }
 
-    /** Resolve a game's title id off-main so the long-press dialog can open the per-game
-     *  editor. ISO/XEX_FOLDER/ZAR all have boot-free title-id readers (ZAR via the
-     *  zarchive reader); GOD uses its own GameInfo reader. */
-    fun requestPerGameSettings(game: Game) {
-        _titleId.value = TitleIdState.Loading(game)
+    fun requestPerGameSettings(game: Game) = request(game, GameAction.PER_GAME_SETTINGS)
+    fun requestGamePatches(game: Game) = request(game, GameAction.GAME_PATCHES)
+
+    /** Resolve a game's title id off-main, then the long-press dialog opens the matching screen. */
+    private fun request(game: Game, action: GameAction) {
+        _titleId.value = TitleIdState.Loading(game, action)
         viewModelScope.launch(Dispatchers.IO) {
             _titleId.value = runCatching {
                 EmulatorRuntime.ensureLoaded()
                 val tid = repo.readTitleId(appContext, game)
-                // 00000000 is the unknown/placeholder title id (no real GOD carries it).
+                // 00000000 is the unknown/placeholder title id (no real game carries it).
                 if (tid.isNullOrBlank() || tid == "00000000")
                     TitleIdState.Error(game, "Couldn't read this game's title id")
-                else TitleIdState.Resolved(game, tid)
+                else TitleIdState.Resolved(game, tid, action)
             }.getOrElse { TitleIdState.Error(game, it.message ?: "Failed to read title id") }
         }
     }
