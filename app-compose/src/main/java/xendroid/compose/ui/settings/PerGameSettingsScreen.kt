@@ -65,7 +65,7 @@ fun PerGameSettingsScreen(
         PerGameIndex(
             gameName = gameName,
             categories = vm.categories,
-            overriddenCountOf = { cat -> cat.settings.count { overrides[it.key] == true } },
+            overriddenCountOf = { cat -> cat.settings.count { overrides.containsKey(it.key) } },
             onOpen = { selected = it },
             isIso = isIso,
             launchUri = launchUri,
@@ -213,7 +213,7 @@ private fun PerGameIndex(
 @Composable
 private fun PerGameCategoryDetail(
     category: SettingsCategory,
-    overrides: Map<String, Boolean>,
+    overrides: Map<String, String>,
     vm: GameSettingsViewModel,
     onBack: () -> Unit,
 ) {
@@ -234,7 +234,7 @@ private fun PerGameCategoryDetail(
                 OverrideRow(
                     host = vm,
                     s = setting,
-                    overridden = overrides[setting.key] == true,
+                    overridden = overrides.containsKey(setting.key),
                     onOverrideToggle = { vm.setOverride(setting, it) },
                 )
                 HorizontalDivider()
