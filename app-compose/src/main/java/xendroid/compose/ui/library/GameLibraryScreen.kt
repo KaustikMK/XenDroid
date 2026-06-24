@@ -26,6 +26,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import xendroid.compose.core.AllFilesAccess
+import xendroid.compose.core.EmuProcessLink
 import xendroid.compose.data.Game
 import xendroid.compose.data.GameFormat
 import xendroid.compose.ui.compress.GameCompressViewModel
@@ -177,8 +178,16 @@ fun GameLibraryScreen(
                         games = s.games,
                         viewModel = viewModel,
                         onLaunch = { game ->
-                            runCatching { context.startActivity(viewModel.buildLaunchIntent(game)) }
-                            // No-op until a host Activity resolves the launch action.
+                            runCatching {
+                                // Reap any stale/orphaned :emu first (single-shot core), then
+                                // attach the main-process liveness token so the new :emu dies
+                                // with us. Token is added here, NOT in buildLaunchIntent, since
+                                // that Intent is reused for pinned shortcuts (no Binders on disk).
+                                EmuProcessLink.killStaleEmu(context)
+                                val intent = viewModel.buildLaunchIntent(game)
+                                EmuProcessLink.attachMainAliveToken(intent)
+                                context.startActivity(intent)
+                            }
                         },
                         // Long-press opens the per-game menu (independent of canLaunchGames,
                         // which only gates the shortcut affordance inside the dialog).

@@ -3,6 +3,7 @@ package xendroid.compose
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
+import android.os.Process
 import android.util.Log
 import android.view.InputDevice
 import android.view.KeyEvent
@@ -13,6 +14,7 @@ import androidx.activity.ComponentActivity
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import xendroid.compose.core.EmuProcessLink
 import xendroid.compose.core.EmulatorRuntime
 import xendroid.compose.core.EmulatorSession
 import kotlinx.coroutines.Dispatchers
@@ -106,6 +108,10 @@ class EmulatorHostActivity : ComponentActivity(), SurfaceHolder.Callback {
         // Immersive fullscreen: hide BOTH system bars. The legacy FLAG_FULLSCREEN
         // only hid the status bar, leaving the nav buttons overlaid on the game.
         enterImmersiveMode()
+
+        // Tie this :emu process to the main process: self-kill if the launcher dies
+        // (crash / OOM / swipe). Android does not kill this sibling process for us.
+        intent?.let { EmuProcessLink.bindToMainProcessDeath(it) }
 
         val gameUri = intent?.getStringExtra(EXTRA_GAME_URI)
         if (gameUri.isNullOrEmpty()) {
@@ -361,7 +367,10 @@ class EmulatorHostActivity : ComponentActivity(), SurfaceHolder.Callback {
 
     override fun onDestroy() {
         super.onDestroy()
-        System.exit(0)                                    // hard-kill :emu (single-shot core)
+        // Hard-kill via SIGKILL (single-shot core). killProcess skips the C++ atexit
+        // static-destructor path that System.exit(0) ran, which can deadlock joining a
+        // paused audio worker and wedge :emu instead of closing it.
+        Process.killProcess(Process.myPid())
     }
 
     // ---- Hardware input -> session.keyEvent ----
