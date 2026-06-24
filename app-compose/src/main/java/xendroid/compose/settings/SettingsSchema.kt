@@ -62,7 +62,7 @@ object SettingsSchema {
 
         SettingsCategory("UI", listOf(
             b("UI", "show_profiler", "Show profiler", false),
-            b("UI", "show_achievement_notification", "Show achievement notification", false),
+            b("UI", "show_achievement_notification", "Show achievement notification", true),
             b("UI", "profiler_dpi_scaling", "Profiler DPI scaling", false),
             b("UI", "storage_selection_dialog", "Storage selection dialog", false),
             b("UI", "headless", "Headless", true),

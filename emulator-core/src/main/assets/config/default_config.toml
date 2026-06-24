@@ -286,7 +286,7 @@ storage_root = ""                                 	# Root path for persistent in
 [UI]
 headless = true                                  	# Don't display any UI, using defaults for prompts as needed.
 profiler_dpi_scaling = false                      	# Apply window DPI scaling to the profiler.
-show_achievement_notification = false             	# Show achievement notification on screen.
+show_achievement_notification = true              	# Show achievement notification on screen.
 show_profiler = false                             	# Show profiling UI by default.
 storage_selection_dialog = false                  	# Show storage device selection dialog when the game requests it.
 
