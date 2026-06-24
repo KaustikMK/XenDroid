@@ -65,15 +65,14 @@ class GameLibraryRepository(
     }
 
     /** Resolve a game's 8-char uppercase-hex title id for the per-game config path. GOD reads the
-     *  container header; ISO mounts the disc + reads default.xex's XEX header; XEX_FOLDER reads
-     *  default.xex directly. ZAR has no boot-free reader -> null (caller shows "unavailable").
+     *  container header; ISO/ZAR mount the disc + read default.xex's XEX header; XEX_FOLDER reads
+     *  default.xex directly (all boot-free via title_id_from_path / ExtractZarMetadata).
      *  MUST run off the main thread (these mmap the file). [Game.launchUri] is an absolute path. */
     suspend fun readTitleId(ctx: Context, game: Game): String? = withContext(Dispatchers.IO) {
         when (game.format) {
             GameFormat.GOD -> metadata.readGodPath(game.launchUri)?.titleId
-            GameFormat.ISO, GameFormat.XEX_FOLDER ->
+            GameFormat.ISO, GameFormat.XEX_FOLDER, GameFormat.ZAR ->
                 metadata.readTitleIdPath(game.launchUri, game.format)
-            GameFormat.ZAR -> null
         }
     }
 

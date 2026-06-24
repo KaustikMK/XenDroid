@@ -32,7 +32,7 @@ const val EXTRA_GAME_URI = "game_uri"
 enum class GameAction { PER_GAME_SETTINGS, GAME_PATCHES }
 
 /** Async resolution of a game's title id (needed before the per-game settings editor or the
- *  patches screen can open). Driven by the long-press dialog; ZAR has no boot-free reader. */
+ *  patches screen can open). Driven by the long-press dialog; all formats resolve boot-free. */
 sealed interface TitleIdState {
     data object Idle : TitleIdState
     data class Loading(val game: Game, val action: GameAction) : TitleIdState
