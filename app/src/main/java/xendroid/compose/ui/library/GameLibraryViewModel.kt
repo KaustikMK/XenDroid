@@ -29,7 +29,7 @@ const val ACTION_LAUNCH_GAME = "xendroid.intent.action.xendroid"
 const val EXTRA_GAME_URI = "game_uri"
 
 /** Which long-press action triggered title-id resolution (both need the id, then branch). */
-enum class GameAction { PER_GAME_SETTINGS, GAME_PATCHES }
+enum class GameAction { PER_GAME_SETTINGS, GAME_PATCHES, MANAGE_CONTENT }
 
 /** Async resolution of a game's title id (needed before the per-game settings editor or the
  *  patches screen can open). Driven by the long-press dialog; all formats resolve boot-free. */
@@ -91,6 +91,7 @@ class GameLibraryViewModel(
 
     fun requestPerGameSettings(game: Game) = request(game, GameAction.PER_GAME_SETTINGS)
     fun requestGamePatches(game: Game) = request(game, GameAction.GAME_PATCHES)
+    fun requestContentManager(game: Game) = request(game, GameAction.MANAGE_CONTENT)
 
     /** Resolve a game's title id off-main, then the long-press dialog opens the matching screen. */
     private fun request(game: Game, action: GameAction) {

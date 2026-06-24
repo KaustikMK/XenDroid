@@ -14,12 +14,12 @@ class GameMetadataSource {
 
     /** Parsed GOD header: title + raw embedded PNG bytes (may be empty []) + the
      *  8-char uppercase-hex title id (null for an unreadable container). */
-    data class GodMeta(val name: String, val iconPng: ByteArray?, val titleId: String?)
+    data class GodMeta(val name: String, val iconPng: ByteArray?, val titleId: String?, val mediaId: String?)
 
     /** Parsed boot-free XEX meta: title (may be "" -> caller uses filename fallback),
      *  raw embedded PNG bytes (null/empty -> app_icon fallback), and the 8-char
      *  uppercase-hex title id (null when unreadable / 00000000). */
-    data class XexMeta(val name: String, val iconPng: ByteArray?, val titleId: String?)
+    data class XexMeta(val name: String, val iconPng: ByteArray?, val titleId: String?, val mediaId: String?)
 
     // ---- Real-path (All Files Access) reads: call the path natives (no Context: real-path
     // devices mount directly from a path). path = the absolute host path (ISO file /
@@ -52,6 +52,7 @@ class GameMetadataSource {
                 name = info.name ?: "",
                 iconPng = info.icon?.takeIf { it.isNotEmpty() },
                 titleId = info.titleId?.takeIf { it.isNotBlank() && it != "00000000" },
+                mediaId = info.mediaId?.takeIf { it.isNotBlank() && it != "00000000" },
             )
         } catch (t: RuntimeException) {
             Log.w("GameMetadataSource", "XEX meta extraction failed for $path ($format)", t)
@@ -61,13 +62,49 @@ class GameMetadataSource {
         }
     }
 
+    /** Parsed STFS/SVOD content-package header: title id (8-char hex, null when 0),
+     *  content type (raw, e.g. 0x2 for DLC), payload size, display name, icon. */
+    data class ContentMeta(
+        val titleId: String?,
+        val contentType: Int,
+        val contentSize: Long,
+        val displayName: String,
+        val iconPng: ByteArray?,
+    )
+
+    /** Header-only probe of a content package (CON/LIVE/PIRS) from a real path.
+     *  Returns null for a non-content/unreadable container. Off-main. */
+    fun readContentHeader(path: String): ContentMeta? {
+        val emu = EmulatorRuntime.emulator ?: return null
+        return try {
+            val info: Emulator.ContentInfo = emu.content_header(path) ?: return null
+            ContentMeta(
+                titleId = info.titleId.takeIf { it != 0 }?.let { "%08X".format(it) },
+                contentType = info.contentType,
+                contentSize = info.contentSize,
+                displayName = info.displayName ?: "",
+                iconPng = info.icon?.takeIf { it.isNotEmpty() },
+            )
+        } catch (t: RuntimeException) {
+            Log.w("GameMetadataSource", "content header read failed for $path", t)
+            null
+        } catch (t: LinkageError) {
+            warnMissingNative("content_header", t); null
+        }
+    }
+
     /** GOD container header read from a real path (title + icon + title id). */
     fun readGodPath(path: String): GodMeta? {
         val emu = EmulatorRuntime.emulator ?: return null
         return try {
             val info: Emulator.GameInfo = emu.meta_info_from_god_path(path) ?: return null
             val icon = info.icon?.takeIf { it.isNotEmpty() }
-            GodMeta(name = info.name ?: "", iconPng = icon, titleId = info.titleId)
+            GodMeta(
+                name = info.name ?: "",
+                iconPng = icon,
+                titleId = info.titleId,
+                mediaId = info.mediaId?.takeIf { it.isNotBlank() && it != "00000000" },
+            )
         } catch (t: RuntimeException) {
             Log.w("GameMetadataSource", "GOD parse failed for $path", t)
             null

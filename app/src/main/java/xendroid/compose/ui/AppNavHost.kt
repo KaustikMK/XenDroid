@@ -18,6 +18,8 @@ import xendroid.compose.gamepad.GamepadEditorScreen
 import xendroid.compose.settings.GameSettingsViewModel
 import xendroid.compose.settings.SettingsViewModel
 import xendroid.compose.ui.compress.GameCompressViewModel
+import xendroid.compose.ui.content.ContentManagerViewModel
+import xendroid.compose.ui.content.ContentManagerScreen
 import xendroid.compose.ui.library.GameLibraryScreen
 import xendroid.compose.ui.library.GameLibraryViewModel
 import xendroid.compose.ui.settings.PerGameSettingsScreen
@@ -39,6 +41,8 @@ object Routes {
     const val PER_GAME_SETTINGS = "per_game_settings"
     // "$GAME_PATCHES/{titleId}?name={name}"
     const val GAME_PATCHES = "game_patches"
+    // "$CONTENT_MANAGER/{titleId}?name={name}"
+    const val CONTENT_MANAGER = "content_manager"
 }
 
 @Composable
@@ -74,6 +78,9 @@ fun AppNavHost(container: AppContainer) {
                 },
                 onOpenGamePatches = { titleId, name ->
                     navigateOnce("${Routes.GAME_PATCHES}/$titleId?name=${Uri.encode(name)}")
+                },
+                onOpenContentManager = { titleId, name ->
+                    navigateOnce("${Routes.CONTENT_MANAGER}/$titleId?name=${Uri.encode(name)}")
                 },
             )
         }
@@ -125,6 +132,19 @@ fun AppNavHost(container: AppContainer) {
             val vm: GamePatchesViewModel =
                 viewModel(factory = container.gamePatchesViewModelFactory(titleId))
             GamePatchesScreen(vm = vm, gameName = gameName, onBack = { nav.popBackStack() })
+        }
+        composable(
+            route = "${Routes.CONTENT_MANAGER}/{titleId}?name={name}",
+            arguments = listOf(
+                navArgument("titleId") { type = NavType.StringType },
+                navArgument("name") { type = NavType.StringType; nullable = true; defaultValue = null },
+            ),
+        ) { backStackEntry ->
+            val titleId = backStackEntry.arguments?.getString("titleId") ?: return@composable
+            val gameName = backStackEntry.arguments?.getString("name") ?: ""
+            val vm: ContentManagerViewModel =
+                viewModel(factory = container.gameContentManagerViewModelFactory(titleId))
+            ContentManagerScreen(vm = vm, gameName = gameName, onBack = { nav.popBackStack() })
         }
     }
 }

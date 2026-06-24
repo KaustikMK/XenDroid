@@ -69,6 +69,7 @@ class GameLibraryRepository(
      *  default.xex directly (all boot-free via title_id_from_path / ExtractZarMetadata).
      *  MUST run off the main thread (these mmap the file). [Game.launchUri] is an absolute path. */
     suspend fun readTitleId(ctx: Context, game: Game): String? = withContext(Dispatchers.IO) {
+        game.titleId?.takeIf { it.isNotBlank() && it != "00000000" }?.let { return@withContext it }
         when (game.format) {
             GameFormat.GOD -> metadata.readGodPath(game.launchUri)?.titleId
             GameFormat.ISO, GameFormat.XEX_FOLDER, GameFormat.ZAR ->
@@ -96,21 +97,28 @@ class GameLibraryRepository(
         return decision as? GameMetadataCache.Decision.Hit
     }
 
+    private data class Extracted(
+        val name: String,
+        val iconCacheName: String?,
+        val titleId: String?,
+        val mediaId: String?,
+    )
+
     /** Shared cache wrapper for the always-producing extracting branches (ISO, XEX_FOLDER,
-     *  ZAR): reuse the cached (name, iconCacheName) on a fresh HIT; otherwise run [extract],
-     *  cache its result, and build the Game. [extract] returns (displayName, iconCacheName?). */
+     *  ZAR): reuse the cached values on a fresh HIT; otherwise run [extract], cache its result,
+     *  and build the Game. */
     private inline fun cachedOrExtract(
         launchUri: String,
         signature: GameMetadataCache.Signature,
         format: GameFormat,
-        extract: () -> Pair<String, String?>,
+        extract: () -> Extracted,
     ): Game {
         metadataCacheHit(launchUri, signature)?.let {
-            return Game(launchUri, it.name, format, it.iconCacheName)
+            return Game(launchUri, it.name, format, it.iconCacheName, it.titleId, it.mediaId)
         }
-        val (name, iconName) = extract()
-        metadataCache.put(launchUri, name, iconName, signature)
-        return Game(launchUri, name, format, iconName)
+        val (name, iconName, titleId, mediaId) = extract()
+        metadataCache.put(launchUri, name, iconName, signature, titleId, mediaId)
+        return Game(launchUri, name, format, iconName, titleId, mediaId)
     }
 
     // ---- Real-path (All Files Access) scan: a java.io.File walk using real paths + the
@@ -150,7 +158,7 @@ class GameLibraryRepository(
                 val meta = metadata.readXexMetaPath(xexPath, GameFormat.XEX_FOLDER)
                 val displayName = meta?.name?.takeIf { it.isNotEmpty() } ?: name
                 val iconName = meta?.iconPng?.let { iconCache.write(xexPath, it) }
-                displayName to iconName
+                Extracted(displayName, iconName, meta?.titleId, meta?.mediaId)
             }
         }
         return when (GameFormat.fromFileName(name)) {
@@ -162,7 +170,7 @@ class GameLibraryRepository(
                     val displayName = meta?.name?.takeIf { it.isNotEmpty() }
                         ?: fmt.displayNameFor(name)
                     val iconName = meta?.iconPng?.let { iconCache.write(path, it) }
-                    displayName to iconName
+                    Extracted(displayName, iconName, meta?.titleId, meta?.mediaId)
                 }
             }
             GameFormat.GOD -> {
@@ -171,13 +179,13 @@ class GameLibraryRepository(
                 // cachedOrExtract's non-null contract: extract on a miss, drop if not GOD.
                 val cacheHit = metadataCacheHit(path, signatureOf(child))
                 if (cacheHit != null) {
-                    return Game(path, cacheHit.name, GameFormat.GOD, cacheHit.iconCacheName)
+                    return Game(path, cacheHit.name, GameFormat.GOD, cacheHit.iconCacheName, cacheHit.titleId, cacheHit.mediaId)
                 }
                 val meta = metadata.readGodPath(path) ?: return null  // not a GOD container
                 val displayName = meta.name.ifEmpty { name }
                 val iconName = meta.iconPng?.let { iconCache.write(path, it) }
-                metadataCache.put(path, displayName, iconName, signatureOf(child))
-                Game(path, displayName, GameFormat.GOD, iconName)
+                metadataCache.put(path, displayName, iconName, signatureOf(child), meta.titleId, meta.mediaId)
+                Game(path, displayName, GameFormat.GOD, iconName, meta.titleId, meta.mediaId)
             }
             GameFormat.XEX_FOLDER, null -> null
         }

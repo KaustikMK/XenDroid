@@ -30,6 +30,7 @@
 #include "xenia/vfs/zar_metadata.h"                   // ExtractZarMetadata(path)
 #include "xenia/vfs/xex_metadata.h"                   // ExtractXexMetadata(path)
 #include "xenia/vfs/stfs_metadata.h"                  // ExtractStfsMetadata(path)
+#include "xenia/vfs/content_install_standalone.h"     // InstallContentPackageStandalone
 
 #include <cstdio>
 
@@ -158,7 +159,8 @@ static jstring j_simple_device_info(JNIEnv* env, jobject thiz)
 // EXECUTION_INFO (0x00040006, low-byte 0x06 -> offset) optional header.
 // NOTE: the xex2_* structs live in namespace xe (xex2_info.h), while XexModule /
 // kXEX*Signature live in xe::cpu (xex_module.h).
-static bool read_xex_title_id(const uint8_t* data, size_t size, uint32_t* out) {
+static bool read_xex_title_id(const uint8_t* data, size_t size, uint32_t* out,
+                              uint32_t* media_id_out = nullptr) {
     using namespace xe;            // xex2_header, xex2_opt_*, XEX_HEADER_EXECUTION_INFO
     using namespace xe::cpu;       // XexModule, kXEX2Signature, kXEX1Signature
 
@@ -187,6 +189,7 @@ static bool read_xex_title_id(const uint8_t* data, size_t size, uint32_t* out) {
 
     auto* exec_info = reinterpret_cast<const xex2_opt_execution_info*>(p);
     *out = exec_info->title_id.get();
+    if (media_id_out) *media_id_out = exec_info->media_id.get();
     return true;
 }
 
@@ -195,6 +198,7 @@ struct XexMeta {
     std::string name;            // "" if absent / unreadable / failed charset validation
     std::vector<uint8_t> icon;   // empty if absent / unreadable
     uint32_t title_id = 0;       // 0 if unreadable
+    uint32_t media_id = 0;       // 0 if unreadable
 };
 
 // Lightweight, allocation-free structural validation that accepts only well-formed,
@@ -376,8 +380,11 @@ static XexMeta extract_xex_meta(const uint8_t* base, size_t size) {
     // The title-id resource is named with the 8-char uppercase-hex title id.
     // Pull the title id straight from the header (reuse read_xex_title_id).
     uint32_t title_id = 0;
-    if (!read_xex_title_id(base, size, &title_id) || title_id == 0) return out;
+    uint32_t media_id = 0;
+    if (!read_xex_title_id(base, size, &title_id, &media_id) || title_id == 0)
+        return out;
     out.title_id = title_id;                                   // capture (free)
+    out.media_id = media_id;
     const std::string res_name = fmt::format("{:08X}", title_id);  // exactly 8 chars
 
     uint32_t res_addr = 0, res_size = 0;
@@ -427,6 +434,11 @@ static XexMeta extract_xex_meta(const uint8_t* base, size_t size) {
 static jstring make_title_id_jstring(JNIEnv* env, bool ok, uint32_t title_id) {
     if (!ok || title_id == 0) return nullptr;
     return env->NewStringUTF(fmt::format("{:08X}", title_id).c_str());
+}
+
+static jstring make_media_id_jstring(JNIEnv* env, bool ok, uint32_t media_id) {
+    if (!ok || media_id == 0) return nullptr;
+    return env->NewStringUTF(fmt::format("{:08X}", media_id).c_str());
 }
 
 // ===========================================================================
@@ -562,7 +574,10 @@ static jobject j_meta_from_path(JNIEnv* env, jobject self,
             case TID_FMT_ZAR:        hdr = xe::vfs::ExtractZarMetadata(p); break;
             default: break;
         }
-        if (hdr) meta.title_id = hdr->title_id;
+        if (hdr) {
+            meta.title_id = hdr->title_id;
+            meta.media_id = hdr->media_id;
+        }
     }
 
     // Nothing readable at all -> null (Kotlin keeps the filename name, no icon).
@@ -575,6 +590,7 @@ static jobject j_meta_from_path(JNIEnv* env, jobject self,
     jfieldID fid_name = env->GetFieldID(cls, "name", "Ljava/lang/String;");
     jfieldID fid_uri = env->GetFieldID(cls, "uri", "Ljava/lang/String;");
     jfieldID fid_title_id = env->GetFieldID(cls, "titleId", "Ljava/lang/String;");
+    jfieldID fid_media_id = env->GetFieldID(cls, "mediaId", "Ljava/lang/String;");
     jfieldID fid_icon = env->GetFieldID(cls, "icon", "[B");
 
     jobject game_info = env->NewObject(cls, ctor);
@@ -592,6 +608,9 @@ static jobject j_meta_from_path(JNIEnv* env, jobject self,
     // TITLE_ID: reuse the 8-hex helper (null when 0).
     env->SetObjectField(game_info, fid_title_id,
                         make_title_id_jstring(env, meta.title_id != 0, meta.title_id));
+
+    env->SetObjectField(game_info, fid_media_id,
+                        make_media_id_jstring(env, meta.media_id != 0, meta.media_id));
 
     // ICON: PNG bytes, or leave null.
     if (!meta.icon.empty()) {
@@ -626,6 +645,7 @@ static jobject j_meta_info_from_god_path(JNIEnv* env, jobject self,
     jfieldID fid_name = env->GetFieldID(cls, "name", "Ljava/lang/String;");
     jfieldID fid_uri = env->GetFieldID(cls, "uri", "Ljava/lang/String;");
     jfieldID fid_title_id = env->GetFieldID(cls, "titleId", "Ljava/lang/String;");
+    jfieldID fid_media_id = env->GetFieldID(cls, "mediaId", "Ljava/lang/String;");
     jfieldID fid_icon = env->GetFieldID(cls, "icon", "[B");
 
     jobject game_info = env->NewObject(cls, ctor);
@@ -641,6 +661,9 @@ static jobject j_meta_info_from_god_path(JNIEnv* env, jobject self,
     // TITLE_ID: 8-char uppercase hex for the per-game config stem (null when 0).
     env->SetObjectField(game_info, fid_title_id,
                         make_title_id_jstring(env, meta->title_id != 0, meta->title_id));
+
+    env->SetObjectField(game_info, fid_media_id,
+                        make_media_id_jstring(env, meta->media_id != 0, meta->media_id));
 
     // ICON: embedded title_thumbnail PNG, or leave null.
     if (!meta->icon_data.empty()) {
@@ -1170,6 +1193,172 @@ static jint j_compressIsoToZar(JNIEnv* env, jobject self, jstring isoPath,
 #endif
 }
 
+#if XE_PLATFORM_xendroid
+// Live standalone content-install progress (file-static so j_installProgress can
+// read it while j_install_content blocks on another thread). Bytes / total.
+static xe::vfs::ContentProgress g_content_progress;
+#endif
+
+// public native float installProgress();
+// Fraction 0..1 of the in-flight content install (0 when none / not started).
+static jfloat j_installProgress(JNIEnv* env, jobject self) {
+#if XE_PLATFORM_xendroid
+    const uint64_t total = g_content_progress.total.load();
+    if (!total) return 0.0f;
+    return (jfloat)((double)g_content_progress.current.load() / (double)total);
+#else
+    return 0.0f;
+#endif
+}
+
+// public native int install_content(String srcPath, String contentRoot);
+// Extract an STFS/SVOD package into contentRoot (DLC forced under XUID 0 by the
+// standalone helper). Returns X_STATUS (0 == success). Blocking VFS walk --
+// caller MUST run off the main thread.
+static jint j_install_content(JNIEnv* env, jobject self, jstring srcPath,
+                              jstring contentRoot) {
+#if XE_PLATFORM_xendroid
+    using namespace xe;  // X_STATUS (xbox.h) so the X_STATUS_* macros resolve.
+    if (!srcPath || !contentRoot) return (jint)X_STATUS_INVALID_PARAMETER;
+
+    const char* sp = env->GetStringUTFChars(srcPath, nullptr);
+    const char* cr = env->GetStringUTFChars(contentRoot, nullptr);
+    std::filesystem::path src = std::filesystem::u8path(sp);
+    std::filesystem::path root = std::filesystem::u8path(cr);
+    env->ReleaseStringUTFChars(srcPath, sp);
+    env->ReleaseStringUTFChars(contentRoot, cr);
+
+    g_content_progress.current.store(0);
+    g_content_progress.total.store(0);
+    xe::X_STATUS s = xe::vfs::InstallContentPackageStandalone(
+            src, root, g_content_progress);
+    return (jint)s;
+#else
+    return (jint)X_STATUS_UNSUCCESSFUL;
+#endif
+}
+
+// public native ContentInfo content_header(String srcPath);
+// Header-only probe of an STFS/SVOD package: title_id, content_type,
+// content_size, display_name, icon. Returns null for a non-CON/unreadable
+// container. ExtractStfsMetadata carries content_type, which the existing
+// GameInfo bridge drops -- hence the dedicated ContentInfo class.
+static jobject j_content_header(JNIEnv* env, jobject self, jstring srcPath) {
+    if (!srcPath) return nullptr;
+    const char* sp = env->GetStringUTFChars(srcPath, nullptr);
+    if (!sp) return nullptr;
+    std::filesystem::path p = std::filesystem::u8path(sp);
+    env->ReleaseStringUTFChars(srcPath, sp);
+
+    std::optional<xe::vfs::StfsMetadata> meta =
+            xe::vfs::ExtractStfsMetadata(p, xe::XLanguage::kEnglish);
+    if (!meta) return nullptr;
+
+    jclass cls = env->FindClass("xendroid/compose/Emulator$ContentInfo");
+    jmethodID ctor = env->GetMethodID(cls, "<init>", "()V");
+    jfieldID fid_title_id = env->GetFieldID(cls, "titleId", "I");
+    jfieldID fid_type = env->GetFieldID(cls, "contentType", "I");
+    jfieldID fid_size = env->GetFieldID(cls, "contentSize", "J");
+    jfieldID fid_name = env->GetFieldID(cls, "displayName", "Ljava/lang/String;");
+    jfieldID fid_icon = env->GetFieldID(cls, "icon", "[B");
+
+    jobject info = env->NewObject(cls, ctor);
+    env->SetIntField(info, fid_title_id, (jint)meta->title_id);
+    env->SetIntField(info, fid_type, (jint)meta->content_type);
+    env->SetLongField(info, fid_size, (jlong)meta->content_size);
+
+    const std::string& name = !meta->display_name.empty() ? meta->display_name
+                                                          : meta->title_name;
+    if (!name.empty()) {
+        env->SetObjectField(info, fid_name, env->NewStringUTF(name.c_str()));
+    }
+    if (!meta->icon_data.empty()) {
+        jbyteArray icon = env->NewByteArray((jsize)meta->icon_data.size());
+        if (icon) {
+            env->SetByteArrayRegion(
+                    icon, 0, (jsize)meta->icon_data.size(),
+                    reinterpret_cast<const jbyte*>(meta->icon_data.data()));
+            env->SetObjectField(info, fid_icon, icon);
+        }
+    }
+    return info;
+}
+
+#if XE_PLATFORM_xendroid
+static bool parse_title_id_hex(const char* s, uint32_t& out) {
+    if (!s) return false;
+    return sscanf(s, "%8x", &out) == 1;
+}
+#endif
+
+// public native Emulator.ContentItem[] list_content(String contentRoot, String titleId, int contentType);
+// Enumerate installed packages of contentType (DLC 0x2, Title Update 0xB0000) for
+// titleId under the content tree rooted at contentRoot. Off-main (filesystem walk).
+static jobjectArray j_list_content(JNIEnv* env, jobject self, jstring contentRoot,
+                                   jstring titleId, jint contentType) {
+#if XE_PLATFORM_xendroid
+    if (!contentRoot || !titleId) return nullptr;
+
+    const char* cr = env->GetStringUTFChars(contentRoot, nullptr);
+    const char* ti = env->GetStringUTFChars(titleId, nullptr);
+    std::filesystem::path root = std::filesystem::u8path(cr);
+    uint32_t tid = 0;
+    bool ok = parse_title_id_hex(ti, tid);
+    env->ReleaseStringUTFChars(contentRoot, cr);
+    env->ReleaseStringUTFChars(titleId, ti);
+    if (!ok) return nullptr;
+
+    std::vector<xe::vfs::InstalledContentItem> items =
+            xe::vfs::ListInstalledContent(root, tid, (uint32_t)contentType);
+
+    jclass cls = env->FindClass("xendroid/compose/Emulator$ContentItem");
+    jmethodID ctor = env->GetMethodID(cls, "<init>", "()V");
+    jfieldID fid_pkg = env->GetFieldID(cls, "pkgDir", "Ljava/lang/String;");
+    jfieldID fid_name = env->GetFieldID(cls, "displayName", "Ljava/lang/String;");
+    jfieldID fid_size = env->GetFieldID(cls, "size", "J");
+
+    jobjectArray arr = env->NewObjectArray((jsize)items.size(), cls, nullptr);
+    for (jsize i = 0; i < (jsize)items.size(); ++i) {
+        jobject obj = env->NewObject(cls, ctor);
+        env->SetObjectField(obj, fid_pkg, env->NewStringUTF(items[i].pkg_dir.c_str()));
+        env->SetObjectField(obj, fid_name, env->NewStringUTF(items[i].display_name.c_str()));
+        env->SetLongField(obj, fid_size, (jlong)items[i].size);
+        env->SetObjectArrayElement(arr, i, obj);
+        env->DeleteLocalRef(obj);
+    }
+    return arr;
+#else
+    return nullptr;
+#endif
+}
+
+// public native int delete_content(String contentRoot, String titleId, int contentType, String pkgDir);
+// Remove one installed package of contentType (data dir + .header sidecar).
+// Returns X_STATUS.
+static jint j_delete_content(JNIEnv* env, jobject self, jstring contentRoot,
+                             jstring titleId, jint contentType, jstring pkgDir) {
+#if XE_PLATFORM_xendroid
+    using namespace xe;  // X_STATUS (xbox.h) so the X_STATUS_* macros resolve.
+    if (!contentRoot || !titleId || !pkgDir) return (jint)X_STATUS_INVALID_PARAMETER;
+
+    const char* cr = env->GetStringUTFChars(contentRoot, nullptr);
+    const char* ti = env->GetStringUTFChars(titleId, nullptr);
+    const char* pd = env->GetStringUTFChars(pkgDir, nullptr);
+    std::filesystem::path root = std::filesystem::u8path(cr);
+    uint32_t tid = 0;
+    bool ok = parse_title_id_hex(ti, tid);
+    std::string pkg = pd ? pd : "";
+    env->ReleaseStringUTFChars(contentRoot, cr);
+    env->ReleaseStringUTFChars(titleId, ti);
+    env->ReleaseStringUTFChars(pkgDir, pd);
+    if (!ok) return (jint)X_STATUS_INVALID_PARAMETER;
+
+    return (jint)xe::vfs::DeleteInstalledContent(root, tid, (uint32_t)contentType, pkg);
+#else
+    return (jint)X_STATUS_UNSUCCESSFUL;
+#endif
+}
+
 int register_xendroid_Emulator(JNIEnv* env){
 
     g_class_Emulator = env->FindClass("xendroid/compose/Emulator");
@@ -1190,6 +1379,11 @@ int register_xendroid_Emulator(JNIEnv* env){
             ,{"show_debug_overlay_enabled", "()Z", (void *) j_show_debug_overlay_enabled}
             ,{"compressIsoToZar", "(Ljava/lang/String;Ljava/lang/String;)I", (void *) j_compressIsoToZar}
             ,{"compressProgress", "()F", (void *) j_compressProgress}
+            ,{"install_content", "(Ljava/lang/String;Ljava/lang/String;)I", (void *) j_install_content}
+            ,{"installProgress", "()F", (void *) j_installProgress}
+            ,{"content_header", "(Ljava/lang/String;)Lxendroid/compose/Emulator$ContentInfo;", (void *) j_content_header}
+            ,{"list_content", "(Ljava/lang/String;Ljava/lang/String;I)[Lxendroid/compose/Emulator$ContentItem;", (void *) j_list_content}
+            ,{"delete_content", "(Ljava/lang/String;Ljava/lang/String;ILjava/lang/String;)I", (void *) j_delete_content}
     };
     return env->RegisterNatives(g_class_Emulator,methods, sizeof(methods)/sizeof(methods[0]));
 }

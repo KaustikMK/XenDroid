@@ -17,6 +17,8 @@ data class Game(
     val name: String,
     val format: GameFormat,
     val iconCacheName: String? = null,
+    val titleId: String? = null,
+    val mediaId: String? = null,
 ) {
     /** Stable id derived from the launch uri (used for shortcut ids, list keys). */
     val stableId: String get() = launchUri

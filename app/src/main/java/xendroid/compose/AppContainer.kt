@@ -17,6 +17,7 @@ import xendroid.compose.ui.library.GameLibraryViewModel
 import xendroid.compose.data.KeymapStore
 import xendroid.compose.ui.keymap.KeymapViewModel
 import xendroid.compose.ui.compress.GameCompressViewModel
+import xendroid.compose.ui.content.ContentManagerViewModel
 import xendroid.compose.patches.AssetPatchAssets
 import xendroid.compose.patches.GamePatchesViewModel
 import xendroid.compose.patches.PatchPaths
@@ -96,6 +97,18 @@ class AppContainer(context: Context) {
                     "Unknown ViewModel ${modelClass.name}"
                 }
                 return GameCompressViewModel(appContext) as T
+            }
+        }
+
+    /** Per-game content/DLC manager (install + list + delete) for one title id. */
+    fun gameContentManagerViewModelFactory(titleId: String): ViewModelProvider.Factory =
+        object : ViewModelProvider.Factory {
+            @Suppress("UNCHECKED_CAST")
+            override fun <T : ViewModel> create(modelClass: Class<T>): T {
+                require(modelClass == ContentManagerViewModel::class.java) {
+                    "Unknown ViewModel ${modelClass.name}"
+                }
+                return ContentManagerViewModel(appContext, metadataSource, titleId) as T
             }
         }
 

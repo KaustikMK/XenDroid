@@ -40,13 +40,20 @@ import java.io.File
  * primary external storage root, lists subdirectories only (sorted, hidden skipped), and
  * lets the user confirm the current directory as the games folder.
  *
+ * Two modes (the caller picks via which callback it passes):
+ *  - folder-pick (default): [onFolderChosen] non-null -> a "Use this folder" button
+ *    confirms the current directory; only sub-dirs are listed.
+ *  - file-pick: [onFileChosen] non-null -> regular files are ALSO listed and tapping one
+ *    returns its absolute path (used by "Install content / DLC" to pick a package).
+ *
  * listFiles() may return null for an unreadable directory (e.g. Android/data) even with
  * All Files Access -- that is handled as "no entries" rather than a crash.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun FolderBrowserScreen(
-    onFolderChosen: (path: String) -> Unit,
+    onFolderChosen: ((path: String) -> Unit)? = null,
+    onFileChosen: ((path: String) -> Unit)? = null,
     onCancel: () -> Unit,
 ) {
     val root = remember { Environment.getExternalStorageDirectory() ?: File("/") }
@@ -56,6 +63,15 @@ fun FolderBrowserScreen(
     val subDirs = remember(current.absolutePath) {
         current.listFiles()
             ?.filter { it.isDirectory && !it.isHidden }
+            ?.sortedBy { it.name.lowercase() }
+            ?: emptyList()
+    }
+
+    // File-pick mode only: regular files in the current dir, sorted, hidden skipped.
+    val files = remember(current.absolutePath) {
+        if (onFileChosen == null) emptyList()
+        else current.listFiles()
+            ?.filter { it.isFile && !it.isHidden }
             ?.sortedBy { it.name.lowercase() }
             ?: emptyList()
     }
@@ -90,22 +106,27 @@ fun FolderBrowserScreen(
         },
     ) { padding ->
         Column(Modifier.fillMaxSize().padding(padding)) {
-            // Action row: confirm the CURRENT directory, or cancel.
+            // Action row: confirm the CURRENT directory (folder-pick only), or cancel.
             Row(
                 Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
                 horizontalArrangement = Arrangement.End,
             ) {
                 TextButton(onClick = onCancel) { Text("Cancel") }
-                Spacer(Modifier.width(8.dp))
-                TextButton(onClick = { onFolderChosen(current.absolutePath) }) {
-                    Text("Use this folder")
+                if (onFolderChosen != null) {
+                    Spacer(Modifier.width(8.dp))
+                    TextButton(onClick = { onFolderChosen(current.absolutePath) }) {
+                        Text("Use this folder")
+                    }
                 }
             }
 
-            if (subDirs.isEmpty()) {
+            if (subDirs.isEmpty() && files.isEmpty()) {
                 Column(Modifier.fillMaxSize().padding(24.dp)) {
                     Text(
-                        "No sub-folders here. Use \"Use this folder\" to pick this directory.",
+                        if (onFolderChosen != null)
+                            "No sub-folders here. Use \"Use this folder\" to pick this directory."
+                        else
+                            "Nothing here. Go up and pick another folder.",
                         style = MaterialTheme.typography.bodyMedium,
                     )
                 }
@@ -124,6 +145,16 @@ fun FolderBrowserScreen(
                             },
                             modifier = Modifier.clickable { current = dir },
                         )
+                    }
+                    if (onFileChosen != null) {
+                        items(files, key = { it.absolutePath }) { file ->
+                            ListItem(
+                                headlineContent = {
+                                    Text(file.name, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                },
+                                modifier = Modifier.clickable { onFileChosen(file.absolutePath) },
+                            )
+                        }
                     }
                 }
             }
