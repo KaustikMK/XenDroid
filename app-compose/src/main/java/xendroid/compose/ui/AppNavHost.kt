@@ -4,6 +4,7 @@ import android.net.Uri
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.platform.LocalContext
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavType
 import androidx.navigation.navArgument
@@ -44,20 +45,27 @@ object Routes {
 fun AppNavHost(container: AppContainer) {
     val nav = rememberNavController()
     NavHost(navController = nav, startDestination = Routes.LIBRARY) {
-        composable(Routes.LIBRARY) {
+        composable(Routes.LIBRARY) { libraryEntry ->
             val vm: GameLibraryViewModel =
                 viewModel(factory = container.libraryViewModelFactory())
             val compressVm: GameCompressViewModel =
                 viewModel(factory = container.gameCompressViewModelFactory())
+            // Guard against duplicate navigation: the library entry drops below RESUMED after the
+            // first navigate, so a racy second navigate from the same event is a no-op.
+            val navigateOnce: (String) -> Unit = { route ->
+                if (libraryEntry.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) {
+                    nav.navigate(route)
+                }
+            }
             GameLibraryScreen(
                 viewModel = vm,
                 compressVm = compressVm,
-                onOpenSettings = { nav.navigate(Routes.SETTINGS) },
-                onOpenKeymap = { nav.navigate(Routes.KEYMAP) },
-                onOpenAbout = { nav.navigate(Routes.ABOUT) },
-                onOpenTouchControls = { nav.navigate(Routes.GAMEPAD_EDITOR) },
+                onOpenSettings = { navigateOnce(Routes.SETTINGS) },
+                onOpenKeymap = { navigateOnce(Routes.KEYMAP) },
+                onOpenAbout = { navigateOnce(Routes.ABOUT) },
+                onOpenTouchControls = { navigateOnce(Routes.GAMEPAD_EDITOR) },
                 onOpenPerGameSettings = { titleId, name, format, launchUri ->
-                    nav.navigate(
+                    navigateOnce(
                         "${Routes.PER_GAME_SETTINGS}/$titleId" +
                             "?name=${Uri.encode(name)}" +
                             "&format=${format.name}" +
@@ -65,7 +73,7 @@ fun AppNavHost(container: AppContainer) {
                     )
                 },
                 onOpenGamePatches = { titleId, name ->
-                    nav.navigate("${Routes.GAME_PATCHES}/$titleId?name=${Uri.encode(name)}")
+                    navigateOnce("${Routes.GAME_PATCHES}/$titleId?name=${Uri.encode(name)}")
                 },
             )
         }
