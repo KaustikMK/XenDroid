@@ -3,6 +3,8 @@ package xendroid.compose
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
+import android.os.Handler
+import android.os.Looper
 import android.os.Process
 import android.util.Log
 import android.view.InputDevice
@@ -82,11 +84,15 @@ class EmulatorHostActivity : ComponentActivity(), SurfaceHolder.Callback {
         private const val KC_RTHUMB_LEFT = 20; private const val KC_RTHUMB_UP = 21
         private const val KC_RTHUMB_RIGHT = 22; private const val KC_RTHUMB_DOWN = 23
         private const val KEY_VALUE_UNUSED = -1
+        private const val FOCUS_PAUSE_DEBOUNCE_MS = 250L
     }
 
     private val session = EmulatorSession()
     private var surfaceView: SurfaceView? = null
     private var started = false          // surface-callback boot guard (mirrors legacy)
+
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private val pauseOnFocusLost = Runnable { if (session.booted) session.pause() }
 
     // SP4 on-screen touch gamepad.
     private val gamepad by lazy { GamepadController(applicationContext) }
@@ -156,16 +162,12 @@ class EmulatorHostActivity : ComponentActivity(), SurfaceHolder.Callback {
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
         if (hasFocus) {
-            // Regained focus: re-assert immersive (the system restores the bars after a
-            // dialog / shade / app switch) and resume the guest, unless the in-game menu
-            // is open (don't run the game behind the menu).
+            mainHandler.removeCallbacks(pauseOnFocusLost)
             enterImmersiveMode()
             if (session.booted && !menuOpenState.value) session.resumeIfPaused()
         } else {
-            // Lost focus while still visible (notification shade, dialog, multi-window,
-            // app switcher): freeze the guest. onStop only fires when the activity is
-            // fully hidden, so without this the emulation keeps running in the background.
-            if (session.booted) session.pause()
+            mainHandler.removeCallbacks(pauseOnFocusLost)
+            mainHandler.postDelayed(pauseOnFocusLost, FOCUS_PAUSE_DEBOUNCE_MS)
         }
     }
 
@@ -352,6 +354,7 @@ class EmulatorHostActivity : ComponentActivity(), SurfaceHolder.Callback {
         // stop during the boot splash is a no-op, matching the keyEvent !booted guard.
         // Ordering: onPause(flushGpuCaches) -> onStop(pause) -> surfaceDestroyed(detach);
         // pausing BEFORE the swapchain teardown means no guest/GPU frames race the drain.
+        mainHandler.removeCallbacks(pauseOnFocusLost)
         if (session.booted) session.pause()
     }
 
