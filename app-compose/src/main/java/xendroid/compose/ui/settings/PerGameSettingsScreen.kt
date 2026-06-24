@@ -19,8 +19,6 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import xendroid.compose.settings.GameSettingsViewModel
 import xendroid.compose.settings.SettingsCategory
-import xendroid.compose.ui.compress.GameCompressViewModel
-import xendroid.compose.ui.compress.GameCompressViewModel.CompressState
 
 /**
  * The per-game override editor: the same two-level INDEX -> DETAIL shape as
@@ -34,9 +32,6 @@ import xendroid.compose.ui.compress.GameCompressViewModel.CompressState
 fun PerGameSettingsScreen(
     vm: GameSettingsViewModel,
     gameName: String,
-    isIso: Boolean,
-    launchUri: String?,
-    compressVm: GameCompressViewModel,
     onBack: () -> Unit,
 ) {
     val overrides by vm.overrides.collectAsStateWithLifecycle()
@@ -55,10 +50,6 @@ fun PerGameSettingsScreen(
         onDispose { owner.lifecycle.removeObserver(obs); vm.flush() }
     }
 
-    // Compress-to-.zar dialogs live at the top level so they survive the index/detail toggle.
-    var showCompressConfirm by remember { mutableStateOf(false) }
-    val compressState by compressVm.state.collectAsStateWithLifecycle()
-
     var selected by remember { mutableStateOf<SettingsCategory?>(null) }
     val section = selected
     if (section == null) {
@@ -67,9 +58,6 @@ fun PerGameSettingsScreen(
             categories = vm.categories,
             overriddenCountOf = { cat -> cat.settings.count { overrides.containsKey(it.key) } },
             onOpen = { selected = it },
-            isIso = isIso,
-            launchUri = launchUri,
-            onCompress = { showCompressConfirm = true },
             onBack = { vm.flush(); onBack() },
         )
     } else {
@@ -81,63 +69,6 @@ fun PerGameSettingsScreen(
             onBack = { selected = null },
         )
     }
-
-    if (showCompressConfirm) {
-        AlertDialog(
-            onDismissRequest = { showCompressConfirm = false },
-            title = { Text("Compress to .zar?") },
-            text = {
-                Text(
-                    "This packs the disc into a smaller .zar. The original .iso will be " +
-                        "deleted only after the .zar is created and verified. The game stays " +
-                        "in your library.")
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    showCompressConfirm = false
-                    launchUri?.let(compressVm::compress)
-                }) { Text("Compress") }
-            },
-            dismissButton = {
-                TextButton(onClick = { showCompressConfirm = false }) { Text("Cancel") }
-            },
-        )
-    }
-
-    when (val s = compressState) {
-        is CompressState.Busy -> AlertDialog(
-            onDismissRequest = {},   // not cancelable while running
-            title = { Text(s.message) },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    if (s.progress >= 0f) {
-                        LinearProgressIndicator(
-                            progress = { s.progress },
-                            modifier = Modifier.fillMaxWidth(),
-                        )
-                        Text("${(s.progress * 100).toInt()}%  ·  this may take a while.")
-                    } else {
-                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                        Text("This may take a while.")
-                    }
-                }
-            },
-            confirmButton = {},
-        )
-        is CompressState.Done -> AlertDialog(
-            onDismissRequest = compressVm::dismiss,
-            title = { Text("Done") },
-            text = { Text(s.message) },
-            confirmButton = { TextButton(onClick = compressVm::dismiss) { Text("OK") } },
-        )
-        is CompressState.Failed -> AlertDialog(
-            onDismissRequest = compressVm::dismiss,
-            title = { Text("Failed") },
-            text = { Text(s.message) },
-            confirmButton = { TextButton(onClick = compressVm::dismiss) { Text("OK") } },
-        )
-        else -> {}
-    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -147,9 +78,6 @@ private fun PerGameIndex(
     categories: List<SettingsCategory>,
     overriddenCountOf: (SettingsCategory) -> Int,
     onOpen: (SettingsCategory) -> Unit,
-    isIso: Boolean,
-    launchUri: String?,
-    onCompress: () -> Unit,
     onBack: () -> Unit,
 ) {
     Scaffold(
@@ -191,19 +119,6 @@ private fun PerGameIndex(
                     modifier = Modifier.clickable { onOpen(cat) },
                 )
                 HorizontalDivider()
-            }
-            // ISO-only: pack this disc into a smaller .zar and replace the .iso.
-            if (isIso && launchUri != null) {
-                item {
-                    ListItem(
-                        headlineContent = { Text("Compress to .zar") },
-                        supportingContent = {
-                            Text("Pack this disc into a smaller .zar and replace the .iso.")
-                        },
-                        modifier = Modifier.clickable { onCompress() },
-                    )
-                    HorizontalDivider()
-                }
             }
         }
     }

@@ -97,19 +97,11 @@ fun AppNavHost(container: AppContainer) {
         ) { backStackEntry ->
             val titleId = backStackEntry.arguments?.getString("titleId") ?: return@composable
             val gameName = backStackEntry.arguments?.getString("name") ?: ""
-            val format = backStackEntry.arguments?.getString("format")
-                ?.let { runCatching { GameFormat.valueOf(it) }.getOrNull() }
-            val launchUri = backStackEntry.arguments?.getString("uri")   // Nav already URL-decodes it
             val vm: GameSettingsViewModel =
                 viewModel(factory = container.gameSettingsViewModelFactory(titleId))
-            val compressVm: GameCompressViewModel =
-                viewModel(factory = container.gameCompressViewModelFactory())
             PerGameSettingsScreen(
                 vm = vm,
                 gameName = gameName,
-                isIso = format == GameFormat.ISO,
-                launchUri = launchUri,
-                compressVm = compressVm,
                 onBack = { nav.popBackStack() },
             )
         }
