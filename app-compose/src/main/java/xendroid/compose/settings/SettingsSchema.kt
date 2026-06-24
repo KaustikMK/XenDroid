@@ -134,7 +134,7 @@ object SettingsSchema {
             // resolve results. fast=copy every frame (cvar default); some=skip copy on cache hit;
             // full=wait for GPU (accurate but a GPU-CPU sync stall); none=disable readback (some
             // games render better without it, and it avoids the stall).
-            l("GPU", "readback_resolve", "Readback resolve", "none",
+            l("GPU", "readback_resolve", "Readback resolve", "fast",
                 "fast" to "Fast (copy every frame)", "some" to "Some (skip copy on cache hit)",
                 "full" to "Full (wait for GPU, slow)", "none" to "None (disabled)"),
             // How guest occlusion queries (PM4 EVENT_WRITE_ZPD) are serviced. 'fake' fabricates a
