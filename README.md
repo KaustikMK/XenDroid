@@ -1,5 +1,5 @@
 <p align="center">
-       <img height="256px" src="https://github.com/rfandango/XenDroid/blob/main/XenDroid_foreground.png"/>
+       <img height="256px" src="app/src/main/assets/XenDroid_foreground.png"/>
     </a>
 </p>
 
