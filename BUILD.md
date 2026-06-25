@@ -9,7 +9,7 @@ The Gradle build produces two modules:
 - `:emulator-core` — the native build (CMake -> `libe.so` +
   `libhardware_ProcessorInfo.so`) plus the JNI-bound Java classes. Built once,
   consumed transitively.
-- `:app-compose` — the Kotlin/Jetpack-Compose frontend (`applicationId
+- `:app` — the Kotlin/Jetpack-Compose frontend (`applicationId
   compose.compose`).
 
 ## Toolchain
@@ -123,21 +123,21 @@ actionable message if any is missing. The tools are found on `PATH`, or set
 
 ```bash
 # Linux:
-./gradlew :app-compose:assembleDebug
+./gradlew :app:assembleDebug
 
 # Windows (cmd.exe / PowerShell):
-gradlew.bat :app-compose:assembleDebug
+gradlew.bat :app:assembleDebug
 
 # Clean native + app, then build (Linux shown; use gradlew.bat on Windows):
-./gradlew clean :app-compose:assembleDebug
+./gradlew clean :app:assembleDebug
 
 # Install to a connected device:
-./gradlew :app-compose:installDebug
+./gradlew :app:installDebug
 ```
 
 First build downloads Gradle 8.11.1 (SHA-256 verified) and compiles the full
 native tree — ~8–9 min cold. The APK lands in
-`app-compose/build/outputs/apk/debug/`.
+`app/build/outputs/apk/debug/`.
 
 ## Windows notes
 

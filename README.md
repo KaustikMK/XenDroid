@@ -29,7 +29,7 @@ Releases (to update)
 ## Building (to update)
 
 See [BUILD.md](BUILD.md) for build instructions (Linux and Windows). In short:
-`./gradlew :app-compose:assembleDebug` (Linux) or `gradlew.bat :app-compose:assembleDebug` (Windows).
+`./gradlew :app:assembleDebug` (Linux) or `gradlew.bat :app:assembleDebug` (Windows).
 
 LICENSE:
 
