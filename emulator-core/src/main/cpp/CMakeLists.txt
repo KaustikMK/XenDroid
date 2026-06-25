@@ -42,16 +42,16 @@ target_sources(emu
         xe_opensles_audio_driver.cpp
         xe_opensles_audio_system.cpp
         xe_system_xendroid.cpp
-        xenia-canary/src/xenia/app/emulator_window.cc
-        xenia-canary/src/xenia/ui/file_picker_android.cc
-        xenia-canary/src/xenia/ui/surface_android.cc
+        xenia/src/xenia/app/emulator_window.cc
+        xenia/src/xenia/ui/file_picker_android.cc
+        xenia/src/xenia/ui/surface_android.cc
         cpuinfo.cpp
         vkapi.cpp
         vkutil.cpp
 )
 
 # Pre-flight: the GPU/UI shaders are compiled to SPIR-V at build time by
-# xenia-canary/tools/build/compile_shader_spirv.py, which needs these host tools.
+# xenia/tools/build/compile_shader_spirv.py, which needs these host tools.
 # Validate them at configure time so a missing dependency is a clear, actionable
 # error instead of a confusing Python failure deep inside the Ninja build.
 set(_xe_vk_hint_dirs)
@@ -82,10 +82,10 @@ find_program(XE_PYTHON3 NAMES python3 python)
 if(NOT XE_PYTHON3)
     message(FATAL_ERROR "python3 not found; required to generate SPIR-V shader bytecode.")
 endif()
-set(_xe_shader_root "${CMAKE_CURRENT_SOURCE_DIR}/xenia-canary/src/xenia")
+set(_xe_shader_root "${CMAKE_CURRENT_SOURCE_DIR}/xenia/src/xenia")
 execute_process(
     COMMAND "${XE_PYTHON3}"
-            "${CMAKE_CURRENT_SOURCE_DIR}/xenia-canary/tools/build/gen_android_spirv.py"
+            "${CMAKE_CURRENT_SOURCE_DIR}/xenia/tools/build/gen_android_spirv.py"
             "${_xe_shader_root}/gpu/shaders"
             "${_xe_shader_root}/ui/shaders"
     RESULT_VARIABLE _xe_spirv_result
@@ -95,15 +95,15 @@ if(NOT _xe_spirv_result EQUAL 0)
     message(FATAL_ERROR "SPIR-V shader bytecode generation failed (exit ${_xe_spirv_result}).")
 endif()
 
-add_subdirectory(xenia-canary EXCLUDE_FROM_ALL)
+add_subdirectory(xenia EXCLUDE_FROM_ALL)
 
 add_subdirectory(libadrenotools EXCLUDE_FROM_ALL)
 
 target_include_directories(emu PRIVATE
-        xenia-canary
-        xenia-canary/src
-        xenia-canary/third_party
-        xenia-canary/..
+        xenia
+        xenia/src
+        xenia/third_party
+        xenia/..
 )
 
 target_link_libraries(emu
