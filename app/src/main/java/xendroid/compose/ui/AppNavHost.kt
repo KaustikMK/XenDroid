@@ -6,6 +6,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.navigation.NavBackStackEntry
+import androidx.navigation.NavController
 import androidx.navigation.NavType
 import androidx.navigation.navArgument
 import androidx.navigation.compose.NavHost
@@ -48,6 +50,10 @@ object Routes {
     const val INSTALL_CONTENT = "install_content"
 }
 
+private fun NavBackStackEntry.backOnce(nav: NavController): () -> Unit = {
+    if (lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) nav.popBackStack()
+}
+
 @Composable
 fun AppNavHost(container: AppContainer) {
     val nav = rememberNavController()
@@ -88,22 +94,22 @@ fun AppNavHost(container: AppContainer) {
                 onOpenInstallContent = { navigateOnce(Routes.INSTALL_CONTENT) },
             )
         }
-        composable(Routes.SETTINGS) {
+        composable(Routes.SETTINGS) { entry ->
             val vm: SettingsViewModel = viewModel(factory = container.settingsViewModelFactory())
-            SettingsScreen(vm = vm, onBack = { nav.popBackStack() })
+            SettingsScreen(vm = vm, onBack = entry.backOnce(nav))
         }
-        composable(Routes.KEYMAP) {
+        composable(Routes.KEYMAP) { entry ->
             val vm: KeymapViewModel =
                 viewModel(factory = container.keymapViewModelFactory())
-            KeymapScreen(vm = vm, onBack = { nav.popBackStack() })
+            KeymapScreen(vm = vm, onBack = entry.backOnce(nav))
         }
-        composable(Routes.ABOUT) {
-            AboutScreen(onBack = { nav.popBackStack() })
+        composable(Routes.ABOUT) { entry ->
+            AboutScreen(onBack = entry.backOnce(nav))
         }
-        composable(Routes.GAMEPAD_EDITOR) {
+        composable(Routes.GAMEPAD_EDITOR) { entry ->
             val ctx = LocalContext.current
             val controller = remember { GamepadController(ctx.applicationContext) }
-            GamepadEditorScreen(controller = controller, onDone = { nav.popBackStack() })
+            GamepadEditorScreen(controller = controller, onDone = entry.backOnce(nav))
         }
         composable(
             route = "${Routes.PER_GAME_SETTINGS}/{titleId}?name={name}&format={format}&uri={uri}",
@@ -121,7 +127,7 @@ fun AppNavHost(container: AppContainer) {
             PerGameSettingsScreen(
                 vm = vm,
                 gameName = gameName,
-                onBack = { nav.popBackStack() },
+                onBack = backStackEntry.backOnce(nav),
             )
         }
         composable(
@@ -135,7 +141,7 @@ fun AppNavHost(container: AppContainer) {
             val gameName = backStackEntry.arguments?.getString("name") ?: ""
             val vm: GamePatchesViewModel =
                 viewModel(factory = container.gamePatchesViewModelFactory(titleId))
-            GamePatchesScreen(vm = vm, gameName = gameName, onBack = { nav.popBackStack() })
+            GamePatchesScreen(vm = vm, gameName = gameName, onBack = backStackEntry.backOnce(nav))
         }
         composable(
             route = "${Routes.CONTENT_MANAGER}/{titleId}?name={name}",
@@ -148,12 +154,12 @@ fun AppNavHost(container: AppContainer) {
             val gameName = backStackEntry.arguments?.getString("name") ?: ""
             val vm: ContentManagerViewModel =
                 viewModel(factory = container.gameContentManagerViewModelFactory(titleId))
-            ContentManagerScreen(vm = vm, gameName = gameName, onBack = { nav.popBackStack() })
+            ContentManagerScreen(vm = vm, gameName = gameName, onBack = backStackEntry.backOnce(nav))
         }
-        composable(Routes.INSTALL_CONTENT) {
+        composable(Routes.INSTALL_CONTENT) { entry ->
             val vm: InstallContentViewModel =
                 viewModel(factory = container.installContentViewModelFactory())
-            InstallContentScreen(vm = vm, onBack = { nav.popBackStack() })
+            InstallContentScreen(vm = vm, onBack = entry.backOnce(nav))
         }
     }
 }
