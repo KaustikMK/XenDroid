@@ -7,7 +7,7 @@
 
 ## History
 XenDroid was initially forked form xa360e, which was based off [Xenia Canary](https://github.com/xenia-canary/xenia-canary).
-However, a complete rebase was made on [Xenia Edge](https://github.com/has207/xenia-edge) for Vulkan backend, 
+However, a complete rebase was made on [Xenia Edge](https://github.com/has207/xenia-edge) for better Vulkan backend, 
 XEX swap behavior, occlusion queries and XMA Audio decoder, with a Kotlin + JNI layer.
 
 We are looking foward to keep the project updated alongside the Edge fork,
