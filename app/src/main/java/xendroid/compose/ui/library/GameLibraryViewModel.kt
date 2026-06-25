@@ -8,6 +8,7 @@ import android.content.pm.ShortcutManager
 import android.graphics.BitmapFactory
 import android.graphics.drawable.Icon
 import android.os.Build
+import android.os.SystemClock
 import androidx.core.content.getSystemService
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -17,6 +18,7 @@ import xendroid.compose.data.GameFormat
 import xendroid.compose.data.GameLibraryRepository
 import xendroid.compose.data.IconCache
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -27,6 +29,10 @@ import kotlinx.coroutines.withContext
  *  for this action; until then the Intent will not resolve (no-op resolveActivity). */
 const val ACTION_LAUNCH_GAME = "xendroid.intent.action.xendroid"
 const val EXTRA_GAME_URI = "game_uri"
+
+/** Minimum time the pull-to-refresh indicator stays up, so a fast warm-cache rescan
+ *  doesn't outrun its reveal animation and leave it visually stuck. */
+private const val MIN_REFRESH_INDICATOR_MS = 500L
 
 /** Which long-press action triggered title-id resolution (both need the id, then branch). */
 enum class GameAction { PER_GAME_SETTINGS, GAME_PATCHES, MANAGE_CONTENT }
@@ -63,9 +69,11 @@ class GameLibraryViewModel(
         if (!EmulatorRuntime.supportsVulkan) { _state.value = LibraryUiState.NoVulkan; return }
         // Keep an existing list visible during a pull-to-refresh (show only the pull
         // indicator); the full-screen spinner is for the first/empty load.
-        if (_state.value !is LibraryUiState.Loaded) _state.value = LibraryUiState.Loading
+        val wasLoaded = _state.value is LibraryUiState.Loaded
+        if (!wasLoaded) _state.value = LibraryUiState.Loading
         _isRefreshing.value = true
         viewModelScope.launch {
+            val startMs = SystemClock.elapsedRealtime()
             _state.value = runCatching {
                 // ensureLoaded() can sleep + System.loadLibrary on delay-load devices
                 // (Adreno 5xx/6xx) -> never on the main thread.
@@ -76,6 +84,13 @@ class GameLibraryViewModel(
                     is GameLibraryRepository.ScanResult.Games -> LibraryUiState.Loaded(r.games)
                 }
             }.getOrElse { LibraryUiState.Error(it.message ?: "Failed to load library") }
+            // A warm-cache rescan finishes faster than the PullToRefreshBox reveal animation,
+            // which leaves the indicator visually stuck; hold it to a floor so it settles before
+            // retracting (pull-to-refresh only -- the cold load shows the full-screen spinner).
+            if (wasLoaded) {
+                val elapsed = SystemClock.elapsedRealtime() - startMs
+                if (elapsed < MIN_REFRESH_INDICATOR_MS) delay(MIN_REFRESH_INDICATOR_MS - elapsed)
+            }
             _isRefreshing.value = false
         }
     }
