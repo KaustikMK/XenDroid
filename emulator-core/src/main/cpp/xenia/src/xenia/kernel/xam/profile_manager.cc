@@ -24,7 +24,7 @@
 #include "xenia/vfs/devices/host_path_device.h"
 
 #if XE_PLATFORM_xendroid
-DEFINE_string(logged_profile_slot_0_xuid, "E0300000A360E000",
+DEFINE_string(logged_profile_slot_0_xuid, "",
               "XUID of the profile to load on boot in slot 0", "Profiles");
 #else
 DEFINE_string(logged_profile_slot_0_xuid, "",

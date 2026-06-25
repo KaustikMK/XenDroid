@@ -31,6 +31,8 @@ import xendroid.compose.ui.settings.SettingsScreen
 import xendroid.compose.ui.about.AboutScreen
 import xendroid.compose.ui.keymap.KeymapScreen
 import xendroid.compose.ui.keymap.KeymapViewModel
+import xendroid.compose.ui.profile.ProfileManagerViewModel
+import xendroid.compose.ui.profile.ProfilesScreen
 import xendroid.compose.patches.GamePatchesViewModel
 import xendroid.compose.ui.patches.GamePatchesScreen
 
@@ -39,6 +41,7 @@ object Routes {
     const val SETTINGS = "settings"
     const val KEYMAP = "keymap"
     const val ABOUT = "about"
+    const val PROFILES = "profiles"
     const val USERDATA = "userdata"   // action, not a destination (see GameLibraryScreen)
     const val GAMEPAD_EDITOR = "gamepad_editor"
     // "$PER_GAME_SETTINGS/{titleId}?name={name}&format={format}&uri={uri}"
@@ -76,6 +79,7 @@ fun AppNavHost(container: AppContainer) {
                 onOpenSettings = { navigateOnce(Routes.SETTINGS) },
                 onOpenKeymap = { navigateOnce(Routes.KEYMAP) },
                 onOpenAbout = { navigateOnce(Routes.ABOUT) },
+                onOpenProfiles = { navigateOnce(Routes.PROFILES) },
                 onOpenTouchControls = { navigateOnce(Routes.GAMEPAD_EDITOR) },
                 onOpenPerGameSettings = { titleId, name, format, launchUri ->
                     navigateOnce(
@@ -105,6 +109,11 @@ fun AppNavHost(container: AppContainer) {
         }
         composable(Routes.ABOUT) { entry ->
             AboutScreen(onBack = entry.backOnce(nav))
+        }
+        composable(Routes.PROFILES) { entry ->
+            val vm: ProfileManagerViewModel =
+                viewModel(factory = container.profileManagerViewModelFactory())
+            ProfilesScreen(vm = vm, onBack = entry.backOnce(nav))
         }
         composable(Routes.GAMEPAD_EDITOR) { entry ->
             val ctx = LocalContext.current

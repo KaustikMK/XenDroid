@@ -31,6 +31,7 @@
 #include "xenia/vfs/xex_metadata.h"                   // ExtractXexMetadata(path)
 #include "xenia/vfs/stfs_metadata.h"                  // ExtractStfsMetadata(path)
 #include "xenia/vfs/content_install_standalone.h"     // InstallContentPackageStandalone
+#include "xenia/kernel/xam/profile_standalone.h"       // CreateStandaloneProfile / ListStandaloneProfiles / RenameStandaloneProfile
 
 #include <cstdio>
 
@@ -1359,6 +1360,97 @@ static jint j_delete_content(JNIEnv* env, jobject self, jstring contentRoot,
 #endif
 }
 
+#if XE_PLATFORM_xendroid
+static bool parse_xuid_hex(const char* s, uint64_t& out) {
+    if (!s) return false;
+    return sscanf(s, "%16llx", (unsigned long long*)&out) == 1;
+}
+#endif
+
+static jstring j_create_profile(JNIEnv* env, jobject self, jstring contentRoot,
+                                jstring gamertag, jint language, jint country) {
+#if XE_PLATFORM_xendroid
+    if (!contentRoot || !gamertag) return nullptr;
+
+    const char* cr = env->GetStringUTFChars(contentRoot, nullptr);
+    const char* gt = env->GetStringUTFChars(gamertag, nullptr);
+    std::filesystem::path root = std::filesystem::u8path(cr);
+    std::string tag = gt ? gt : "";
+    env->ReleaseStringUTFChars(contentRoot, cr);
+    env->ReleaseStringUTFChars(gamertag, gt);
+
+    std::string xuid = xe::kernel::xam::CreateStandaloneProfile(
+            root, tag, (uint32_t)language, (uint32_t)country);
+    if (xuid.empty()) return nullptr;
+    return env->NewStringUTF(xuid.c_str());
+#else
+    return nullptr;
+#endif
+}
+
+static jobjectArray j_list_profiles(JNIEnv* env, jobject self, jstring contentRoot) {
+#if XE_PLATFORM_xendroid
+    if (!contentRoot) return nullptr;
+
+    const char* cr = env->GetStringUTFChars(contentRoot, nullptr);
+    std::filesystem::path root = std::filesystem::u8path(cr);
+    env->ReleaseStringUTFChars(contentRoot, cr);
+
+    std::vector<xe::kernel::xam::StandaloneProfile> profiles =
+            xe::kernel::xam::ListStandaloneProfiles(root);
+
+    jclass cls = env->FindClass("xendroid/compose/Emulator$ProfileInfo");
+    jmethodID ctor = env->GetMethodID(cls, "<init>", "()V");
+    jfieldID fid_xuid = env->GetFieldID(cls, "xuid", "Ljava/lang/String;");
+    jfieldID fid_tag = env->GetFieldID(cls, "gamertag", "Ljava/lang/String;");
+    jfieldID fid_lang = env->GetFieldID(cls, "language", "I");
+    jfieldID fid_country = env->GetFieldID(cls, "country", "I");
+    jfieldID fid_avatar = env->GetFieldID(cls, "hasAvatar", "Z");
+
+    jobjectArray arr = env->NewObjectArray((jsize)profiles.size(), cls, nullptr);
+    for (jsize i = 0; i < (jsize)profiles.size(); ++i) {
+        jobject obj = env->NewObject(cls, ctor);
+        std::string xuid = fmt::format("{:016X}", profiles[i].xuid);
+        env->SetObjectField(obj, fid_xuid, env->NewStringUTF(xuid.c_str()));
+        env->SetObjectField(obj, fid_tag, env->NewStringUTF(profiles[i].gamertag.c_str()));
+        env->SetIntField(obj, fid_lang, (jint)profiles[i].language);
+        env->SetIntField(obj, fid_country, (jint)profiles[i].country);
+        env->SetBooleanField(obj, fid_avatar, (jboolean)profiles[i].has_avatar);
+        env->SetObjectArrayElement(arr, i, obj);
+        env->DeleteLocalRef(obj);
+    }
+    return arr;
+#else
+    return nullptr;
+#endif
+}
+
+static jint j_rename_profile(JNIEnv* env, jobject self, jstring contentRoot,
+                             jstring xuidStr, jstring gamertag, jint language,
+                             jint country) {
+#if XE_PLATFORM_xendroid
+    using namespace xe;  // X_STATUS (xbox.h) so the X_STATUS_* macros resolve.
+    if (!contentRoot || !xuidStr || !gamertag) return (jint)X_STATUS_INVALID_PARAMETER;
+
+    const char* cr = env->GetStringUTFChars(contentRoot, nullptr);
+    const char* xs = env->GetStringUTFChars(xuidStr, nullptr);
+    const char* gt = env->GetStringUTFChars(gamertag, nullptr);
+    std::filesystem::path root = std::filesystem::u8path(cr);
+    uint64_t xuid = 0;
+    bool ok = parse_xuid_hex(xs, xuid);
+    std::string tag = gt ? gt : "";
+    env->ReleaseStringUTFChars(contentRoot, cr);
+    env->ReleaseStringUTFChars(xuidStr, xs);
+    env->ReleaseStringUTFChars(gamertag, gt);
+    if (!ok) return (jint)X_STATUS_INVALID_PARAMETER;
+
+    return (jint)xe::kernel::xam::RenameStandaloneProfile(
+            root, xuid, tag, (uint32_t)language, (uint32_t)country);
+#else
+    return (jint)X_STATUS_UNSUCCESSFUL;
+#endif
+}
+
 int register_xendroid_Emulator(JNIEnv* env){
 
     g_class_Emulator = env->FindClass("xendroid/compose/Emulator");
@@ -1384,6 +1476,9 @@ int register_xendroid_Emulator(JNIEnv* env){
             ,{"content_header", "(Ljava/lang/String;)Lxendroid/compose/Emulator$ContentInfo;", (void *) j_content_header}
             ,{"list_content", "(Ljava/lang/String;Ljava/lang/String;I)[Lxendroid/compose/Emulator$ContentItem;", (void *) j_list_content}
             ,{"delete_content", "(Ljava/lang/String;Ljava/lang/String;ILjava/lang/String;)I", (void *) j_delete_content}
+            ,{"create_profile", "(Ljava/lang/String;Ljava/lang/String;II)Ljava/lang/String;", (void *) j_create_profile}
+            ,{"list_profiles", "(Ljava/lang/String;)[Lxendroid/compose/Emulator$ProfileInfo;", (void *) j_list_profiles}
+            ,{"rename_profile", "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;II)I", (void *) j_rename_profile}
     };
     return env->RegisterNatives(g_class_Emulator,methods, sizeof(methods)/sizeof(methods[0]));
 }

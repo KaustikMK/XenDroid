@@ -40,6 +40,7 @@ fun GameLibraryScreen(
     onOpenSettings: () -> Unit,
     onOpenKeymap: () -> Unit,
     onOpenAbout: () -> Unit,
+    onOpenProfiles: () -> Unit,
     onOpenTouchControls: () -> Unit,
     onOpenPerGameSettings: (titleId: String, gameName: String, format: GameFormat, launchUri: String) -> Unit,
     onOpenGamePatches: (titleId: String, gameName: String) -> Unit,
@@ -124,6 +125,10 @@ fun GameLibraryScreen(
                         DropdownMenuItem(
                             text = { Text("Install content") },
                             onClick = { menuOpen = false; onOpenInstallContent() },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Profiles") },
+                            onClick = { menuOpen = false; onOpenProfiles() },
                         )
                         DropdownMenuItem(
                             text = { Text("Key mapping") },

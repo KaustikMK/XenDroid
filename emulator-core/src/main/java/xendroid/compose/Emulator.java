@@ -78,6 +78,19 @@ public class Emulator extends xendroid.emulator.Emulator{
     // Returns X_STATUS (0 == success). Off-main.
     public native int delete_content(String contentRoot, String titleId, int contentType, String pkgDir);
 
+    // Create a kernel-free Xbox-360 profile (encrypted Account blob) under contentRoot.
+    // gamertag must be a valid gamertag (1-15 chars). Returns the new XUID as 16-char
+    // hex, or null on failure (invalid gamertag / IO error). Off-main.
+    public native String create_profile(String contentRoot, String gamertag, int language, int country);
+
+    // Enumerate readable profiles under contentRoot. Returns an empty array when none.
+    // Off-main (filesystem walk + per-profile decrypt).
+    public native ProfileInfo[] list_profiles(String contentRoot);
+
+    // Update an existing profile's gamertag/language/country (xuid = 16-char hex).
+    // Returns X_STATUS (0 == success). Off-main.
+    public native int rename_profile(String contentRoot, String xuid, String gamertag, int language, int country);
+
     // ---- Real-path (All Files Access) scan probes: take an ABSOLUTE host path
     // (no Context: no ContentResolver / fd). The core's real-path DiscImageDevice /
     // DiscZarchiveDevice / Extract*Metadata back these. format: 0=ISO, 1=XEX_FOLDER,
@@ -156,5 +169,13 @@ public class Emulator extends xendroid.emulator.Emulator{
         public String pkgDir;
         public String displayName;
         public long size;
+    }
+
+    public static class ProfileInfo {
+        public String xuid;       // 16-char uppercase hex
+        public String gamertag;
+        public int language;      // XLanguage
+        public int country;       // XOnlineCountry
+        public boolean hasAvatar; // tile_64.png present
     }
 }
