@@ -138,7 +138,7 @@ class CodeCacheBase : public CodeCache {
   uintptr_t execute_base_address() const override {
     return generated_code_execute_base_
                ? reinterpret_cast<uintptr_t>(generated_code_execute_base_)
-               : kGeneratedCodeExecuteBase;
+               : (execute_address_high() | kGeneratedCodeExecuteBaseLow);
   }
   size_t total_size() const override { return kGeneratedCodeSize; }
 
@@ -184,6 +184,12 @@ class CodeCacheBase : public CodeCache {
 
     const bool wx_preferred = xe::memory::IsWritableExecutableMemoryPreferred();
 
+    const uintptr_t kExecuteAddrHigh = execute_address_high();
+    const uintptr_t kCodeExecuteBaseMapped =
+        kExecuteAddrHigh | kGeneratedCodeExecuteBaseLow;
+    const uintptr_t kCodeWriteBaseMapped =
+        kExecuteAddrHigh | kGeneratedCodeWriteBaseLow;
+
     // Fast path: fixed-VA table + code cache, slots hold raw 32-bit targets.
     // Disabled on macOS x86_64 (Rosetta): shm+PROT_EXEC mapping appears to
     // succeed but the page isn't actually executable. The encoded path
@@ -192,6 +198,9 @@ class CodeCacheBase : public CodeCache {
 #if XE_PLATFORM_MAC && XE_ARCH_AMD64
     try_fast_indirection = false;
 #endif
+    if (kExecuteAddrHigh != 0) {
+      try_fast_indirection = false;
+    }
     if (try_fast_indirection) {
       indirection_table_base_ =
           reinterpret_cast<uint8_t*>(xe::memory::AllocFixed(
@@ -200,7 +209,7 @@ class CodeCacheBase : public CodeCache {
               xe::memory::PageAccess::kReadWrite));
       if (indirection_table_base_) {
         uint8_t* exec = reinterpret_cast<uint8_t*>(xe::memory::MapFileView(
-            mapping_, reinterpret_cast<void*>(kGeneratedCodeExecuteBase),
+            mapping_, reinterpret_cast<void*>(kCodeExecuteBaseMapped),
             kGeneratedCodeSize,
             wx_preferred ? xe::memory::PageAccess::kExecuteReadWrite
                          : xe::memory::PageAccess::kExecuteReadOnly,
@@ -208,7 +217,7 @@ class CodeCacheBase : public CodeCache {
         uint8_t* write = exec;
         if (exec && !wx_preferred) {
           write = reinterpret_cast<uint8_t*>(xe::memory::MapFileView(
-              mapping_, reinterpret_cast<void*>(kGeneratedCodeWriteBase),
+              mapping_, reinterpret_cast<void*>(kCodeWriteBaseMapped),
               kGeneratedCodeSize, xe::memory::PageAccess::kReadWrite, 0));
           if (!write) {
             xe::memory::UnmapFileView(mapping_, exec, kGeneratedCodeSize);
@@ -268,7 +277,7 @@ class CodeCacheBase : public CodeCache {
 #else
       generated_code_execute_base_ =
           reinterpret_cast<uint8_t*>(xe::memory::MapFileView(
-              mapping_, reinterpret_cast<void*>(kGeneratedCodeExecuteBase),
+              mapping_, reinterpret_cast<void*>(kCodeExecuteBaseMapped),
               kGeneratedCodeSize, xe::memory::PageAccess::kExecuteReadWrite,
               0));
       if (!generated_code_execute_base_) {
@@ -282,7 +291,7 @@ class CodeCacheBase : public CodeCache {
     } else {
       generated_code_execute_base_ =
           reinterpret_cast<uint8_t*>(xe::memory::MapFileView(
-              mapping_, reinterpret_cast<void*>(kGeneratedCodeExecuteBase),
+              mapping_, reinterpret_cast<void*>(kCodeExecuteBaseMapped),
               kGeneratedCodeSize, xe::memory::PageAccess::kExecuteReadOnly, 0));
       if (!generated_code_execute_base_) {
         generated_code_execute_base_ =
@@ -292,7 +301,7 @@ class CodeCacheBase : public CodeCache {
       }
       generated_code_write_base_ =
           reinterpret_cast<uint8_t*>(xe::memory::MapFileView(
-              mapping_, reinterpret_cast<void*>(kGeneratedCodeWriteBase),
+              mapping_, reinterpret_cast<void*>(kCodeWriteBaseMapped),
               kGeneratedCodeSize, xe::memory::PageAccess::kReadWrite, 0));
       if (!generated_code_write_base_) {
         generated_code_write_base_ = reinterpret_cast<uint8_t*>(
