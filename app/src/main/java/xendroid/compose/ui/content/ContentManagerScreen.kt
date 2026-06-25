@@ -15,7 +15,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import xendroid.compose.ui.content.ContentManagerViewModel.InstallState
+import xendroid.compose.ui.content.ContentManagerViewModel.DeleteState
 import xendroid.compose.ui.content.ContentManagerViewModel.ListState
 import xendroid.compose.ui.library.FolderBrowserScreen
 
@@ -28,6 +28,7 @@ fun ContentManagerScreen(
 ) {
     val listState by vm.listState.collectAsStateWithLifecycle()
     val installState by vm.state.collectAsStateWithLifecycle()
+    val deleteState by vm.deleteState.collectAsStateWithLifecycle()
     var picking by remember { mutableStateOf(false) }
     var selectedTab by rememberSaveable { mutableStateOf(0) }
 
@@ -98,42 +99,14 @@ fun ContentManagerScreen(
         }
     }
 
-    when (val s = installState) {
-        is InstallState.Busy -> AlertDialog(
-            onDismissRequest = {},
-            title = { Text(s.message) },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    if (s.progress >= 0f) {
-                        LinearProgressIndicator(
-                            progress = { s.progress },
-                            modifier = Modifier.fillMaxWidth(),
-                        )
-                        Text("${(s.progress * 100).toInt()}%  ·  this may take a while.")
-                    } else {
-                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                        Text("This may take a while.")
-                    }
-                }
-            },
-            confirmButton = {},
-        )
-        is InstallState.ConfirmOverwrite -> AlertDialog(
-            onDismissRequest = vm::dismiss,
-            title = { Text("Already installed") },
-            text = {
-                Text("“${s.displayName}” is already installed for this game. Overwrite it?")
-            },
-            confirmButton = {
-                TextButton(onClick = { vm.confirmOverwrite(s.srcPath, s.displayName) }) {
-                    Text("Overwrite")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = vm::dismiss) { Text("Cancel") }
-            },
-        )
-        is InstallState.ConfirmDelete -> AlertDialog(
+    ContentInstallDialogs(
+        state = installState,
+        onDismiss = vm::dismiss,
+        onConfirmOverwrite = vm::confirmOverwrite,
+    )
+
+    (deleteState as? DeleteState.Confirm)?.let { s ->
+        AlertDialog(
             onDismissRequest = vm::dismiss,
             title = { Text("Remove content?") },
             text = {
@@ -146,19 +119,6 @@ fun ContentManagerScreen(
                 TextButton(onClick = vm::dismiss) { Text("Cancel") }
             },
         )
-        is InstallState.Done -> AlertDialog(
-            onDismissRequest = vm::dismiss,
-            title = { Text("Done") },
-            text = { Text(s.message) },
-            confirmButton = { TextButton(onClick = vm::dismiss) { Text("OK") } },
-        )
-        is InstallState.Failed -> AlertDialog(
-            onDismissRequest = vm::dismiss,
-            title = { Text("Couldn't complete") },
-            text = { Text(s.message) },
-            confirmButton = { TextButton(onClick = vm::dismiss) { Text("OK") } },
-        )
-        InstallState.Idle -> {}
     }
 }
 

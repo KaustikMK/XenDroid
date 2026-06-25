@@ -1212,9 +1212,9 @@ static jfloat j_installProgress(JNIEnv* env, jobject self) {
 }
 
 // public native int install_content(String srcPath, String contentRoot);
-// Extract an STFS/SVOD package into contentRoot (DLC forced under XUID 0 by the
-// standalone helper). Returns X_STATUS (0 == success). Blocking VFS walk --
-// caller MUST run off the main thread.
+// Extract an STFS/SVOD package into contentRoot. The standalone helper places it
+// by content type: profiles under their account XUID, everything else under XUID
+// 0. Returns X_STATUS (0 == success). Blocking VFS walk -- off the main thread.
 static jint j_install_content(JNIEnv* env, jobject self, jstring srcPath,
                               jstring contentRoot) {
 #if XE_PLATFORM_xendroid

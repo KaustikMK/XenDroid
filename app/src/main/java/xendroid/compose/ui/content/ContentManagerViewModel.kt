@@ -39,25 +39,25 @@ class ContentManagerViewModel(
     private val _listState = MutableStateFlow<ListState>(ListState.Loading)
     val listState: StateFlow<ListState> = _listState.asStateFlow()
 
-    sealed interface InstallState {
-        data object Idle : InstallState
-        data class Busy(val message: String, val progress: Float = -1f) : InstallState
-        /** Existing package dir found -> ask the user before clobbering (OD3). */
-        data class ConfirmOverwrite(
-            val srcPath: String,
-            val displayName: String,
-        ) : InstallState
-        data class ConfirmDelete(val item: ContentEntry) : InstallState
-        data class Done(val message: String) : InstallState
-        data class Failed(val message: String) : InstallState
+    /** Install/overwrite/progress/result reuse the shared ContentInstallState. */
+    private val _state = MutableStateFlow<ContentInstallState>(ContentInstallState.Idle)
+    val state: StateFlow<ContentInstallState> = _state.asStateFlow()
+
+    /** Delete confirmation stays per-game (separate from the shared install flow). */
+    sealed interface DeleteState {
+        data object Idle : DeleteState
+        data class Confirm(val item: ContentEntry) : DeleteState
     }
 
-    private val _state = MutableStateFlow<InstallState>(InstallState.Idle)
-    val state: StateFlow<InstallState> = _state.asStateFlow()
+    private val _deleteState = MutableStateFlow<DeleteState>(DeleteState.Idle)
+    val deleteState: StateFlow<DeleteState> = _deleteState.asStateFlow()
 
     init { refresh() }
 
-    fun dismiss() { _state.value = InstallState.Idle }
+    fun dismiss() {
+        _state.value = ContentInstallState.Idle
+        _deleteState.value = DeleteState.Idle
+    }
 
     fun refresh() = viewModelScope.launch {
         _listState.value = ListState.Loading
@@ -87,12 +87,12 @@ class ContentManagerViewModel(
 
     /** [srcPath] = absolute host path to the picked package. */
     fun install(srcPath: String) = viewModelScope.launch {
-        _state.value = InstallState.Busy("Preparing…")
+        _state.value = ContentInstallState.Busy("Preparing…")
         val pre = withContext(Dispatchers.IO) { validate(srcPath) }
         when (pre) {
-            is PreCheck.Reject -> _state.value = InstallState.Failed(pre.message)
+            is PreCheck.Reject -> _state.value = ContentInstallState.Failed(pre.message)
             is PreCheck.Overwrite ->
-                _state.value = InstallState.ConfirmOverwrite(srcPath, pre.name)
+                _state.value = ContentInstallState.ConfirmOverwrite(srcPath, pre.name)
             is PreCheck.Ok -> runInstall(srcPath, pre.name)
         }
     }
@@ -101,10 +101,11 @@ class ContentManagerViewModel(
     fun confirmOverwrite(srcPath: String, name: String) =
         viewModelScope.launch { runInstall(srcPath, name) }
 
-    fun requestDelete(item: ContentEntry) { _state.value = InstallState.ConfirmDelete(item) }
+    fun requestDelete(item: ContentEntry) { _deleteState.value = DeleteState.Confirm(item) }
 
     fun delete(item: ContentEntry) = viewModelScope.launch {
-        _state.value = InstallState.Busy("Removing…")
+        _deleteState.value = DeleteState.Idle
+        _state.value = ContentInstallState.Busy("Removing…")
         val status = withContext(Dispatchers.IO) {
             val emu = EmulatorRuntime.emulator ?: return@withContext -1
             emu.delete_content(
@@ -112,10 +113,10 @@ class ContentManagerViewModel(
                 item.contentType, item.pkgDir)
         }
         if (status == 0) {
-            _state.value = InstallState.Done("Removed “${item.displayName}”.")
+            _state.value = ContentInstallState.Done("Removed “${item.displayName}”.")
             refresh()
         } else {
-            _state.value = InstallState.Failed(deleteReasonFor(status))
+            _state.value = ContentInstallState.Failed(deleteReasonFor(status))
         }
     }
 
@@ -145,13 +146,13 @@ class ContentManagerViewModel(
     }
 
     private suspend fun runInstall(srcPath: String, name: String) {
-        _state.value = InstallState.Busy("Installing…", 0f)
+        _state.value = ContentInstallState.Busy("Installing…", 0f)
         // Poll native install progress while the VFS walk blocks an IO thread (the
         // getter reads file-static atomics, so concurrent reads are safe).
         val poll = viewModelScope.launch {
             while (isActive) {
                 val p = EmulatorRuntime.emulator?.installProgress() ?: 0f
-                (_state.value as? InstallState.Busy)
+                (_state.value as? ContentInstallState.Busy)
                     ?.takeIf { it.message == "Installing…" }
                     ?.let { _state.value = it.copy(progress = p.coerceIn(0f, 1f)) }
                 delay(200)
@@ -163,20 +164,12 @@ class ContentManagerViewModel(
         }
         poll.cancel()
         if (status == 0) {
-            _state.value = InstallState.Done(
+            _state.value = ContentInstallState.Done(
                 "Installed “$name”. It'll be available next time the game boots.")
             refresh()
         } else {
-            _state.value = InstallState.Failed(reasonFor(status))
+            _state.value = ContentInstallState.Failed(installReasonFor(status))
         }
-    }
-
-    private fun reasonFor(status: Int): String = when (status) {
-        -1 -> "Emulator not loaded."
-        0xC000000D.toInt() -> "The package is corrupt or unsupported."   // X_STATUS_INVALID_PARAMETER
-        0xC0000022.toInt() -> "Couldn't write to the content folder."    // X_STATUS_ACCESS_DENIED
-        0xC000007F.toInt() -> "Not enough free space to install."        // X_STATUS_DISK_FULL
-        else -> "Install failed (0x${status.toUInt().toString(16)})."
     }
 
     private fun deleteReasonFor(status: Int): String = when (status) {

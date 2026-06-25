@@ -13,6 +13,7 @@
 #include "xenia/base/filesystem.h"
 #include "xenia/base/logging.h"
 #include "xenia/base/string.h"
+#include "xenia/kernel/title_id_utils.h"
 #include "xenia/kernel/xam/content_manager.h"
 #include "xenia/vfs/devices/xcontent_container_device.h"
 #include "xenia/vfs/virtual_file_system.h"
@@ -38,25 +39,44 @@ X_STATUS InstallContentPackageStandalone(
     return X_STATUS_INVALID_PARAMETER;
   }
 
-  const uint32_t title_id = device->title_id();
   const uint32_t content_type = device->content_type();
+  const uint64_t pkg_xuid = device->xuid();
 
-  // Machine content (DLC 0x2, Title Update 0xB0000) lives under XUID 0, NOT
-  // header.profile_id, or the runtime resolver (content_manager.cc:108-112)
-  // won't find it. Saved games / profiles are out of scope (rejected upstream).
-  const uint64_t xuid = 0ull;
+  // Placement is content-type aware so xenia's runtime resolver / ProfileManager
+  // find the package. Profiles land under kDashboardID/00010000 with the account
+  // XUID as the leaf (ProfileManager scans for that path, no .header sidecar).
+  // Everything else -- DLC, title updates, arcade/GoD -- lives under machine
+  // XUID 0, which is where the per-game manager lists + deletes it.
+  uint64_t xuid;
+  uint32_t place_title_id;
+  std::string leaf;
+  bool write_header;
+  if (content_type == static_cast<uint32_t>(XContentType::kProfile)) {
+    if (pkg_xuid == 0 || pkg_xuid == ~uint64_t(0)) {
+      XELOGE("InstallContentPackageStandalone: profile package has no XUID");
+      return X_STATUS_INVALID_PARAMETER;
+    }
+    xuid = pkg_xuid;
+    place_title_id = kernel::kDashboardID;
+    leaf = fmt::format("{:016X}", pkg_xuid);
+    write_header = false;
+  } else {
+    xuid = 0ull;
+    place_title_id = device->title_id();
+    leaf = src_path.filename().string();
+    write_header = true;
+  }
 
-  // F6: data   = <root>/<XUID:016X>/<TitleID:08X>/<Type:08X>/<srcFileName>
-  //     header = <root>/<XUID:016X>/<TitleID:08X>/Headers/<Type:08X>/<srcFileName>
+  // F6: data   = <root>/<XUID:016X>/<TitleID:08X>/<Type:08X>/<leaf>
+  //     header = <root>/<XUID:016X>/<TitleID:08X>/Headers/<Type:08X>/<leaf>
   // ExtractContentHeader() appends ".header" to the leaf and writes into the
   // parent dir, so header_base carries the full leaf path (mirrors emulator.cc).
-  const std::string pkg_dir = src_path.filename().string();
   const std::filesystem::path data_path =
-      content_root / fmt::format("{:016X}/{:08X}/{:08X}/{}", xuid, title_id,
-                                 content_type, pkg_dir);
+      content_root / fmt::format("{:016X}/{:08X}/{:08X}/{}", xuid,
+                                 place_title_id, content_type, leaf);
   const std::filesystem::path header_base =
       content_root / fmt::format("{:016X}/{:08X}/Headers/{:08X}/{}", xuid,
-                                 title_id, content_type, pkg_dir);
+                                 place_title_id, content_type, leaf);
 
   // Disk-space guard (F11): need ~1.1x the payload, mirroring emulator.cc:1066.
   std::error_code ec;
@@ -78,7 +98,9 @@ X_STATUS InstallContentPackageStandalone(
 
   // .header sidecar (F9) then the inner file tree (F8). No kernel broadcast /
   // ReloadProfiles -- that is the whole point of the standalone variant (F14).
-  VirtualFileSystem::ExtractContentHeader(device.get(), header_base);
+  if (write_header) {
+    VirtualFileSystem::ExtractContentHeader(device.get(), header_base);
+  }
   X_STATUS status = VirtualFileSystem::ExtractContentFiles(
       device.get(), data_path, progress.current);
   if (status == X_STATUS_SUCCESS) {

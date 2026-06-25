@@ -2,6 +2,7 @@ package xendroid.compose.data
 
 import android.content.Context
 import android.util.Log
+import xendroid.compose.core.ContentPaths
 import xendroid.compose.core.GameMetadataSource
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.firstOrNull
@@ -72,6 +73,7 @@ class GameLibraryRepository(
         game.titleId?.takeIf { it.isNotBlank() && it != "00000000" }?.let { return@withContext it }
         when (game.format) {
             GameFormat.GOD -> metadata.readGodPath(game.launchUri)?.titleId
+            GameFormat.STFS -> metadata.readContentHeader(game.launchUri)?.titleId
             GameFormat.ISO, GameFormat.XEX_FOLDER, GameFormat.ZAR ->
                 metadata.readTitleIdPath(game.launchUri, game.format)
         }
@@ -173,21 +175,35 @@ class GameLibraryRepository(
                     Extracted(displayName, iconName, meta?.titleId, meta?.mediaId)
                 }
             }
-            GameFormat.GOD -> {
-                val path = child.absolutePath
-                // GOD distinguishes "not a GOD container" (drop) from a miss, so it can't use
-                // cachedOrExtract's non-null contract: extract on a miss, drop if not GOD.
-                val cacheHit = metadataCacheHit(path, signatureOf(child))
-                if (cacheHit != null) {
-                    return Game(path, cacheHit.name, GameFormat.GOD, cacheHit.iconCacheName, cacheHit.titleId, cacheHit.mediaId)
-                }
-                val meta = metadata.readGodPath(path) ?: return null  // not a GOD container
-                val displayName = meta.name.ifEmpty { name }
-                val iconName = meta.iconPng?.let { iconCache.write(path, it) }
-                metadataCache.put(path, displayName, iconName, signatureOf(child), meta.titleId, meta.mediaId)
-                Game(path, displayName, GameFormat.GOD, iconName, meta.titleId, meta.mediaId)
-            }
-            GameFormat.XEX_FOLDER, null -> null
+            GameFormat.GOD -> classifyExtensionless(child, name)
+            GameFormat.STFS, GameFormat.XEX_FOLDER, null -> null
         }
+    }
+
+    /** An extensionless file: a GOD container, an STFS launchable-game container, or neither
+     *  (dropped). Unlike cachedOrExtract this distinguishes "not a game" (return null) from a
+     *  cache miss, and carries the format through the cache so a hit rebuilds the right Game.
+     *  Probe order matches the scan: GOD (readGodPath) first, then an STFS content-header probe. */
+    private fun classifyExtensionless(child: File, name: String): Game? {
+        val path = child.absolutePath
+        metadataCacheHit(path, signatureOf(child))?.let { hit ->
+            val fmt = hit.format ?: GameFormat.GOD   // legacy entries predate STFS -> GOD
+            return Game(path, hit.name, fmt, hit.iconCacheName, hit.titleId, hit.mediaId)
+        }
+        metadata.readGodPath(path)?.let { meta ->
+            val displayName = meta.name.ifEmpty { name }
+            val iconName = meta.iconPng?.let { iconCache.write(path, it) }
+            metadataCache.put(path, displayName, iconName, signatureOf(child), meta.titleId, meta.mediaId, GameFormat.GOD)
+            return Game(path, displayName, GameFormat.GOD, iconName, meta.titleId, meta.mediaId)
+        }
+        // GOD MUST be probed first (above): a GOD container also parses as a content
+        // package, so reaching here only after readGodPath fails keeps GOD out of this
+        // STFS branch. What's left is an STFS launchable-game container (XBLA/arcade, etc.).
+        val header = metadata.readContentHeader(path) ?: return null
+        if (!ContentPaths.isLaunchableGameType(header.contentType)) return null  // add-on content, not a game
+        val displayName = header.displayName.ifBlank { name }
+        val iconName = header.iconPng?.let { iconCache.write(path, it) }
+        metadataCache.put(path, displayName, iconName, signatureOf(child), header.titleId, null, GameFormat.STFS)
+        return Game(path, displayName, GameFormat.STFS, iconName, header.titleId, mediaId = null)
     }
 }

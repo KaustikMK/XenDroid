@@ -57,9 +57,9 @@ public class Emulator extends xendroid.emulator.Emulator{
     public native float compressProgress();
 
     // Extract an STFS/SVOD content package at srcPath into the content tree rooted
-    // at contentRoot (both REAL host paths). DLC (content_type 0x2) is forced under
-    // machine XUID 0000000000000000 by the native helper. Returns X_STATUS (0 ==
-    // success). Blocking VFS walk -- MUST be called off the main thread.
+    // at contentRoot (both REAL host paths). Placement is content-type aware: profiles
+    // under their account XUID, everything else under machine XUID 0. Returns X_STATUS
+    // (0 == success). Blocking VFS walk -- MUST be called off the main thread.
     public native int install_content(String srcPath, String contentRoot);
 
     // Fraction 0..1 of the in-flight content install (0 when none). Poll for a bar.

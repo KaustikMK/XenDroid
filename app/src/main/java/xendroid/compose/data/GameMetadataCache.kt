@@ -33,6 +33,9 @@ class GameMetadataCache(cacheDir: File) {
         val lastModified: Long,
         val titleId: String? = null,
         val mediaId: String? = null,
+        // Extensionless files share one branch (GOD vs STFS); a null format is a legacy
+        // entry that predates STFS and is GOD by construction.
+        val format: GameFormat? = null,
     )
 
     @Serializable
@@ -65,11 +68,12 @@ class GameMetadataCache(cacheDir: File) {
         signature: Signature,
         titleId: String? = null,
         mediaId: String? = null,
+        format: GameFormat? = null,
     ) {
         if (!signature.cacheable) return
         synchronized(lock) {
             entries[launchUri] =
-                Entry(name, iconCacheName, signature.sizeBytes, signature.lastModified, titleId, mediaId)
+                Entry(name, iconCacheName, signature.sizeBytes, signature.lastModified, titleId, mediaId, format)
         }
     }
 
@@ -142,7 +146,7 @@ class GameMetadataCache(cacheDir: File) {
             }
             val icon = cached.iconCacheName
             if (icon != null && !iconFileExists(icon)) return Decision.Miss
-            return Decision.Hit(cached.name, cached.iconCacheName, cached.titleId, cached.mediaId)
+            return Decision.Hit(cached.name, cached.iconCacheName, cached.titleId, cached.mediaId, cached.format)
         }
     }
 
@@ -154,6 +158,7 @@ class GameMetadataCache(cacheDir: File) {
             val iconCacheName: String?,
             val titleId: String? = null,
             val mediaId: String? = null,
+            val format: GameFormat? = null,
         ) : Decision
     }
 }

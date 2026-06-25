@@ -21,11 +21,11 @@ struct ContentProgress {
 };
 
 // Extract an STFS/SVOD package's inner file tree into the on-disk content tree,
-// kernel-free (no Emulator / kernel_state). DLC (content_type 0x2,
-// kMarketplaceContent) is forced under machine XUID 0000000000000000 to match
-// the runtime resolver (content_manager.cc:108-112), NOT header.profile_id.
-// Returns X_STATUS (0 == success). Blocking VFS walk -- caller MUST run off the
-// main thread.
+// kernel-free (no Emulator / kernel_state). Placement is content-type aware:
+// profiles go under kDashboardID with the account XUID as the leaf (so
+// ProfileManager discovers them); everything else (DLC, title updates,
+// arcade/GoD) stays under machine XUID 0. Returns X_STATUS (0 == success).
+// Blocking VFS walk -- caller MUST run off the main thread.
 X_STATUS InstallContentPackageStandalone(
     const std::filesystem::path& src_path,
     const std::filesystem::path& content_root, ContentProgress& progress);

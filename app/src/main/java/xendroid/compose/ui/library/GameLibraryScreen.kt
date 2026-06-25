@@ -44,6 +44,7 @@ fun GameLibraryScreen(
     onOpenPerGameSettings: (titleId: String, gameName: String, format: GameFormat, launchUri: String) -> Unit,
     onOpenGamePatches: (titleId: String, gameName: String) -> Unit,
     onOpenContentManager: (titleId: String, gameName: String) -> Unit,
+    onOpenInstallContent: () -> Unit,
     compressVm: GameCompressViewModel,
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -120,6 +121,10 @@ fun GameLibraryScreen(
                                 onClick = { menuOpen = false; startRealPathMode() },
                             )
                         }
+                        DropdownMenuItem(
+                            text = { Text("Install content") },
+                            onClick = { menuOpen = false; onOpenInstallContent() },
+                        )
                         DropdownMenuItem(
                             text = { Text("Key mapping") },
                             onClick = { menuOpen = false; onOpenKeymap() },

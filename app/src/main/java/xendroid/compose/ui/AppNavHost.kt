@@ -20,6 +20,8 @@ import xendroid.compose.settings.SettingsViewModel
 import xendroid.compose.ui.compress.GameCompressViewModel
 import xendroid.compose.ui.content.ContentManagerViewModel
 import xendroid.compose.ui.content.ContentManagerScreen
+import xendroid.compose.ui.content.InstallContentViewModel
+import xendroid.compose.ui.content.InstallContentScreen
 import xendroid.compose.ui.library.GameLibraryScreen
 import xendroid.compose.ui.library.GameLibraryViewModel
 import xendroid.compose.ui.settings.PerGameSettingsScreen
@@ -43,6 +45,7 @@ object Routes {
     const val GAME_PATCHES = "game_patches"
     // "$CONTENT_MANAGER/{titleId}?name={name}"
     const val CONTENT_MANAGER = "content_manager"
+    const val INSTALL_CONTENT = "install_content"
 }
 
 @Composable
@@ -82,6 +85,7 @@ fun AppNavHost(container: AppContainer) {
                 onOpenContentManager = { titleId, name ->
                     navigateOnce("${Routes.CONTENT_MANAGER}/$titleId?name=${Uri.encode(name)}")
                 },
+                onOpenInstallContent = { navigateOnce(Routes.INSTALL_CONTENT) },
             )
         }
         composable(Routes.SETTINGS) {
@@ -145,6 +149,11 @@ fun AppNavHost(container: AppContainer) {
             val vm: ContentManagerViewModel =
                 viewModel(factory = container.gameContentManagerViewModelFactory(titleId))
             ContentManagerScreen(vm = vm, gameName = gameName, onBack = { nav.popBackStack() })
+        }
+        composable(Routes.INSTALL_CONTENT) {
+            val vm: InstallContentViewModel =
+                viewModel(factory = container.installContentViewModelFactory())
+            InstallContentScreen(vm = vm, onBack = { nav.popBackStack() })
         }
     }
 }
