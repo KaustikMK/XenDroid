@@ -1,81 +1,73 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:tools="http://schemas.android.com/tools" >
-<uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
-<uses-permission android:name="android.permission.INTERNET" />
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
-    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
-
+    <!-- Network: core's Application/native may probe; matches legacy :app. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- Legacy storage (maxSdkVersion guards: SAF is the real path on 29+). -->
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32" />
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="29" />
+    <!-- All Files Access (API 30+) real-path mode: an ALTERNATIVE to scoped SAF for
+         devices (MIUI/HyperOS) whose OPEN_DOCUMENT_TREE picker refuses every folder.
+         When granted, the library scans + boots from a real filesystem path instead of
+         content:// SAF uris (no /proc/self/fd open). SAF stays the default mode. -->
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
+    <!-- Controller rumble (host Activity, SP1-C; declared now so core code never NPEs). -->
     <uses-permission android:name="android.permission.VIBRATE" />
 
-    <!--  触摸屏功能声明为非必需  -->
-    <uses-feature android:name="android.hardware.touchscreen" android:required="false"/>
+    <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
 
+    <!-- SP1-B: switch from default Application to core's bootstrap. onCreate now runs:
+         the Vulkan GPU probe (ProcessorInfo -> libhardware_ProcessorInfo.so, brings up
+         Vulkan to read the device name), first-run asset extraction (default_config.toml +
+         profile), and EAGER Emulator.load_library() on non-delay devices (Adreno 830). -->
     <application
         android:name="xendroid.compose.Application"
         android:allowBackup="true"
-        android:dataExtractionRules="@xml/data_extraction_rules"
-        android:fullBackupContent="@xml/backup_rules"
-        android:icon="@drawable/app_icon"
+        android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
-        android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
-        android:theme="@style/AppTheme"
-        android:requestLegacyExternalStorage="true"
-        android:allowNativeHeapPointerTagging="false"
-        tools:targetApi="31" >
-
-
-
-
-
-
-        <activity android:name="xendroid.compose.MainActivity"
-
-            android:exported="true"
-            android:launchMode="singleTask"
+        android:theme="@style/Theme.xendroidCompose">
+        <!-- configChanges (incl. orientation|screenSize): the layout editor FORCES the screen
+             orientation via requestedOrientation so each touch layout previews as it appears
+             in-game. Without this, rotating would RECREATE MainActivity (losing the editor's
+             in-progress edits and reverting to landscape), which is why "Portrait" appeared to
+             do nothing. Compose handles the config change via recomposition. -->
+        <activity
+            android:name="xendroid.compose.MainActivity"
             android:configChanges="layoutDirection|locale|orientation|uiMode|screenLayout|screenSize|smallestScreenSize|keyboard|keyboardHidden|navigation"
-            android:label="@string/app_name">
+            android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
-
-        <activity android:name="xendroid.compose.EmulatorActivity"
-
-            android:screenOrientation="sensorLandscape"
-            android:launchMode="singleTask"
-            android:configChanges="layoutDirection|locale|orientation|uiMode|screenLayout|screenSize|smallestScreenSize|keyboard|keyboardHidden|navigation"
-            android:exported="true"
-            android:theme="@android:style/Theme.NoTitleBar.Fullscreen"
+        <!-- SP1-C: the emulator host. Separate :emu process (libe.so is single-shot
+             per process; onDestroy -> System.exit(0) hard-kills it cleanly). singleTask
+             so a relaunch/pinned-shortcut routes to the existing task instead of
+             re-booting. Full configChanges so rotation/keyboard/etc. do NOT recreate the
+             Activity (a recreate would re-enter the single-shot boot). Fullscreen theme:
+             the Vulkan swapchain must own the whole window. -->
+        <activity
+            android:name="xendroid.compose.EmulatorHostActivity"
             android:process=":emu"
-            >
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:screenOrientation="sensorLandscape"
+            android:configChanges="layoutDirection|locale|orientation|uiMode|screenLayout|screenSize|smallestScreenSize|keyboard|keyboardHidden|navigation"
+            android:theme="@style/Theme.xendroidEmu">
+            <!-- In-app launch: GameLibraryViewModel.buildLaunchIntent (xendroid + setPackage). -->
             <intent-filter>
                 <action android:name="xendroid.intent.action.xendroid" />
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
+            <!-- Pinned-shortcut cold start: createShortcut sets action = ACTION_VIEW. -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
         </activity>
-        <activity android:name="xendroid.compose.EmulatorSettings"
-            android:exported="false"
-            android:label="@string/settings"/>
-        <activity android:name="xendroid.compose.KeyMapActivity"
-            android:exported="false"
-            android:label="@string/key_mappers"/>
-        <activity android:name="xendroid.compose.VirtualControlEdit"
-            android:screenOrientation="sensorLandscape"
-            android:configChanges="layoutDirection|locale|orientation|uiMode|screenLayout|screenSize|smallestScreenSize|keyboard|keyboardHidden|navigation"
-            android:exported="false"
-            android:theme="@android:style/Theme.NoTitleBar.Fullscreen"
-            android:launchMode="singleTask"/>
-        <activity android:name="xendroid.compose.AboutActivity" android:exported="false" android:label="@string/about"> </activity>
-        <!-- DocumentsProvider now declared in :emulator-core's library manifest (merged in). -->
-
     </application>
-
 </manifest>
