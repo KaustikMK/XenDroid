@@ -9,15 +9,11 @@ plugins {
 // build (libe.so) + JNI boundary. Distinct applicationId so it installs alongside
 // the legacy build during the rewrite.
 
-// Bundle the xenia-canary game patches (pinned submodule) + XenDroid's own authored patches
-// into assets/game-patches/. The Compose UI lists/toggles these; enabling one materializes it
-// into the on-device patches/ dir the emulator reads at launch.
+// Bundle the xenia-canary game patches into assets/game-patches/.
 def gamePatchesGenDir = layout.buildDirectory.dir("generated/gamePatches")
 def syncGamePatches = tasks.register('syncGamePatches', Copy) {
     into gamePatchesGenDir.map { it.dir("game-patches") }
-    from("$rootDir/third_party/game-patches/patches") { include '*.patch.toml' }
-    from("$rootDir/patches") { include '*.patch.toml' }   // XenDroid-authored patches
-    duplicatesStrategy = DuplicatesStrategy.INCLUDE
+    from("$rootDir/patches/xenia-canary/patches") { include '*.patch.toml' }
 }
 
 android {
