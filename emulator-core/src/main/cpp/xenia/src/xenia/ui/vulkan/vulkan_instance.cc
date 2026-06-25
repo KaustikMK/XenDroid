@@ -38,8 +38,8 @@ vkDestroyInstance(VkInstance instance, const VkAllocationCallbacks* pAllocator);
 #endif
 
 #if XE_PLATFORM_xendroid||XE_PLATFORM_ANDROID
-#include "../libadrenotools/include/adrenotools/priv.h"
-#include "../libadrenotools/include/adrenotools/driver.h"
+#include "third_party/libadrenotools/include/adrenotools/priv.h"
+#include "third_party/libadrenotools/include/adrenotools/driver.h"
 extern std::string g_native_lib_dir;
 
 DEFINE_string(vulkan_lib_path, "", "Custom Driver Library Path", "Vulkan");

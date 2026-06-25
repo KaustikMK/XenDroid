@@ -97,7 +97,7 @@ endif()
 
 add_subdirectory(xenia EXCLUDE_FROM_ALL)
 
-add_subdirectory(libadrenotools EXCLUDE_FROM_ALL)
+add_subdirectory(xenia/third_party/libadrenotools EXCLUDE_FROM_ALL)
 
 target_include_directories(emu PRIVATE
         xenia
