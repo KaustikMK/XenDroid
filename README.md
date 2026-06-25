@@ -37,7 +37,7 @@ Please check the LICENSE file under the appropriate file header and directory fo
 
 ## Device Requirements
 - Snapdragon SoC, GEN 2 or higher
-- Adreno GPU 7xx or higher.
+- Adreno GPU 740 or higher. Lower 7xx have not been tested.
 
 ## Drivers list
 We recommend using these custom Vulkan drivers to achieve a better experience:
