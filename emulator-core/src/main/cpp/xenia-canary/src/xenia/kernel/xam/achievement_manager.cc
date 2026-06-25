@@ -14,10 +14,16 @@
 #include "xenia/kernel/util/shim_utils.h"
 #include "xenia/kernel/xam/achievement_backends/gpd_achievement_backend.h"
 #include "xenia/kernel/xam/xdbf/gpd_info.h"
+#include "xenia/ui/audio_helper.h"
 #include "xenia/ui/imgui_guest_notification.h"
 
-DEFINE_bool(show_achievement_notification, false,
+DEFINE_bool(show_achievement_notification, true,
             "Show achievement notification on screen.", "UI");
+
+DEFINE_bool(achievement_notification_position_by_game, false,
+            "Use game-specified notification position for achievements. "
+            "When disabled, achievements always appear at center-bottom.",
+            "UI");
 
 DEFINE_string(
     default_achievements_backend, "GPD",
@@ -150,10 +156,18 @@ void AchievementManager::ShowAchievementEarnedNotification(
       emulator->display_window()->app_context();
   ui::ImGuiDrawer* imgui_drawer = emulator->imgui_drawer();
 
-  app_context.CallInUIThread([imgui_drawer, description]() {
-    new xe::ui::AchievementNotificationWindow(
-        imgui_drawer, "Achievement unlocked", description, 0,
-        kernel_state()->notification_position_);
+  // Use game-specified position if enabled, otherwise default to center-bottom
+  const uint8_t position = cvars::achievement_notification_position_by_game
+                               ? kernel_state()->notification_position_
+                               : 2;
+
+  app_context.CallInUIThread([imgui_drawer, description, position]() {
+    // Play achievement sound
+    ui::AudioHelper::Instance().PlayAchievementSound();
+
+    // Show notification
+    new ui::AchievementNotificationWindow(imgui_drawer, "Achievement unlocked",
+                                          description, 0, position);
   });
 }
 

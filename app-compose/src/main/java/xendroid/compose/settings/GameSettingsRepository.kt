@@ -73,6 +73,10 @@ class GameSettingsRepository(private val store: ConfigStore, private val titleId
 
     fun isOverridden(s: Setting): Boolean = overrides.containsKey(s.key)
 
+    /** Raw override value for [s] if overridden, else null. Lets the per-game observable carry the
+     *  value so a value-only edit changes the snapshot (containsKey still means "overridden"). */
+    fun rawOverride(s: Setting): String? = overrides[s.key]
+
     private fun inheritedRaw(s: Setting): String =
         globalValues[s.key] ?: schemaDefaultString(s)
 

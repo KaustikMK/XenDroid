@@ -10,7 +10,11 @@
 #ifndef XENIA_KERNEL_XSOCKET_H_
 #define XENIA_KERNEL_XSOCKET_H_
 
+// Asio must be included before Windows headers to avoid macro conflicts
+#include <asio.hpp>
+
 #include <cstring>
+#include <optional>
 #include <queue>
 
 #include "xenia/base/byte_order.h"
@@ -18,6 +22,9 @@
 
 namespace xe {
 namespace kernel {
+
+class XEvent;
+
 enum class X_WSAError : uint32_t {
   X_WSA_INVALID_PARAMETER = 0x0057,
   X_WSAEFAULT = 0x271E,
@@ -80,29 +87,33 @@ class XSocket : public XObject {
  public:
   static const XObject::Type kObjectType = XObject::Type::Socket;
 
+  // Note: These enum values use X_ prefix to avoid conflicts with Windows
+  // macros
   enum AddressFamily {
-    AF_INET = 2,
+    X_AF_INET = 2,
   };
 
   enum Type {
-    SOCK_STREAM = 1,
-    SOCK_DGRAM = 2,
+    X_SOCK_STREAM = 1,
+    X_SOCK_DGRAM = 2,
   };
 
   enum Protocol {
-    XE_IPPROTO_TCP = 6,
-    XE_IPPROTO_UDP = 17,
+    X_IPPROTO_TCP = 6,
+    X_IPPROTO_UDP = 17,
 
     // LIVE Voice and Data Protocol
     // https://blog.csdn.net/baozi3026/article/details/4277227
     // Format: [cbGameData][GameData(encrypted)][VoiceData(unencrypted)]
-    XE_IPPROTO_VDP = 254,
+    X_IPPROTO_VDP = 254,
   };
 
   XSocket(KernelState* kernel_state);
   ~XSocket();
 
-  uint64_t native_handle() const { return native_handle_; }
+  // Returns the native socket handle for use with select() etc.
+  // Returns -1 if socket is not initialized.
+  uint64_t native_handle();
   uint16_t bound_port() const { return bound_port_; }
 
   X_STATUS Initialize(AddressFamily af, Type type, Protocol proto);
@@ -118,6 +129,7 @@ class XSocket : public XObject {
   X_STATUS Bind(N_XSOCKADDR_IN* name, int name_len);
   X_STATUS Listen(int backlog);
   X_STATUS GetSockName(uint8_t* buf, int* buf_len);
+  X_STATUS GetPeerName(uint8_t* buf, int* buf_len);
   object_ref<XSocket> Accept(N_XSOCKADDR* name, int* name_len);
   int Shutdown(int how);
 
@@ -128,6 +140,10 @@ class XSocket : public XObject {
                N_XSOCKADDR_IN* from, uint32_t* from_len);
   int SendTo(uint8_t* buf, uint32_t buf_len, uint32_t flags, N_XSOCKADDR_IN* to,
              uint32_t to_len);
+
+  // Associates the socket with an XEvent signaled on readiness for any of the
+  // requested Winsock FD_* flags. flags == 0 detaches.
+  int WSAEventSelect(object_ref<XEvent> event, uint32_t flags);
 
   uint32_t GetLastWSAError() const;
 
@@ -145,8 +161,15 @@ class XSocket : public XObject {
                    size_t len);
 
  private:
-  XSocket(KernelState* kernel_state, uint64_t native_handle);
-  uint64_t native_handle_ = -1;
+  // Private constructor for accepted sockets
+  XSocket(KernelState* kernel_state, asio::ip::tcp::socket socket);
+
+  // Socket storage - either TCP or UDP
+  std::optional<asio::ip::tcp::socket> tcp_socket_;
+  std::optional<asio::ip::udp::socket> udp_socket_;
+
+  // Acceptor for listening TCP sockets (created when Listen() is called)
+  std::optional<asio::ip::tcp::acceptor> acceptor_;
 
   AddressFamily af_;    // Address family
   Type type_;           // Type (DGRAM/Stream/etc)
@@ -158,9 +181,16 @@ class XSocket : public XObject {
 
   bool broadcast_socket_ = false;
 
+  // Last error code for this socket
+  mutable uint32_t last_error_ = 0;
+
   std::unique_ptr<xe::threading::Event> event_;
   std::mutex incoming_packet_mutex_;
   std::queue<uint8_t*> incoming_packets_;
+
+  std::mutex select_mutex_;
+  object_ref<XEvent> selected_event_;
+  uint32_t selected_event_flags_ = 0;
 };
 
 }  // namespace kernel

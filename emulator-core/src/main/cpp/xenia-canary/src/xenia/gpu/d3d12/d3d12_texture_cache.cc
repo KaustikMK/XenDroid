@@ -33,49 +33,81 @@ namespace d3d12 {
 
 // Generated with `xb buildshaders`.
 namespace shaders {
-#include "xenia/gpu/shaders/bytecode/d3d12_5_1/texture_load_128bpb_cs.h"
-#include "xenia/gpu/shaders/bytecode/d3d12_5_1/texture_load_128bpb_scaled_cs.h"
-#include "xenia/gpu/shaders/bytecode/d3d12_5_1/texture_load_16bpb_cs.h"
-#include "xenia/gpu/shaders/bytecode/d3d12_5_1/texture_load_16bpb_scaled_cs.h"
-#include "xenia/gpu/shaders/bytecode/d3d12_5_1/texture_load_32bpb_cs.h"
-#include "xenia/gpu/shaders/bytecode/d3d12_5_1/texture_load_32bpb_scaled_cs.h"
-#include "xenia/gpu/shaders/bytecode/d3d12_5_1/texture_load_64bpb_cs.h"
-#include "xenia/gpu/shaders/bytecode/d3d12_5_1/texture_load_64bpb_scaled_cs.h"
-#include "xenia/gpu/shaders/bytecode/d3d12_5_1/texture_load_8bpb_cs.h"
-#include "xenia/gpu/shaders/bytecode/d3d12_5_1/texture_load_8bpb_scaled_cs.h"
-#include "xenia/gpu/shaders/bytecode/d3d12_5_1/texture_load_bgrg8_rgb8_cs.h"
-#include "xenia/gpu/shaders/bytecode/d3d12_5_1/texture_load_bgrg8_rgbg8_cs.h"
-#include "xenia/gpu/shaders/bytecode/d3d12_5_1/texture_load_ctx1_cs.h"
-#include "xenia/gpu/shaders/bytecode/d3d12_5_1/texture_load_depth_float_cs.h"
-#include "xenia/gpu/shaders/bytecode/d3d12_5_1/texture_load_depth_float_scaled_cs.h"
-#include "xenia/gpu/shaders/bytecode/d3d12_5_1/texture_load_depth_unorm_cs.h"
-#include "xenia/gpu/shaders/bytecode/d3d12_5_1/texture_load_depth_unorm_scaled_cs.h"
-#include "xenia/gpu/shaders/bytecode/d3d12_5_1/texture_load_dxn_rg8_cs.h"
-#include "xenia/gpu/shaders/bytecode/d3d12_5_1/texture_load_dxt1_rgba8_cs.h"
-#include "xenia/gpu/shaders/bytecode/d3d12_5_1/texture_load_dxt3_rgba8_cs.h"
-#include "xenia/gpu/shaders/bytecode/d3d12_5_1/texture_load_dxt3a_cs.h"
-#include "xenia/gpu/shaders/bytecode/d3d12_5_1/texture_load_dxt3aas1111_bgra4_cs.h"
-#include "xenia/gpu/shaders/bytecode/d3d12_5_1/texture_load_dxt5_rgba8_cs.h"
-#include "xenia/gpu/shaders/bytecode/d3d12_5_1/texture_load_dxt5a_r8_cs.h"
-#include "xenia/gpu/shaders/bytecode/d3d12_5_1/texture_load_gbgr8_grgb8_cs.h"
-#include "xenia/gpu/shaders/bytecode/d3d12_5_1/texture_load_gbgr8_rgb8_cs.h"
-#include "xenia/gpu/shaders/bytecode/d3d12_5_1/texture_load_r10g11b11_rgba16_cs.h"
-#include "xenia/gpu/shaders/bytecode/d3d12_5_1/texture_load_r10g11b11_rgba16_scaled_cs.h"
-#include "xenia/gpu/shaders/bytecode/d3d12_5_1/texture_load_r10g11b11_rgba16_snorm_cs.h"
-#include "xenia/gpu/shaders/bytecode/d3d12_5_1/texture_load_r10g11b11_rgba16_snorm_scaled_cs.h"
-#include "xenia/gpu/shaders/bytecode/d3d12_5_1/texture_load_r11g11b10_rgba16_cs.h"
-#include "xenia/gpu/shaders/bytecode/d3d12_5_1/texture_load_r11g11b10_rgba16_scaled_cs.h"
-#include "xenia/gpu/shaders/bytecode/d3d12_5_1/texture_load_r11g11b10_rgba16_snorm_cs.h"
-#include "xenia/gpu/shaders/bytecode/d3d12_5_1/texture_load_r11g11b10_rgba16_snorm_scaled_cs.h"
-#include "xenia/gpu/shaders/bytecode/d3d12_5_1/texture_load_r4g4b4a4_b4g4r4a4_cs.h"
-#include "xenia/gpu/shaders/bytecode/d3d12_5_1/texture_load_r4g4b4a4_b4g4r4a4_scaled_cs.h"
-#include "xenia/gpu/shaders/bytecode/d3d12_5_1/texture_load_r5g5b5a1_b5g5r5a1_cs.h"
-#include "xenia/gpu/shaders/bytecode/d3d12_5_1/texture_load_r5g5b5a1_b5g5r5a1_scaled_cs.h"
-#include "xenia/gpu/shaders/bytecode/d3d12_5_1/texture_load_r5g5b6_b5g6r5_swizzle_rbga_cs.h"
-#include "xenia/gpu/shaders/bytecode/d3d12_5_1/texture_load_r5g5b6_b5g6r5_swizzle_rbga_scaled_cs.h"
-#include "xenia/gpu/shaders/bytecode/d3d12_5_1/texture_load_r5g6b5_b5g6r5_cs.h"
-#include "xenia/gpu/shaders/bytecode/d3d12_5_1/texture_load_r5g6b5_b5g6r5_scaled_cs.h"
+#include "xenia/gpu/shaders/bytecode/d3d12_dxil/texture_load_128bpb_cs.h"
+#include "xenia/gpu/shaders/bytecode/d3d12_dxil/texture_load_128bpb_scaled_cs.h"
+#include "xenia/gpu/shaders/bytecode/d3d12_dxil/texture_load_16bpb_cs.h"
+#include "xenia/gpu/shaders/bytecode/d3d12_dxil/texture_load_16bpb_scaled_cs.h"
+#include "xenia/gpu/shaders/bytecode/d3d12_dxil/texture_load_32bpb_cs.h"
+#include "xenia/gpu/shaders/bytecode/d3d12_dxil/texture_load_32bpb_scaled_cs.h"
+#include "xenia/gpu/shaders/bytecode/d3d12_dxil/texture_load_64bpb_cs.h"
+#include "xenia/gpu/shaders/bytecode/d3d12_dxil/texture_load_64bpb_scaled_cs.h"
+#include "xenia/gpu/shaders/bytecode/d3d12_dxil/texture_load_8bpb_cs.h"
+#include "xenia/gpu/shaders/bytecode/d3d12_dxil/texture_load_8bpb_scaled_cs.h"
+#include "xenia/gpu/shaders/bytecode/d3d12_dxil/texture_load_bgrg8_rgb8_cs.h"
+#include "xenia/gpu/shaders/bytecode/d3d12_dxil/texture_load_bgrg8_rgbg8_cs.h"
+#include "xenia/gpu/shaders/bytecode/d3d12_dxil/texture_load_ctx1_cs.h"
+#include "xenia/gpu/shaders/bytecode/d3d12_dxil/texture_load_depth_float_cs.h"
+#include "xenia/gpu/shaders/bytecode/d3d12_dxil/texture_load_depth_float_scaled_cs.h"
+#include "xenia/gpu/shaders/bytecode/d3d12_dxil/texture_load_depth_unorm_cs.h"
+#include "xenia/gpu/shaders/bytecode/d3d12_dxil/texture_load_depth_unorm_scaled_cs.h"
+#include "xenia/gpu/shaders/bytecode/d3d12_dxil/texture_load_dxn_rg8_cs.h"
+#include "xenia/gpu/shaders/bytecode/d3d12_dxil/texture_load_dxt1_rgba8_cs.h"
+#include "xenia/gpu/shaders/bytecode/d3d12_dxil/texture_load_dxt3_rgba8_cs.h"
+#include "xenia/gpu/shaders/bytecode/d3d12_dxil/texture_load_dxt3a_cs.h"
+#include "xenia/gpu/shaders/bytecode/d3d12_dxil/texture_load_dxt3aas1111_bgra4_cs.h"
+#include "xenia/gpu/shaders/bytecode/d3d12_dxil/texture_load_dxt5_rgba8_cs.h"
+#include "xenia/gpu/shaders/bytecode/d3d12_dxil/texture_load_dxt5a_r8_cs.h"
+#include "xenia/gpu/shaders/bytecode/d3d12_dxil/texture_load_gbgr8_grgb8_cs.h"
+#include "xenia/gpu/shaders/bytecode/d3d12_dxil/texture_load_gbgr8_rgb8_cs.h"
+#include "xenia/gpu/shaders/bytecode/d3d12_dxil/texture_load_r10g11b11_rgba16_cs.h"
+#include "xenia/gpu/shaders/bytecode/d3d12_dxil/texture_load_r10g11b11_rgba16_scaled_cs.h"
+#include "xenia/gpu/shaders/bytecode/d3d12_dxil/texture_load_r10g11b11_rgba16_snorm_cs.h"
+#include "xenia/gpu/shaders/bytecode/d3d12_dxil/texture_load_r10g11b11_rgba16_snorm_scaled_cs.h"
+#include "xenia/gpu/shaders/bytecode/d3d12_dxil/texture_load_r11g11b10_rgba16_cs.h"
+#include "xenia/gpu/shaders/bytecode/d3d12_dxil/texture_load_r11g11b10_rgba16_scaled_cs.h"
+#include "xenia/gpu/shaders/bytecode/d3d12_dxil/texture_load_r11g11b10_rgba16_snorm_cs.h"
+#include "xenia/gpu/shaders/bytecode/d3d12_dxil/texture_load_r11g11b10_rgba16_snorm_scaled_cs.h"
+#include "xenia/gpu/shaders/bytecode/d3d12_dxil/texture_load_r4g4b4a4_b4g4r4a4_cs.h"
+#include "xenia/gpu/shaders/bytecode/d3d12_dxil/texture_load_r4g4b4a4_b4g4r4a4_scaled_cs.h"
+#include "xenia/gpu/shaders/bytecode/d3d12_dxil/texture_load_r5g5b5a1_b5g5r5a1_cs.h"
+#include "xenia/gpu/shaders/bytecode/d3d12_dxil/texture_load_r5g5b5a1_b5g5r5a1_scaled_cs.h"
+#include "xenia/gpu/shaders/bytecode/d3d12_dxil/texture_load_r5g5b6_b5g6r5_swizzle_rbga_cs.h"
+#include "xenia/gpu/shaders/bytecode/d3d12_dxil/texture_load_r5g5b6_b5g6r5_swizzle_rbga_scaled_cs.h"
+#include "xenia/gpu/shaders/bytecode/d3d12_dxil/texture_load_r5g6b5_b5g6r5_cs.h"
+#include "xenia/gpu/shaders/bytecode/d3d12_dxil/texture_load_r5g6b5_b5g6r5_scaled_cs.h"
+// Mip generation shaders for scaled resolve textures.
+#include "xenia/gpu/shaders/bytecode/d3d12_dxil/mip_generate_3d_cs.h"
+#include "xenia/gpu/shaders/bytecode/d3d12_dxil/mip_generate_cs.h"
 }  // namespace shaders
+
+// Check if a DXGI format supports typed UAV stores for mip generation.
+// Our compute shaders use float4 read/write, so the format must support
+// typed UAV stores with float conversion.
+static bool FormatSupportsMipGenerationUAV(DXGI_FORMAT format) {
+  switch (format) {
+    // RGBA formats - most common, widely supported for typed UAV.
+    case DXGI_FORMAT_R8G8B8A8_UNORM:
+    case DXGI_FORMAT_R10G10B10A2_UNORM:
+    case DXGI_FORMAT_R16G16B16A16_UNORM:
+    case DXGI_FORMAT_R16G16B16A16_FLOAT:
+    case DXGI_FORMAT_R32G32B32A32_FLOAT:
+    // RG formats.
+    case DXGI_FORMAT_R8G8_UNORM:
+    case DXGI_FORMAT_R16G16_UNORM:
+    case DXGI_FORMAT_R16G16_FLOAT:
+    case DXGI_FORMAT_R32G32_FLOAT:
+    // Single channel formats.
+    case DXGI_FORMAT_R8_UNORM:
+    case DXGI_FORMAT_R16_UNORM:
+    case DXGI_FORMAT_R16_FLOAT:
+    case DXGI_FORMAT_R32_FLOAT:
+      return true;
+    // All other formats (block-compressed, packed, integer, SNORM, etc.) are
+    // not supported for our float4 typed UAV store mip generation.
+    default:
+      return false;
+  }
+}
 
 /*
         chrispy: we're getting cache misses in GetHostFormatSwizzle, use a
@@ -346,6 +378,101 @@ bool D3D12TextureCache::Initialize() {
           return false;
         }
       }
+    }
+  }
+
+  // Create the mip generation root signature (for scaled resolve texture mips).
+  // Root parameter 0: Constants (source size, dest size).
+  // Root parameter 1: SRV for source mip level.
+  // Root parameter 2: UAV for destination mip level.
+  // Static sampler: Linear clamp sampler.
+  {
+    D3D12_ROOT_PARAMETER mip_gen_root_parameters[3];
+    // Parameter 0: Constants.
+    // 8 constants to support both 2D (4 used) and 3D (8 used) shaders.
+    mip_gen_root_parameters[0].ParameterType =
+        D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    mip_gen_root_parameters[0].Constants.ShaderRegister = 0;
+    mip_gen_root_parameters[0].Constants.RegisterSpace = 0;
+    mip_gen_root_parameters[0].Constants.Num32BitValues =
+        8;  // 2x uint4 (padded)
+    mip_gen_root_parameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    // Parameter 1: Source SRV.
+    D3D12_DESCRIPTOR_RANGE mip_gen_srv_range;
+    mip_gen_srv_range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    mip_gen_srv_range.NumDescriptors = 1;
+    mip_gen_srv_range.BaseShaderRegister = 0;
+    mip_gen_srv_range.RegisterSpace = 0;
+    mip_gen_srv_range.OffsetInDescriptorsFromTableStart = 0;
+    mip_gen_root_parameters[1].ParameterType =
+        D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    mip_gen_root_parameters[1].DescriptorTable.NumDescriptorRanges = 1;
+    mip_gen_root_parameters[1].DescriptorTable.pDescriptorRanges =
+        &mip_gen_srv_range;
+    mip_gen_root_parameters[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    // Parameter 2: Destination UAV.
+    D3D12_DESCRIPTOR_RANGE mip_gen_uav_range;
+    mip_gen_uav_range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
+    mip_gen_uav_range.NumDescriptors = 1;
+    mip_gen_uav_range.BaseShaderRegister = 0;
+    mip_gen_uav_range.RegisterSpace = 0;
+    mip_gen_uav_range.OffsetInDescriptorsFromTableStart = 0;
+    mip_gen_root_parameters[2].ParameterType =
+        D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    mip_gen_root_parameters[2].DescriptorTable.NumDescriptorRanges = 1;
+    mip_gen_root_parameters[2].DescriptorTable.pDescriptorRanges =
+        &mip_gen_uav_range;
+    mip_gen_root_parameters[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    // Static sampler for bilinear filtering.
+    D3D12_STATIC_SAMPLER_DESC mip_gen_sampler;
+    mip_gen_sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+    mip_gen_sampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    mip_gen_sampler.AddressV = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    mip_gen_sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    mip_gen_sampler.MipLODBias = 0.0f;
+    mip_gen_sampler.MaxAnisotropy = 1;
+    mip_gen_sampler.ComparisonFunc = D3D12_COMPARISON_FUNC_NEVER;
+    mip_gen_sampler.BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_BLACK;
+    mip_gen_sampler.MinLOD = 0.0f;
+    mip_gen_sampler.MaxLOD = 0.0f;
+    mip_gen_sampler.ShaderRegister = 0;
+    mip_gen_sampler.RegisterSpace = 0;
+    mip_gen_sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    D3D12_ROOT_SIGNATURE_DESC mip_gen_root_signature_desc;
+    mip_gen_root_signature_desc.NumParameters =
+        UINT(xe::countof(mip_gen_root_parameters));
+    mip_gen_root_signature_desc.pParameters = mip_gen_root_parameters;
+    mip_gen_root_signature_desc.NumStaticSamplers = 1;
+    mip_gen_root_signature_desc.pStaticSamplers = &mip_gen_sampler;
+    mip_gen_root_signature_desc.Flags = D3D12_ROOT_SIGNATURE_FLAG_NONE;
+    *(mip_gen_root_signature_.ReleaseAndGetAddressOf()) =
+        ui::d3d12::util::CreateRootSignature(provider,
+                                             mip_gen_root_signature_desc);
+    if (!mip_gen_root_signature_) {
+      XELOGE(
+          "D3D12TextureCache: Failed to create the mip generation root "
+          "signature");
+      return false;
+    }
+    *(mip_gen_pipeline_.ReleaseAndGetAddressOf()) =
+        ui::d3d12::util::CreateComputePipeline(device, shaders::mip_generate_cs,
+                                               sizeof(shaders::mip_generate_cs),
+                                               mip_gen_root_signature_.Get());
+    if (!mip_gen_pipeline_) {
+      XELOGE(
+          "D3D12TextureCache: Failed to create the mip generation compute "
+          "pipeline");
+      return false;
+    }
+    *(mip_gen_3d_pipeline_.ReleaseAndGetAddressOf()) =
+        ui::d3d12::util::CreateComputePipeline(
+            device, shaders::mip_generate_3d_cs,
+            sizeof(shaders::mip_generate_3d_cs), mip_gen_root_signature_.Get());
+    if (!mip_gen_3d_pipeline_) {
+      XELOGE(
+          "D3D12TextureCache: Failed to create the 3D mip generation compute "
+          "pipeline");
+      return false;
     }
   }
 
@@ -1358,6 +1485,11 @@ std::unique_ptr<TextureCache::Texture> D3D12TextureCache::CreateTexture(
   // Untiling through a buffer instead of using unordered access because copying
   // is not done that often.
   desc.Flags = D3D12_RESOURCE_FLAG_NONE;
+  // For scaled resolve textures with mips, we need UAV access to generate mip
+  // levels via compute shader.
+  if (key.scaled_resolve && key.mip_max_level > 0) {
+    desc.Flags |= D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+  }
   const ui::d3d12::D3D12Provider& provider =
       command_processor_.GetD3D12Provider();
   ID3D12Device* device = provider.GetDevice();
@@ -1419,7 +1551,14 @@ bool D3D12TextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture,
   uint32_t bytes_per_block = guest_format_info->bytes_per_block();
   uint32_t level_first = load_base ? 0 : 1;
   uint32_t level_last = load_mips ? texture_key.mip_max_level : 0;
-  assert_true(level_first <= level_last);
+  // For scaled resolve textures, we only load level 0 from the scaled buffer -
+  // mips will be generated via compute shader after the base level is loaded.
+  uint32_t level_last_for_mip_gen = 0;
+  if (texture_resolution_scaled && level_last > 0) {
+    level_last_for_mip_gen = level_last;
+    level_last = 0;  // Only load base level from buffer.
+  }
+  assert_true(level_first <= level_last || level_last_for_mip_gen > 0);
   uint32_t level_packed = guest_layout.packed_level;
   uint32_t level_stored_first = std::min(level_first, level_packed);
   uint32_t level_stored_last = std::min(level_last, level_packed);
@@ -1546,6 +1685,12 @@ bool D3D12TextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture,
 
   // Submit the copy buffer population commands.
 
+  // Debug annotation for texture load operation
+  command_processor_.PushDebugMarker("Texture Load: %ux%ux%u fmt:%s scaled:%d",
+                                     width, height, depth_or_array_size,
+                                     FormatInfo::GetName(guest_format),
+                                     texture_resolution_scaled ? 1 : 0);
+
   auto& cbuffer_pool = command_processor_.GetConstantBufferPool();
   LoadConstants load_constants;
   // 3 bits for each.
@@ -1669,6 +1814,11 @@ bool D3D12TextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture,
       }
       assert_true(copy_buffer_state == D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
       command_processor_.SubmitBarriers();
+      // Debug: show dispatch info with source offset
+      command_processor_.InsertDebugMarker(
+          "Dispatch: guest_off=0x%X host_off=0x%X groups=%ux%ux%u",
+          load_constants.guest_offset, load_constants.host_offset,
+          group_count_x, group_count_y, load_constants.size_blocks[2]);
       command_list.D3DDispatch(group_count_x, group_count_y,
                                load_constants.size_blocks[2]);
       load_constants.guest_offset += level_array_slice_stride_bytes_scaled;
@@ -1689,6 +1839,10 @@ bool D3D12TextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture,
                                            D3D12_RESOURCE_STATE_COPY_SOURCE);
   copy_buffer_state = D3D12_RESOURCE_STATE_COPY_SOURCE;
   command_processor_.SubmitBarriers();
+  command_processor_.InsertDebugMarker(
+      "Texture Upload: %ux%ux%u fmt:%s mips:%u-%u", width, height,
+      depth_or_array_size, FormatInfo::GetName(guest_format), level_first,
+      level_last);
   uint32_t texture_level_count = texture_key.mip_max_level + 1;
   D3D12_TEXTURE_COPY_LOCATION location_source, location_dest;
   location_source.pResource = copy_buffer;
@@ -1740,6 +1894,219 @@ bool D3D12TextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture,
 
   command_processor_.ReleaseScratchGPUBuffer(copy_buffer, copy_buffer_state);
 
+  // Generate mip levels for scaled resolve textures via compute shader.
+  if (level_last_for_mip_gen > 0) {
+    uint32_t texture_level_count = texture_key.mip_max_level + 1;
+    if (is_3d) {
+      command_processor_.PushDebugMarker(
+          "Mip Generation 3D: %ux%ux%u levels 1-%u",
+          width * texture_resolution_scale_x,
+          height * texture_resolution_scale_y, depth, level_last_for_mip_gen);
+    } else {
+      command_processor_.PushDebugMarker("Mip Generation: %ux%ux%u levels 1-%u",
+                                         width * texture_resolution_scale_x,
+                                         height * texture_resolution_scale_y,
+                                         array_size, level_last_for_mip_gen);
+    }
+
+    ID3D12Resource* texture_resource = d3d12_texture.resource();
+    // Use the correct format based on texture signedness.
+    DXGI_FORMAT texture_dxgi_format =
+        texture_key.signed_separate
+            ? host_formats_[uint32_t(texture_key.format)].dxgi_format_signed
+            : GetDXGIUnormFormat(texture_key);
+
+    // Check if the format supports typed UAV stores for mip generation.
+    // Note: SNORM formats don't support typed UAV stores, so signed textures
+    // will skip mip generation.
+    if (!FormatSupportsMipGenerationUAV(texture_dxgi_format)) {
+      XELOGW(
+          "Skipping mip generation for scaled resolve texture: DXGI format %u "
+          "does not support typed UAV stores",
+          static_cast<unsigned>(texture_dxgi_format));
+      command_processor_.PopDebugMarker();  // Pop mip generation marker.
+      command_processor_.PopDebugMarker();  // Pop texture load marker.
+      return true;  // Texture load succeeded, just no mips generated.
+    }
+
+    uint32_t scaled_width = width * texture_resolution_scale_x;
+    uint32_t scaled_height = height * texture_resolution_scale_y;
+
+    // Set up mip generation pipeline (2D or 3D).
+    command_processor_.SetExternalPipeline(is_3d ? mip_gen_3d_pipeline_.Get()
+                                                 : mip_gen_pipeline_.Get());
+    command_list.D3DSetComputeRootSignature(mip_gen_root_signature_.Get());
+
+    // Generate each mip level by downsampling from the previous level.
+    // For texture arrays, process each slice separately.
+    for (uint32_t level = 1; level <= level_last_for_mip_gen; ++level) {
+      uint32_t src_width = std::max(scaled_width >> (level - 1), UINT32_C(1));
+      uint32_t src_height = std::max(scaled_height >> (level - 1), UINT32_C(1));
+      uint32_t src_depth = std::max(depth >> (level - 1), UINT32_C(1));
+      uint32_t dst_width = std::max(scaled_width >> level, UINT32_C(1));
+      uint32_t dst_height = std::max(scaled_height >> level, UINT32_C(1));
+      uint32_t dst_depth = std::max(depth >> level, UINT32_C(1));
+
+      // Transition source and destination mips for all array slices.
+      // Subresource index = mip + slice * mip_count.
+      std::vector<D3D12_RESOURCE_BARRIER> barriers;
+      barriers.reserve(array_size * 2);
+      for (uint32_t slice = 0; slice < array_size; ++slice) {
+        uint32_t src_subresource = (level - 1) + slice * texture_level_count;
+        uint32_t dst_subresource = level + slice * texture_level_count;
+
+        // Source barrier - from COPY_DEST (level 0) or UAV (level > 0) to SRV.
+        D3D12_RESOURCE_BARRIER src_barrier;
+        src_barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        src_barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+        src_barrier.Transition.pResource = texture_resource;
+        src_barrier.Transition.Subresource = src_subresource;
+        src_barrier.Transition.StateBefore =
+            (level == 1) ? D3D12_RESOURCE_STATE_COPY_DEST
+                         : D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+        src_barrier.Transition.StateAfter =
+            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+        barriers.push_back(src_barrier);
+
+        // Destination barrier - from COPY_DEST to UAV.
+        D3D12_RESOURCE_BARRIER dst_barrier;
+        dst_barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        dst_barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+        dst_barrier.Transition.pResource = texture_resource;
+        dst_barrier.Transition.Subresource = dst_subresource;
+        dst_barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+        dst_barrier.Transition.StateAfter =
+            D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+        barriers.push_back(dst_barrier);
+      }
+      command_list.D3DResourceBarrier(uint32_t(barriers.size()),
+                                      barriers.data());
+
+      // Allocate descriptors for SRV and UAV.
+      ui::d3d12::util::DescriptorCpuGpuHandlePair mip_gen_descriptors[2];
+      if (!command_processor_.RequestOneUseSingleViewDescriptors(
+              2, mip_gen_descriptors)) {
+        XELOGE("Failed to allocate descriptors for mip generation level %u",
+               level);
+        command_processor_.PopDebugMarker();  // Pop mip generation marker.
+        command_processor_.PopDebugMarker();  // Pop texture load marker.
+        return false;
+      }
+
+      // Create SRV for source mip level.
+      // For 2D textures, use array view to process all slices in one dispatch.
+      D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc = {};
+      srv_desc.Format = texture_dxgi_format;
+      srv_desc.Shader4ComponentMapping =
+          D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+      if (is_3d) {
+        srv_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE3D;
+        srv_desc.Texture3D.MostDetailedMip = level - 1;
+        srv_desc.Texture3D.MipLevels = 1;
+        srv_desc.Texture3D.ResourceMinLODClamp = 0.0f;
+      } else {
+        srv_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
+        srv_desc.Texture2DArray.MostDetailedMip = level - 1;
+        srv_desc.Texture2DArray.MipLevels = 1;
+        srv_desc.Texture2DArray.FirstArraySlice = 0;
+        srv_desc.Texture2DArray.ArraySize = array_size;
+        srv_desc.Texture2DArray.PlaneSlice = 0;
+        srv_desc.Texture2DArray.ResourceMinLODClamp = 0.0f;
+      }
+      device->CreateShaderResourceView(texture_resource, &srv_desc,
+                                       mip_gen_descriptors[0].first);
+
+      // Create UAV for destination mip level.
+      D3D12_UNORDERED_ACCESS_VIEW_DESC uav_desc = {};
+      uav_desc.Format = texture_dxgi_format;
+      if (is_3d) {
+        uav_desc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE3D;
+        uav_desc.Texture3D.MipSlice = level;
+        uav_desc.Texture3D.FirstWSlice = 0;
+        uav_desc.Texture3D.WSize = dst_depth;
+      } else {
+        uav_desc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2DARRAY;
+        uav_desc.Texture2DArray.MipSlice = level;
+        uav_desc.Texture2DArray.FirstArraySlice = 0;
+        uav_desc.Texture2DArray.ArraySize = array_size;
+        uav_desc.Texture2DArray.PlaneSlice = 0;
+      }
+      device->CreateUnorderedAccessView(texture_resource, nullptr, &uav_desc,
+                                        mip_gen_descriptors[1].first);
+
+      // Set root parameters.
+      // Parameter 0: Constants (source size, dest size).
+      // 2D uses 4 constants, 3D uses 8 constants (with padding).
+      if (is_3d) {
+        uint32_t mip_gen_constants[8] = {src_width, src_height, src_depth, 0,
+                                         dst_width, dst_height, dst_depth, 0};
+        command_list.D3DSetComputeRoot32BitConstants(0, 8, mip_gen_constants,
+                                                     0);
+      } else {
+        uint32_t mip_gen_constants[4] = {src_width, src_height, dst_width,
+                                         dst_height};
+        command_list.D3DSetComputeRoot32BitConstants(0, 4, mip_gen_constants,
+                                                     0);
+      }
+      // Parameter 1: Source SRV.
+      command_list.D3DSetComputeRootDescriptorTable(
+          1, mip_gen_descriptors[0].second);
+      // Parameter 2: Destination UAV.
+      command_list.D3DSetComputeRootDescriptorTable(
+          2, mip_gen_descriptors[1].second);
+
+      // Dispatch compute shader.
+      // 2D: Thread group size is 8x8, dispatch z = array_size for all slices.
+      // 3D: Thread group size is 4x4x4.
+      if (is_3d) {
+        uint32_t group_count_x = (dst_width + 3) / 4;
+        uint32_t group_count_y = (dst_height + 3) / 4;
+        uint32_t group_count_z = (dst_depth + 3) / 4;
+        command_list.D3DDispatch(group_count_x, group_count_y, group_count_z);
+      } else {
+        uint32_t group_count_x = (dst_width + 7) / 8;
+        uint32_t group_count_y = (dst_height + 7) / 8;
+        command_list.D3DDispatch(group_count_x, group_count_y, array_size);
+      }
+    }
+
+    // Transition all mip levels back to COPY_DEST for consistency with the
+    // texture's expected state after loading.
+    // Level 0 to level_last_for_mip_gen - 1 are in NON_PIXEL_SHADER_RESOURCE.
+    // Level level_last_for_mip_gen is in UNORDERED_ACCESS.
+    // Subresource index = mip + slice * mip_count.
+    std::vector<D3D12_RESOURCE_BARRIER> final_barriers;
+    final_barriers.reserve((level_last_for_mip_gen + 1) * array_size);
+    for (uint32_t slice = 0; slice < array_size; ++slice) {
+      for (uint32_t level = 0; level < level_last_for_mip_gen; ++level) {
+        D3D12_RESOURCE_BARRIER barrier;
+        barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+        barrier.Transition.pResource = texture_resource;
+        barrier.Transition.Subresource = level + slice * texture_level_count;
+        barrier.Transition.StateBefore =
+            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+        barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+        final_barriers.push_back(barrier);
+      }
+      // Last mip level is in UAV state.
+      D3D12_RESOURCE_BARRIER barrier;
+      barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+      barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+      barrier.Transition.pResource = texture_resource;
+      barrier.Transition.Subresource =
+          level_last_for_mip_gen + slice * texture_level_count;
+      barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+      barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+      final_barriers.push_back(barrier);
+    }
+    command_list.D3DResourceBarrier(uint32_t(final_barriers.size()),
+                                    final_barriers.data());
+
+    command_processor_.PopDebugMarker();  // Pop mip generation marker.
+  }
+
+  command_processor_.PopDebugMarker();  // Pop texture load marker.
   return true;
 }
 

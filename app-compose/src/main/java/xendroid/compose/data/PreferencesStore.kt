@@ -9,16 +9,21 @@ import kotlinx.coroutines.flow.map
 
 internal val Context.dataStore by preferencesDataStore(name = "xendroid_prefs")
 
-/** Persists the SAF tree uri (replaces legacy PREF_GAME_DIR="game_dir" in
- *  default SharedPreferences). Key name kept identical for parity/clarity. */
+/** Persists the real-path (All Files Access) games dir as an absolute host path. */
 class PreferencesStore(private val appContext: Context) {
 
-    private val gameDirKey = stringPreferencesKey("game_dir")
+    /** Real-path (All Files Access) games dir. Presence of this key selects a games
+     *  folder; absence is NoFolder. */
+    private val gameDirPathKey = stringPreferencesKey("game_dir_path")
 
-    val gameDirUri: Flow<String?> =
-        appContext.dataStore.data.map { it[gameDirKey] }
+    /** The persisted real-path games dir (absolute host path), or null. */
+    val gameDirPath: Flow<String?> =
+        appContext.dataStore.data.map { it[gameDirPathKey] }
 
-    suspend fun setGameDirUri(uri: String) {
-        appContext.dataStore.edit { it[gameDirKey] = uri }
+    /** Store (or update) the real-path games dir (absolute host path). */
+    suspend fun setGameDirPath(path: String) {
+        appContext.dataStore.edit {
+            it[gameDirPathKey] = path
+        }
     }
 }

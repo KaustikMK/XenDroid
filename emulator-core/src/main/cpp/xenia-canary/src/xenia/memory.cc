@@ -9,8 +9,13 @@
 
 #include "xenia/memory.h"
 
+#include <cerrno>
 #include <cstring>
 #include <random>
+
+#if XE_PLATFORM_MAC
+#include <sys/mman.h>
+#endif
 
 #include "third_party/fmt/include/fmt/format.h"
 #include "xenia/base/assert.h"
@@ -104,21 +109,27 @@ void CrashDump() {
 }
 
 static inline bool ShouldSkipHostCommit(const BaseHeap& heap) {
-  // When the host page size is larger than 4 KB (e.g. 16 KB on macOS ARM64,
-  // 64 KB on some ARM64 Linux kernels), mprotect on 4 KB guest page boundaries
-  // fails with EINVAL. All heaps are backed by a shared file mapping
-  // (MapFileView) that is already mapped RW, so the commit is a no-op — skip
-  // it.
+#if XE_PLATFORM_MAC
+  // On macOS ARM64 the host page size is 16 KB, and mprotect-based "commit"
+  // creates fragmentation in the 0..512 MB parent physical heap.
+  if (heap.heap_type() == HeapType::kGuestPhysical && heap.heap_base() == 0x0 &&
+      xe::memory::page_size() > 0x1000) {
+    return true;
+  }
+#elif XE_PLATFORM_LINUX
+  // When the host page size is larger than 4 KB (e.g. 64 KB on some ARM64
+  // Linux kernels), mprotect on 4 KB guest page boundaries fails with EINVAL.
+  // All heaps are backed by a shared file mapping (MapFileView) that is
+  // already mapped RW, so the commit is a no-op — skip it.
   if (xe::memory::page_size() > 0x1000) {
     return true;
   }
+#endif
   return false;
 }
 
 xe::memory::PageAccess ToPageAccess(uint32_t protect) {
-  // Write-combine memory is CPU-writable (for GPU uploads)
-  bool is_writable =
-      (protect & kMemoryProtectWrite) || (protect & kMemoryProtectWriteCombine);
+  bool is_writable = IsWritableProtect(protect);
 
   if ((protect & kMemoryProtectRead) && !is_writable) {
     return xe::memory::PageAccess::kReadOnly;
@@ -193,16 +204,29 @@ bool Memory::Initialize() {
 
   // Create main page file-backed mapping. This is all reserved but
   // uncommitted (so it shouldn't expand page file).
+  // Entire 4gb space + 512mb physical, plus alignment slack for 4K offset
+  // mappings on platforms with larger pages.
+  const size_t mapping_size =
+      xe::round_up(0x120000000ull + system_allocation_granularity_,
+                   system_allocation_granularity_);
   mapping_ = xe::memory::CreateFileMappingHandle(
-      file_name_,
-      // entire 4gb space + 512mb physical:
-      0x11FFFFFFF, xe::memory::PageAccess::kReadWrite, false);
+      file_name_, mapping_size, xe::memory::PageAccess::kReadWrite, false);
   if (mapping_ == xe::memory::kFileMappingHandleInvalid) {
     XELOGE("Unable to reserve the 4gb guest address space.");
     assert_always();
     return false;
   }
 
+#if XE_PLATFORM_MAC
+  // On macOS, reserve a contiguous region chosen by the OS, then map views
+  // into it at fixed offsets.
+  if (MapViewsMac()) {
+    XELOGE("Unable to find a continuous block in the 64bit address space.");
+    assert_always();
+    return false;
+  }
+  mapping_base_ = views_.all_views[0];
+#else
   // Attempt to create our views. This may fail at the first address
   // we pick, so try a few times.
   mapping_base_ = 0;
@@ -229,6 +253,7 @@ bool Memory::Initialize() {
     assert_always();
     return false;
   }
+#endif
   virtual_membase_ = mapping_base_;
   physical_membase_ = mapping_base_ + 0x100000000ull;
 
@@ -274,12 +299,10 @@ bool Memory::Initialize() {
   // without any restriction. This however needs some form of validation.
   // That's why we're commiting whole physical memory range and deal with
   // allocations issues on custom page protection level.
-  for (size_t i = 1; i <= 16; i++) {
-    xe::memory::AllocFixed(heaps_.physical.TranslateRelative(i << 24),
-                           heaps_.physical.page_size() * 0x10000,
-                           xe::memory::AllocationType::kCommit,
-                           xe::memory::PageAccess::kReadWrite);
-  }
+  // Commit the entire 512MB physical memory range
+  xe::memory::AllocFixed(heaps_.physical.TranslateRelative(0x01000000),
+                         0x1F000000, xe::memory::AllocationType::kCommit,
+                         xe::memory::PageAccess::kReadWrite);
 
   // Add handlers for MMIO.
   mmio_handler_ = cpu::MMIOHandler::Install(
@@ -376,6 +399,54 @@ static const struct {
         0x0000000100000000ull,
     },
 };
+#if XE_PLATFORM_MAC
+int Memory::MapViewsMac() {
+  assert_true(xe::countof(map_info) == xe::countof(views_.all_views));
+
+  // macOS does not guarantee that a non-MAP_FIXED mmap will honor the requested
+  // address. Reserve a contiguous address range first, then MAP_FIXED each view
+  // within that reserved range to keep the guest layout identical to Windows.
+  const size_t total_size =
+      map_info[xe::countof(map_info) - 1].virtual_address_end -
+      map_info[0].virtual_address_start + 1;
+
+  void* reserved_base =
+      mmap(nullptr, total_size, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  if (reserved_base == MAP_FAILED) {
+    XELOGE("MapViewsMac: reserve failed: {}", std::strerror(errno));
+    return 1;
+  }
+
+  uint8_t* mapping_base = reinterpret_cast<uint8_t*>(reserved_base);
+  uint64_t granularity_mask = ~uint64_t(system_allocation_granularity_ - 1);
+
+  for (size_t n = 0; n < xe::countof(map_info); n++) {
+    size_t view_size =
+        map_info[n].virtual_address_end - map_info[n].virtual_address_start + 1;
+    size_t file_offset = map_info[n].target_address & granularity_mask;
+    void* target_address = mapping_base + map_info[n].virtual_address_start;
+    void* result = mmap(target_address, view_size, PROT_READ | PROT_WRITE,
+                        MAP_SHARED | MAP_FIXED, mapping_, file_offset);
+    if (result == MAP_FAILED || result != target_address) {
+      int err = errno;
+      XELOGE(
+          "MapViewsMac: map failed view {} addr 0x{:016X} size 0x{:X} "
+          "offset 0x{:X} err {} ({})",
+          n, reinterpret_cast<uintptr_t>(target_address), view_size,
+          file_offset, err, std::strerror(err));
+      munmap(reserved_base, total_size);
+      for (auto& view : views_.all_views) {
+        view = nullptr;
+      }
+      return 1;
+    }
+    views_.all_views[n] = reinterpret_cast<uint8_t*>(result);
+  }
+
+  return 0;
+}
+#endif  // XE_PLATFORM_MAC
+
 int Memory::MapViews(uint8_t* mapping_base) {
   assert_true(xe::countof(map_info) == xe::countof(views_.all_views));
   // 0xE0000000 4 KB offset is emulated via host_address_offset and on the CPU
@@ -594,13 +665,11 @@ bool Memory::AddVirtualMappedRange(uint32_t virtual_address, uint32_t mask,
                                    uint32_t size, void* context,
                                    cpu::MMIOReadCallback read_callback,
                                    cpu::MMIOWriteCallback write_callback) {
-  if (!cvars::emit_inline_mmio_checks) {
-    if (!xe::memory::AllocFixed(TranslateVirtual(virtual_address), size,
-                                xe::memory::AllocationType::kCommit,
-                                xe::memory::PageAccess::kNoAccess)) {
-      XELOGE("Unable to map range; commit/protect failed");
-      return false;
-    }
+  if (!xe::memory::AllocFixed(TranslateVirtual(virtual_address), size,
+                              xe::memory::AllocationType::kCommit,
+                              xe::memory::PageAccess::kNoAccess)) {
+    XELOGE("Unable to map range; commit/protect failed");
+    return false;
   }
   return mmio_handler_->RegisterRange(virtual_address, mask, size, context,
                                       read_callback, write_callback);
@@ -828,7 +897,8 @@ void BaseHeap::Dispose() {
        ++page_number) {
     auto& page_entry = page_table_[page_number];
     if (page_entry.state) {
-      xe::memory::DeallocFixed(TranslateRelative(page_number * page_size_), 0,
+      xe::memory::DeallocFixed(TranslateRelative(page_number * page_size_),
+                               page_entry.region_page_count * page_size_,
                                xe::memory::DeallocationType::kRelease);
       page_number += page_entry.region_page_count;
     }
@@ -871,7 +941,7 @@ void BaseHeap::DumpMap() {
       state_name = "RES";
     }
     char access_r = (page.current_protect & kMemoryProtectRead) ? 'R' : ' ';
-    char access_w = (page.current_protect & kMemoryProtectWrite) ? 'W' : ' ';
+    char access_w = IsWritableProtect(page.current_protect) ? 'W' : ' ';
     XELOGE("  {:08X}-{:08X} {:6d}p {:10d}b {} {}{}",
            heap_base_ + i * page_size_,
            heap_base_ + (i + page.region_page_count) * page_size_,
@@ -928,7 +998,7 @@ bool BaseHeap::Restore(ByteStream* stream) {
 
     memory::PageAccess page_access = memory::PageAccess::kNoAccess;
     if ((page.current_protect & kMemoryProtectRead) &&
-        (page.current_protect & kMemoryProtectWrite)) {
+        IsWritableProtect(page.current_protect)) {
       page_access = memory::PageAccess::kReadWrite;
     } else if (page.current_protect & kMemoryProtectRead) {
       page_access = memory::PageAccess::kReadOnly;
@@ -1077,7 +1147,6 @@ bool BaseHeap::AllocFixed(uint32_t base_address, uint32_t size,
                           uint32_t protect) {
   alignment = xe::round_up(alignment, page_size_);
   size = xe::align(size, alignment);
-  assert_true((base_address + host_address_offset_) % alignment == 0);
   uint32_t page_count = get_page_count(size, page_size_);
   uint32_t start_page_number = (base_address - heap_base_) / page_size_;
   uint32_t end_page_number = start_page_number + page_count - 1;
@@ -1129,10 +1198,10 @@ bool BaseHeap::AllocFixed(uint32_t base_address, uint32_t size,
         return false;
       }
 
-      if (cvars::scribble_heap && protect & kMemoryProtectWrite) {
+      if (cvars::scribble_heap && IsWritableProtect(protect)) {
         RandomizeMemory(result, page_count * page_size_);
       }
-    } else if (cvars::scribble_heap && protect & kMemoryProtectWrite) {
+    } else if (cvars::scribble_heap && IsWritableProtect(protect)) {
       RandomizeMemory(TranslateRelative(start_page_number * page_size_),
                       page_count * page_size_);
     }
@@ -1319,10 +1388,10 @@ bool BaseHeap::AllocRange(uint32_t low_address, uint32_t high_address,
         return false;
       }
 
-      if (cvars::scribble_heap && (protect & kMemoryProtectWrite)) {
+      if (cvars::scribble_heap && IsWritableProtect(protect)) {
         RandomizeMemory(result, page_count << page_size_shift_);
       }
-    } else if (cvars::scribble_heap && (protect & kMemoryProtectWrite)) {
+    } else if (cvars::scribble_heap && IsWritableProtect(protect)) {
       RandomizeMemory(TranslateRelative(start_page_number << page_size_shift_),
                       page_count << page_size_shift_);
     }
@@ -1594,7 +1663,9 @@ bool BaseHeap::Protect(uint32_t address, uint32_t size, uint32_t protect,
       if (old_protect) {
         *old_protect = page_table_[start_page_number].current_protect;
       }
+#if !XE_PLATFORM_MAC
       return false;
+#endif
     }
   }
 
@@ -1818,11 +1889,14 @@ bool PhysicalHeap::Alloc(uint32_t size, uint32_t alignment,
   // Given the address we've reserved in the parent heap, pin that here.
   // Shouldn't be possible for it to be allocated already.
   const uint32_t address = heap_base_ + parent_address - parent_heap_start;
-  if ((address + host_address_offset_) % alignment != 0) {
+  // Enforce physical-address alignment (what offset heaps like 0xE0000000
+  // actually care about — guest virtual addresses cannot preserve alignment
+  // through the physical-offset translation). See issue #954.
+  if (GetPhysicalAddress(address) % alignment != 0) {
     XELOGE(
-        "PhysicalHeap::Alloc translated address {:08X} misaligned "
-        "(alignment {:08X}, physical base offset {:08X})",
-        address, alignment, parent_heap_start);
+        "PhysicalHeap::Alloc physical address {:08X} misaligned "
+        "(alignment {:08X})",
+        GetPhysicalAddress(address), alignment);
     parent_heap_->Release(parent_address);
     return false;
   }
@@ -1863,11 +1937,11 @@ bool PhysicalHeap::AllocFixed(uint32_t base_address, uint32_t size,
   // Shouldn't be possible for it to be allocated already.
   const uint32_t address =
       heap_base_ + parent_base_address - GetPhysicalAddress(heap_base_);
-  if ((address + host_address_offset_) % alignment != 0) {
+  if (GetPhysicalAddress(address) % alignment != 0) {
     XELOGE(
-        "PhysicalHeap::AllocFixed translated address {:08X} misaligned "
-        "(alignment {:08X}, physical base offset {:08X})",
-        address, alignment, GetPhysicalAddress(heap_base_));
+        "PhysicalHeap::AllocFixed physical address {:08X} misaligned "
+        "(alignment {:08X})",
+        GetPhysicalAddress(address), alignment);
     parent_heap_->Release(parent_base_address);
     return false;
   }
@@ -1915,18 +1989,11 @@ bool PhysicalHeap::AllocRange(uint32_t low_address, uint32_t high_address,
   // Shouldn't be possible for it to be allocated already.
   const uint32_t address =
       heap_base_ + parent_address - GetPhysicalAddress(heap_base_);
-  // The MmAllocatePhysicalMemoryEx alignment contract is on the PHYSICAL
-  // address (which the parent allocation already satisfied). The guest
-  // virtual address in the 0xE0000000 view is intentionally skewed -0x1000
-  // from its physical backing, so checking virtual/host alignment here
-  // wrongly rejects every E0 allocation with alignment > 4KB (Fable II's
-  // 32KB-aligned streaming pools -> null -> guest crash at boot).
   if (GetPhysicalAddress(address) % alignment != 0) {
     XELOGE(
-        "PhysicalHeap::AllocRange physical address {:08X} (guest {:08X}) "
-        "misaligned (alignment {:08X}, physical base offset {:08X})",
-        GetPhysicalAddress(address), address, alignment,
-        GetPhysicalAddress(heap_base_));
+        "PhysicalHeap::AllocRange physical address {:08X} misaligned "
+        "(alignment {:08X})",
+        GetPhysicalAddress(address), alignment);
     parent_heap_->Release(parent_address);
     return false;
   }
@@ -1996,7 +2063,7 @@ bool PhysicalHeap::Protect(uint32_t address, uint32_t size, uint32_t protect,
 
   // Only invalidate if making writable again, for simplicity - not when simply
   // marking some range as immutable, for instance.
-  if (protect & kMemoryProtectWrite) {
+  if (IsWritableProtect(protect)) {
     TriggerCallbacks(std::move(global_lock), address, size, true, true, false);
   }
 
@@ -2113,6 +2180,13 @@ XE_NOINLINE void PhysicalHeap::EnableAccessCallbacksInner(
 #endif
 
     uint32_t guest_page_number = SystemPagenumToGuestPagenum(i);
+    if (guest_page_number >= page_table_.size()) {
+      XELOGE(
+          "Access callback page OOB: system_page={} guest_page={} "
+          "offset=0x{:X}",
+          i, guest_page_number, host_address_offset());
+      assert_always();
+    }
     xe::memory::PageAccess current_page_access =
         ToPageAccess(page_table_ptr[guest_page_number].current_protect);
     bool protect_system_page = false;

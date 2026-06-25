@@ -11,6 +11,7 @@
 #define XENIA_KERNEL_XTHREAD_H_
 
 #include <atomic>
+#include <memory>
 #include <string>
 
 #include "xenia/base/mutex.h"
@@ -262,14 +263,7 @@ struct X_KTHREAD {
       mutants_list;                  // 0x10
   X_KTIMER wait_timeout_timer;       // 0x18
   X_KWAIT_BLOCK wait_timeout_block;  // 0x40
-  // Per-thread millisecond tick (KernelTime mirror, advanced by the clock
-  // interrupt on real hardware). The XDK D3D runtime computes its blocking
-  // waits' watchdog timeouts from deltas of this field (guest 0x83737AE0 in
-  // Ninja Gaiden 2: 5000 ticks -> GPU-hang recovery); spin-then-block idle
-  // primitives (Forza and others) measure their spin patience with it too.
-  // Left at zero, those watchdogs never fire and guest-recoverable stalls
-  // become hard freezes. Updated from UpdateKeTimestampBundle.
-  xe::be<uint32_t> ms_tick;  // 0x58
+  uint8_t unk_58[0x4];               // 0x58
   xe::be<uint32_t> stack_base;       // 0x5C
   xe::be<uint32_t> stack_limit;      // 0x60
   xe::be<uint32_t> stack_kernel;     // 0x64
@@ -393,6 +387,11 @@ class XThread : public XObject, public cpu::Thread {
   static bool IsInThread(XThread* other);
   static bool IsInThread();
   static XThread* GetCurrentThread();
+  // Returns the currently-running thread iff it is a scheduler-managed fiber
+  // (guest code on the dispatch host thread), otherwise nullptr. Use this to
+  // decide whether a blocking call yields cooperatively or blocks the host
+  // thread.
+  static XThread* GetCurrentFiberThread();
   static uint32_t GetCurrentThreadHandle();
   static uint32_t GetCurrentThreadId();
 
@@ -408,6 +407,21 @@ class XThread : public XObject, public cpu::Thread {
   bool is_guest_thread() const { return guest_thread_; }
   bool main_thread() const { return main_thread_; }
   bool is_running() const { return running_; }
+
+#if XE_PLATFORM_xendroid
+  // Background-pause coverage: arbitrate a single suspend/resume per thread
+  // between Emulator::Pause/Resume and the self-suspend gate in Execute().
+  // exchange() guarantees exactly one of them suspends (and resumes) us, so a
+  // thread that starts running during the pause window is parked exactly once.
+  bool emu_try_pause() { return !emu_paused_.exchange(true); }
+  bool emu_clear_pause() { return emu_paused_.exchange(false); }
+#endif
+
+  // True for threads that run a host C++ routine (XHostThread) rather than
+  // guest PPC code. These always use a real host thread, never a cooperative
+  // fiber, since they run host loops/blocking and other code dereferences their
+  // thread().
+  virtual bool is_host_thread() const { return false; }
 
   uint32_t thread_id() const { return thread_id_; }
   uint32_t last_error();
@@ -428,22 +442,19 @@ class XThread : public XObject, public cpu::Thread {
   void EnqueueApc(uint32_t normal_routine, uint32_t normal_context,
                   uint32_t arg1, uint32_t arg2);
 
+  // True if this thread has a user-mode APC queued (or pending). Used by the
+  // cooperative scheduler's alertable waits to return USER_APC, the same way a
+  // host alertable wait wakes on a queued APC.
+  bool HasPendingUserApc();
+
   int32_t priority() const { return priority_; }
   int32_t QueryPriority();
   void SetPriority(int32_t increment);
 
-  // Called periodically (~20ms) by KernelState's timestamp timer to simulate
-  // the Xenon scheduler's quantum-based priority decay for non-real-time
-  // threads (base_priority < 18).  Threads that run for longer than one
-  // quantum (~20ms) have their effective priority decayed toward the base,
-  // which causes them to drop into lower host priority buckets and prevents
-  // starvation.  On the first decay step the accumulated priority boost is
-  // also drained.
-  void CheckQuantumAndDecay();
   // Called when a thread wakes from a kernel wait.  Applies a priority
   // boost of |increment| above base_priority (matching the Xenon kernel's
   // unwait-boost behavior) and restarts the quantum timer.  The boost is
-  // drained on the next quantum expiry via CheckQuantumAndDecay().
+  // drained on the next quantum expiry.
   // If increment is 0 or the thread has boost disabled, the priority is
   // simply restored to base_priority.
   void BoostOnWake(int32_t increment);
@@ -480,6 +491,26 @@ class XThread : public XObject, public cpu::Thread {
 
   xe::threading::Thread* thread() { return thread_.get(); }
 
+  // The fiber this guest thread runs on when the cooperative scheduler is
+  // active (null under the host-thread model). Created in the fiber path of
+  // Create().
+  xe::threading::Fiber* fiber() const { return fiber_.get(); }
+
+  // Intrusive scheduler links, owned exclusively by GuestScheduler and only
+  // touched under its lock. Embedding them here keeps the queue operations
+  // allocation-free. A thread is in at most one of the ready or blocked lists.
+  struct SchedulerLinks {
+    XThread* ready_next = nullptr;  // link for the ready OR blocked list
+    bool queued = false;            // in the ready list
+    bool blocked = false;           // parked in the blocked (waiting) list
+    bool has_run = false;           // diagnostic: dispatched at least once
+  };
+  SchedulerLinks& scheduler_links() { return scheduler_links_; }
+
+  // A handle a host-side caller can block on until this thread exits. Resolves
+  // to the host thread, or (for a fiber-backed thread) its exit event.
+  xe::threading::WaitHandle* wait_handle() { return GetWaitHandle(); }
+
   virtual bool Save(ByteStream* stream) override;
   static object_ref<XThread> Restore(KernelState* kernel_state,
                                      ByteStream* stream);
@@ -488,7 +519,11 @@ class XThread : public XObject, public cpu::Thread {
   void AcquireMutantOnStartup(object_ref<XMutant> mutant) {
     pending_mutant_acquires_.push_back(mutant);
   }
-  void SetCurrentThread();
+  // Rebinds the per-host-thread TLS (XThread / cpu::Thread / ThreadState) so
+  // |thread| becomes the current guest thread on the calling host thread. Used
+  // on each fiber switch by the guest scheduler. Pass nullptr to clear.
+  static void SetCurrentThread(XThread* thread);
+  void OnHostThreadExitCleanup();
 
  protected:
   bool AllocateStack(uint32_t size);
@@ -498,7 +533,15 @@ class XThread : public XObject, public cpu::Thread {
   void DeliverAPCs();
   void RundownAPCs();
 
-  xe::threading::WaitHandle* GetWaitHandle() override { return thread_.get(); }
+  xe::threading::WaitHandle* GetWaitHandle() override {
+    // Under the cooperative scheduler there is no host thread, so a
+    // fiber-backed thread exposes an event signaled on exit for other threads
+    // to wait on.
+    if (thread_) {
+      return thread_.get();
+    }
+    return fiber_exit_event_.get();
+  }
 
   CreationParams creation_params_ = {0};
 
@@ -516,6 +559,9 @@ class XThread : public XObject, public cpu::Thread {
   bool guest_thread_ = false;
   bool main_thread_ = false;  // Entry-point thread
   bool running_ = false;
+#if XE_PLATFORM_xendroid
+  std::atomic<bool> emu_paused_{false};  // see emu_try_pause()/emu_clear_pause()
+#endif
 
   int32_t priority_ = 0;       // current effective priority (may be decayed)
   int32_t base_priority_ = 0;  // priority floor — decay never goes below this
@@ -537,6 +583,14 @@ class XThread : public XObject, public cpu::Thread {
   uint32_t reentry_address_ = 0;
 #endif
 
+  // When the cooperative scheduler is active, the guest thread runs on this
+  // fiber instead of its own host thread (cpu::Thread::thread_).
+  std::unique_ptr<xe::threading::Fiber> fiber_;
+  SchedulerLinks scheduler_links_;
+  // Signaled when a fiber-backed thread exits, so waits on the thread object
+  // resolve (the host thread handle that normally serves this role is absent).
+  std::unique_ptr<xe::threading::Event> fiber_exit_event_;
+
   std::mutex thread_lock_;
 };
 
@@ -546,7 +600,9 @@ class XHostThread : public XThread {
               uint32_t creation_flags, std::function<int()> host_fn,
               uint32_t guest_process = 0);
 
-  virtual void Execute();
+  bool is_host_thread() const override { return true; }
+
+  void Execute() override;
 
  private:
   std::function<int()> host_fn_;

@@ -1560,9 +1560,13 @@ struct AND_I64 : Sequence<AND_I64, I<OPCODE_AND, I64Op, I64Op, I64Op>> {
       e.mov(i.dest,
             static_cast<uint64_t>(i.src1.constant() & i.src2.constant()));
     } else if (i.src2.is_constant) {
-      e.and_imm(i.dest, i.src1, static_cast<uint64_t>(i.src2.constant()), e.x0);
+      // XenDroid: edge's xbyak_aarch64 has only a 32-bit and_imm meta-mnemonic,
+      // so 64-bit AND-with-constant materializes the constant then and_ (edge idiom).
+      e.mov(e.x0, static_cast<uint64_t>(i.src2.constant()));
+      e.and_(i.dest, i.src1, e.x0);
     } else if (i.src1.is_constant) {
-      e.and_imm(i.dest, i.src2, static_cast<uint64_t>(i.src1.constant()), e.x0);
+      e.mov(e.x0, static_cast<uint64_t>(i.src1.constant()));
+      e.and_(i.dest, i.src2, e.x0);
     } else {
       e.and_(i.dest, i.src1, i.src2);
     }
@@ -1643,8 +1647,8 @@ struct AND_NOT_I64
       // dst = src1 & ~src2const. ARM64 has no scalar BIC-immediate, so fold the
       // complement into an AND-immediate (single insn when ~const is a valid
       // bitmask, otherwise materialize as before).
-      e.and_imm(i.dest, i.src1, static_cast<uint64_t>(~i.src2.constant()),
-                e.x0);
+      e.mov(e.x0, static_cast<uint64_t>(~i.src2.constant()));
+      e.and_(i.dest, i.src1, e.x0);
     } else if (i.src1.is_constant) {
       e.mov(e.x0, static_cast<uint64_t>(i.src1.constant()));
       e.bic(i.dest, e.x0, i.src2);
@@ -1716,9 +1720,11 @@ struct OR_I64 : Sequence<OR_I64, I<OPCODE_OR, I64Op, I64Op, I64Op>> {
       e.mov(i.dest,
             static_cast<uint64_t>(i.src1.constant() | i.src2.constant()));
     } else if (i.src2.is_constant) {
-      e.orr_imm(i.dest, i.src1, static_cast<uint64_t>(i.src2.constant()), e.x0);
+      e.mov(e.x0, static_cast<uint64_t>(i.src2.constant()));
+      e.orr(i.dest, i.src1, e.x0);
     } else if (i.src1.is_constant) {
-      e.orr_imm(i.dest, i.src2, static_cast<uint64_t>(i.src1.constant()), e.x0);
+      e.mov(e.x0, static_cast<uint64_t>(i.src1.constant()));
+      e.orr(i.dest, i.src2, e.x0);
     } else {
       e.orr(i.dest, i.src1, i.src2);
     }
@@ -1784,9 +1790,11 @@ struct XOR_I64 : Sequence<XOR_I64, I<OPCODE_XOR, I64Op, I64Op, I64Op>> {
       e.mov(i.dest,
             static_cast<uint64_t>(i.src1.constant() ^ i.src2.constant()));
     } else if (i.src2.is_constant) {
-      e.eor_imm(i.dest, i.src1, static_cast<uint64_t>(i.src2.constant()), e.x0);
+      e.mov(e.x0, static_cast<uint64_t>(i.src2.constant()));
+      e.eor(i.dest, i.src1, e.x0);
     } else if (i.src1.is_constant) {
-      e.eor_imm(i.dest, i.src2, static_cast<uint64_t>(i.src1.constant()), e.x0);
+      e.mov(e.x0, static_cast<uint64_t>(i.src1.constant()));
+      e.eor(i.dest, i.src2, e.x0);
     } else {
       e.eor(i.dest, i.src1, i.src2);
     }

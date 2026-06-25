@@ -170,8 +170,6 @@ enum XmmConst {
   XMMXOPDwordShiftMask,
   XMMLVLShuffle,
   XMMLVRCmp16,
-  XMMSTVLShuffle,
-  XMMSTVRSwapMask,  // swapwordmask with bit 7 set
   XMMVSRShlByteshuf,
   XMMVSRMask,
   XMMVRsqrteTableStart,
@@ -222,7 +220,9 @@ class X64Emitter : public Xbyak::CodeGenerator {
 
  public:
   // Reserved:  rsp, rsi, rdi
-  // Scratch:   rax/rcx/rdx
+  // Scratch:   rax/rcx/rdx, r8/r9
+  //            rdx doubles as the call-site carrier for the resolve-thunk
+  //            guest address (see Call/CallIndirect emission).
   //            xmm0-2
   // Available: rbx, r10-r15
   //            xmm4-xmm15 (save to get xmm3)

@@ -7,21 +7,21 @@ import org.junit.Test
 import xendroid.compose.settings.Setting
 import xendroid.compose.settings.SettingsSchema
 
-/** Schema-integrity checks (no emulator / JNI needed). The schema completeness is
- *  the deliverable, so these assert exact counts, uniqueness, and per-list well-formedness. */
+/** Schema-integrity checks (no emulator / JNI needed): assert exact entry counts,
+ *  uniqueness, and per-list well-formedness. */
 class SettingsSchemaTest {
 
     private val all = SettingsSchema.allSettings
 
-    // Legacy inventory (app/src/main/res/xml/emulator_settings.xml) summed to 123
-    // (100 Bool + 7 IntRange + 15 ListChoice + 1 Action). One Bool, Display|
-    // host_present_from_non_ui_thread, was since REMOVED from the schema: it must be
-    // true on Android (forced natively) and false black-screens the app, so it is not
-    // a valid user choice. Hence 99 Bool and 122 total.
-    @Test fun total_entry_count_is_122() {
-        assertEquals(122, all.size)
+    // Expected inventory: 99 Bool + 8 IntRange + 19 ListChoice + 1 Action = 127.
+    // Notable typings: Display|host_present_from_non_ui_thread is intentionally absent
+    // (must be true on Android -- forced natively, false black-screens the app -- so it
+    // is not a valid user choice). GPU|readback_resolve and APU|xma_decoder are string
+    // cvars (fast/some/full/none and the decoder name), hence ListChoice rather than Bool.
+    @Test fun total_entry_count_is_127() {
+        assertEquals(127, all.size)
         assertEquals(
-            122,
+            127,
             all.count { it is Setting.Bool } + all.count { it is Setting.IntRange } +
                 all.count { it is Setting.ListChoice } + all.count { it is Setting.Action },
         )
@@ -29,8 +29,8 @@ class SettingsSchemaTest {
 
     @Test fun counts_by_type_match_verified_inventory() {
         assertEquals(99, all.count { it is Setting.Bool })
-        assertEquals(7, all.count { it is Setting.IntRange })
-        assertEquals(15, all.count { it is Setting.ListChoice })
+        assertEquals(8, all.count { it is Setting.IntRange })
+        assertEquals(19, all.count { it is Setting.ListChoice })
         assertEquals(1, all.count { it is Setting.Action })
     }
 

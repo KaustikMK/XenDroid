@@ -10,8 +10,7 @@
 #ifndef XENIA_GPU_XENOS_ZPD_REPORT_H_
 #define XENIA_GPU_XENOS_ZPD_REPORT_H_
 
-#include <algorithm>
-#include <cmath>
+#include <cstddef>
 #include <cstdint>
 
 #include "xenia/gpu/gpu_flags.h"
@@ -56,10 +55,10 @@ struct XenosZPDReport {
     return record_base && record_base == GetEndRecordBase(record_base);
   }
 
-  // ZPass is where titles almost always test pending boundaries. Some older
-  // D3D may also check ZFail, so both should be covered. A few titles, like
-  // 4D5307E8, write distinct B values, but this is rare, and still, there
-  // isn't any documented case of B lanes mattering for boundary detection.
+  // Boundary detection only looks at ZPass_A first, then ZFail_A.
+  // Some titles (4D5307E8) have unique, non-zero values in the B fields, which
+  // aren't understood well enough to count them yet.
+  // Proper support might need separate queries for both A & B.
   static bool HasPendingSentinel(
       const xenos::xe_gpu_depth_sample_counts* report) {
     constexpr uint32_t kSentinelLE = 0xEDFEFFFFu;
@@ -74,16 +73,8 @@ struct XenosZPDReport {
     return false;
   }
 
-  // Xenos has real Total/ZFail/StencilFail counters. Total should technically
-  // be the sum of all sample counts, not just copied from ZPass. But host
-  // occlusion queries can only give us the final passing sample count, so
-  // treat that as ZPass_A and mirror it to Total_A for titles that check it.
-  // Theoretically, the EDRAM paths could count ZFail/StencilFail since they
-  // run the emulated depth/stencil test, but that adds more shader work,
-  // atomics, and resolve challenges for counters that haven't been actually
-  // proven to be useful yet. That doesn't mean that titles that test those
-  // counters are unsupported, just that there might be some attenuation
-  // differences from real hardware in ways we can't confirm yet.
+  // Total_A mirrors ZPass_A and the rest are zeroed out since host queries can
+  // only provide a passing count. This is still enough to satisfy most titles.
   static void WriteSampleCount(xenos::xe_gpu_depth_sample_counts* report,
                                uint32_t sample_count, bool saturate = true) {
     if (saturate) {
@@ -111,9 +102,9 @@ struct XenosZPDReport {
       return 1;
     }
 
-    // Preserve lower sample counts often used for visibility testing and
-    // compress only the higher range used by effects. The knee here is somewhat
-    // arbitrary but seems to provide a good balance of safety and tunability.
+    // Preserve lower sample counts and only compress the higher range. A knee
+    // of 32 is a conservative, non-authoritative threshold, acting as a safety
+    // valve for titles using occlusion culling. May need to be revisited.
     const double knee = 32.0;
     if (static_cast<double>(sample_count) <= knee) {
       return sample_count;

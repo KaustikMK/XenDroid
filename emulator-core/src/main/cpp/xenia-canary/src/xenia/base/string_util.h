@@ -271,6 +271,8 @@ inline T fpfs(const std::string_view value, bool force_hex) {
     }
     std::memcpy(&result, &pun, sizeof(PUN));
   } else {
+    // Use strtod for all compilers - std::from_chars for floating-point
+    // has issues on some MSVC versions
     auto temp = std::string(range);
     result = static_cast<T>(std::strtod(temp.c_str(), nullptr));
     if (is_negative) {

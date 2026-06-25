@@ -7,7 +7,6 @@ import android.content.pm.ShortcutInfo
 import android.content.pm.ShortcutManager
 import android.graphics.BitmapFactory
 import android.graphics.drawable.Icon
-import android.net.Uri
 import android.os.Build
 import androidx.core.content.getSystemService
 import androidx.lifecycle.ViewModel
@@ -24,17 +23,20 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-/** The launch action emitted on game tap. The host Activity that resolves it
- *  arrives in SP1-C; until then this Intent will not resolve (no-op resolveActivity). */
+/** The launch action emitted on game tap. Resolves once a host Activity registers
+ *  for this action; until then the Intent will not resolve (no-op resolveActivity). */
 const val ACTION_LAUNCH_GAME = "xendroid.intent.action.xendroid"
 const val EXTRA_GAME_URI = "game_uri"
 
-/** Async resolution of a game's title id (needed before the per-game settings editor
- *  can open). Driven by the long-press dialog; only GOD resolves (see [GameLibraryRepository.readTitleId]). */
+/** Which long-press action triggered title-id resolution (both need the id, then branch). */
+enum class GameAction { PER_GAME_SETTINGS, GAME_PATCHES }
+
+/** Async resolution of a game's title id (needed before the per-game settings editor or the
+ *  patches screen can open). Driven by the long-press dialog; all formats resolve boot-free. */
 sealed interface TitleIdState {
     data object Idle : TitleIdState
-    data class Loading(val game: Game) : TitleIdState
-    data class Resolved(val game: Game, val titleId: String) : TitleIdState
+    data class Loading(val game: Game, val action: GameAction) : TitleIdState
+    data class Resolved(val game: Game, val titleId: String, val action: GameAction) : TitleIdState
     data class Error(val game: Game, val message: String) : TitleIdState
 }
 
@@ -78,37 +80,36 @@ class GameLibraryViewModel(
         }
     }
 
-    fun onDirectoryPicked(treeUri: Uri) {
+    /** Real-path (All Files Access) folder chosen in the built-in browser: persist the
+     *  abs path + rescan. */
+    fun onRealPathFolderPicked(path: String) {
         viewModelScope.launch {
-            repo.saveGameDir(treeUri)
+            repo.saveGameDirPath(path)
             refresh()
         }
     }
 
-    /** Resolve a game's title id off-main so the long-press dialog can open the per-game
-     *  editor. GOD/ISO/XEX_FOLDER have boot-free readers; ZAR short-circuits to an Error. */
-    fun requestPerGameSettings(game: Game) {
-        _titleId.value = TitleIdState.Loading(game)
+    fun requestPerGameSettings(game: Game) = request(game, GameAction.PER_GAME_SETTINGS)
+    fun requestGamePatches(game: Game) = request(game, GameAction.GAME_PATCHES)
+
+    /** Resolve a game's title id off-main, then the long-press dialog opens the matching screen. */
+    private fun request(game: Game, action: GameAction) {
+        _titleId.value = TitleIdState.Loading(game, action)
         viewModelScope.launch(Dispatchers.IO) {
             _titleId.value = runCatching {
                 EmulatorRuntime.ensureLoaded()
-                if (game.format == GameFormat.ZAR) {
-                    return@runCatching TitleIdState.Error(
-                        game, "Per-game settings aren't available for ZAR games yet"
-                    )
-                }
                 val tid = repo.readTitleId(appContext, game)
-                // 00000000 is the unknown/placeholder title id (no real GOD carries it).
+                // 00000000 is the unknown/placeholder title id (no real game carries it).
                 if (tid.isNullOrBlank() || tid == "00000000")
                     TitleIdState.Error(game, "Couldn't read this game's title id")
-                else TitleIdState.Resolved(game, tid)
+                else TitleIdState.Resolved(game, tid, action)
             }.getOrElse { TitleIdState.Error(game, it.message ?: "Failed to read title id") }
         }
     }
 
     fun clearTitleIdRequest() { _titleId.value = TitleIdState.Idle }
 
-    /** Build the launch Intent (host pending in SP1-C). Caller startActivity()s it. */
+    /** Build the launch Intent that the host Activity resolves. Caller startActivity()s it. */
     fun buildLaunchIntent(game: Game): Intent =
         Intent(ACTION_LAUNCH_GAME).apply {
             setPackage(appContext.packageName)          // self; host is in this app
@@ -127,7 +128,7 @@ class GameLibraryViewModel(
         get() = appContext.getSystemService<ShortcutManager>()
             ?.isRequestPinShortcutSupported == true
 
-    /** True once a host Activity resolves the launch action (arrives in SP1-C).
+    /** True once a host Activity resolves the launch action.
      *  Until then, suppress launch-dependent affordances so we never pin a dead shortcut. */
     val canLaunchGames: Boolean
         get() = Intent(ACTION_LAUNCH_GAME)
@@ -140,7 +141,7 @@ class GameLibraryViewModel(
         if (!isPinShortcutSupported || Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
         val sm = appContext.getSystemService<ShortcutManager>() ?: return
         val intent = buildLaunchIntent(game).apply { action = Intent.ACTION_VIEW }
-        // SP1-C provides the resolving host; don't pin a shortcut that goes nowhere.
+        // No resolving host yet; don't pin a shortcut that goes nowhere.
         if (intent.resolveActivity(appContext.packageManager) == null) return
         val icon = game.iconCacheName
             ?.let { iconCache.fileFor(it) }

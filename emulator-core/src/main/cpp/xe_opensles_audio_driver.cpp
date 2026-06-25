@@ -198,7 +198,7 @@ void OpenSLESAudioDriver::PlayerCallback(SLAndroidSimpleBufferQueueItf buffer_qu
     auto buffer = driver->frames_queued_.front();
     driver->frames_queued_.pop();
 
-    if (cvars::mute) {
+    if (cvars::volume == 0) {  // XenDroid: edge replaced cvars::mute with volume (0 == mute)
       std::memset(output_frame, 0, sizeof(output_frame));
     } else {
       conversion::sequential_6_BE_to_interleaved_2_LE(

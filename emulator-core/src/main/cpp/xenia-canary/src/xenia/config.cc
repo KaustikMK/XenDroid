@@ -9,6 +9,9 @@
 
 #include "config.h"
 
+#include <algorithm>
+#include <sstream>
+
 #include "third_party/fmt/include/fmt/format.h"
 #include "xenia/base/assert.h"
 #include "xenia/base/cvar.h"
@@ -17,6 +20,12 @@
 #include "xenia/base/string.h"
 #include "xenia/base/string_buffer.h"
 #include "xenia/base/system.h"
+#include "xenia/emulator.h"
+#include "xenia/ui/config_helpers.h"
+#include "xenia/vfs/iso_metadata.h"
+#include "xenia/vfs/stfs_metadata.h"
+#include "xenia/vfs/xex_metadata.h"
+#include "xenia/vfs/zar_metadata.h"
 
 toml::parse_result ParseFile(const std::filesystem::path& filename) {
   return toml::parse_file(xe::path_to_utf8(filename));
@@ -31,10 +40,19 @@ DEFINE_uint32(
     "Config");
 
 namespace config {
-std::string config_name = "xenia-canary.config.toml";
+std::string config_name = "xenia-edge.config.toml";
 std::filesystem::path config_folder;
 std::filesystem::path config_path;
 std::string game_config_suffix = ".config.toml";
+std::function<void()> config_saved_callback;
+
+std::filesystem::path GetGameConfigPath(const std::string& title_id) {
+  return config_folder / "config" / (title_id + game_config_suffix);
+}
+
+std::filesystem::path GetBundledDataPath(const std::string& subdirectory) {
+  return xe::filesystem::GetExecutablePath().parent_path() / subdirectory;
+}
 
 // Set once a per-game config (config/<title_id>.config.toml) has been overlaid onto
 // the live cvars by LoadGameConfig. After that the in-memory cvars are GLOBAL + that
@@ -103,6 +121,78 @@ void PrintConfigToLog(const std::filesystem::path& file_path) {
   file.close();
 }
 
+void MigrateLegacyCvars(const toml::table& config) {
+  if (!cvar::ConfigVars) {
+    return;
+  }
+
+  for (const auto& [category_name, category_table] : config) {
+    if (!category_table.is_table()) {
+      continue;
+    }
+
+    for (const auto& [key, value] : *category_table.as_table()) {
+      std::string var_name = std::string(key);
+      std::string var_value = value.value_or("");
+
+      if (var_value.length() >= 2 && var_value.front() == '"' &&
+          var_value.back() == '"') {
+        var_value = var_value.substr(1, var_value.length() - 2);
+      }
+
+      // Legacy: the removed "mute" bool now just means volume = 0.
+      if (var_name == "mute") {
+        if (value.value<bool>().value_or(var_value == "true")) {
+          auto volume_var = cvar::ConfigVars->find("volume");
+          if (volume_var != cvar::ConfigVars->end()) {
+            toml::value<int64_t> zero(0);
+            static_cast<cvar::IConfigVar*>(volume_var->second)
+                ->LoadConfigValue(&zero);
+          }
+        }
+        continue;
+      }
+
+      // String values for integer cvars presented as UI dropdowns
+      // (user_language, user_country, video_standard,
+      // internal_display_resolution) -> integer ids.
+      if (const auto* options = xe::ui::FindIntCvarEnumOptions(var_name)) {
+        for (const auto& option : *options) {
+          if (option.name == var_value) {
+            auto config_var = (*cvar::ConfigVars).find(var_name);
+            if (config_var != (*cvar::ConfigVars).end()) {
+              toml::value<int64_t> int_value(option.value);
+              static_cast<cvar::IConfigVar*>(config_var->second)
+                  ->LoadConfigValue(&int_value);
+            }
+            break;
+          }
+        }
+      }
+
+      for (const auto& alias : xe::ui::GetCvarAliases()) {
+        // Support wildcard "*" to match any value and copy it as-is
+        bool name_matches = (var_name == alias.old_name);
+        bool value_matches =
+            (alias.old_value == "*") || (var_value == alias.old_value);
+
+        if (name_matches && value_matches) {
+          auto new_cvar = (*cvar::ConfigVars).find(alias.new_name);
+          if (new_cvar != (*cvar::ConfigVars).end()) {
+            auto config_var = static_cast<cvar::IConfigVar*>(new_cvar->second);
+            // If new_value is "*", copy the original value as-is
+            std::string final_value =
+                (alias.new_value == "*") ? var_value : alias.new_value;
+            toml::value new_value(final_value);
+            config_var->LoadConfigValue(&new_value);
+          }
+          break;
+        }
+      }
+    }
+  }
+}
+
 void ReadConfig(const std::filesystem::path& file_path,
                 bool update_if_no_version_stored) {
   if (!cvar::ConfigVars) {
@@ -130,6 +220,21 @@ void ReadConfig(const std::filesystem::path& file_path,
       config_var->LoadConfigValue(config_key_node.node());
     }
   }
+
+  // Log command line overrides (after config values are loaded)
+  bool has_overrides = false;
+  for (const auto& it : *cvar::ConfigVars) {
+    auto config_var = static_cast<cvar::IConfigVar*>(it.second);
+    if (config_var->commandline_value() != config_var->config_value()) {
+      if (!has_overrides) {
+        XELOGI("Command line overrides:");
+        has_overrides = true;
+      }
+      XELOGI("  {} = {}", config_var->name(), config_var->commandline_value());
+    }
+  }
+
+  MigrateLegacyCvars(config);
   uint32_t config_defaults_date = defaults_date_cvar->GetTypedConfigValue();
   if (update_if_no_version_stored || config_defaults_date) {
     cvar::IConfigVarUpdate::ApplyUpdates(config_defaults_date);
@@ -158,22 +263,254 @@ void ReadConfig(const std::filesystem::path& file_path,
   XELOGI("Loaded config: {}", file_path);
 }
 
-void ReadGameConfig(const std::filesystem::path& file_path) {
-  if (!cvar::ConfigVars) {
-    return;
+uint32_t LoadGameConfigForFile(const std::filesystem::path& game_path) {
+  if (game_path.empty() || !std::filesystem::exists(game_path)) {
+    return 0;
   }
-  const auto config = ParseConfig(file_path);
-  for (auto& it : *cvar::ConfigVars) {
-    auto config_var = static_cast<cvar::IConfigVar*>(it.second);
-    toml::path config_key =
-        toml::path(config_var->category() + "." + config_var->name());
 
-    const auto config_key_node = config.at_path(config_key);
-    if (config_key_node) {
-      config_var->LoadConfigValue(config_key_node.node());
+  std::string ext = game_path.extension().string();
+  std::transform(ext.begin(), ext.end(), ext.begin(),
+                 [](unsigned char c) { return std::tolower(c); });
+
+  uint32_t title_id = 0;
+
+  if (ext == ".iso") {
+    if (auto metadata = xe::vfs::ExtractIsoMetadata(game_path)) {
+      title_id = metadata->title_id;
+    }
+  } else if (ext == ".zar") {
+    if (auto metadata = xe::vfs::ExtractZarMetadata(game_path)) {
+      title_id = metadata->title_id;
+    }
+  } else if (ext == ".xex") {
+    if (auto metadata = xe::vfs::ExtractXexMetadata(game_path)) {
+      title_id = metadata->title_id;
+    }
+  } else {
+    // Unknown extension - try all formats.
+    if (auto metadata = xe::vfs::ExtractStfsMetadata(game_path)) {
+      title_id = metadata->title_id;
+    } else if (auto metadata = xe::vfs::ExtractXexMetadata(game_path)) {
+      title_id = metadata->title_id;
+    } else if (auto metadata = xe::vfs::ExtractZarMetadata(game_path)) {
+      title_id = metadata->title_id;
+    } else if (auto metadata = xe::vfs::ExtractIsoMetadata(game_path)) {
+      title_id = metadata->title_id;
     }
   }
-  XELOGI("Loaded game config: {}", file_path);
+
+  if (title_id == 0) {
+    XELOGI("Could not extract title_id from: {}", game_path.string());
+    return 0;
+  }
+
+  XELOGI("Extracted title_id {:08X} from: {}", title_id, game_path.string());
+
+  // Load the game config directly into cvars.
+  auto title_id_str = fmt::format("{:08X}", title_id);
+  const auto game_config_path = GetGameConfigPath(title_id_str);
+
+  if (!cvar::ConfigVars) {
+    return title_id;
+  }
+
+  // Drop the previous title's overrides so cvars revert to base config + the
+  // new title's overrides only.
+  for (auto& it : *cvar::ConfigVars) {
+    static_cast<cvar::IConfigVar*>(it.second)->ClearGameConfigValue();
+  }
+
+  if (!std::filesystem::exists(game_config_path)) {
+    return title_id;
+  }
+
+  try {
+    const auto config = ParseConfig(game_config_path);
+    XELOGI("Loading game config: {}", xe::path_to_utf8(game_config_path));
+
+    size_t override_count = 0;
+    for (auto& it : *cvar::ConfigVars) {
+      auto config_var = static_cast<cvar::IConfigVar*>(it.second);
+      toml::path config_key =
+          toml::path(config_var->category() + "." + config_var->name());
+
+      const auto config_key_node = config.at_path(config_key);
+      if (config_key_node) {
+        config_var->LoadGameConfigValue(config_key_node.node());
+        override_count++;
+
+        std::stringstream ss;
+        ss << config_key_node;
+        XELOGI("  {} = {}", config_var->name(), ss.str());
+      }
+    }
+
+    XELOGI("Applied {} game config override(s)", override_count);
+    // A per-game overlay is now live on the cvars; lock out SaveConfig() so the
+    // global config_path never gets this title's sparse overrides baked in.
+    game_config_loaded = true;
+  } catch (const std::exception& e) {
+    XELOGE("Failed to parse game config {}: {}",
+           xe::path_to_utf8(game_config_path), e.what());
+  }
+
+  return title_id;
+}
+
+void SaveGameConfig(uint32_t title_id, const toml::table& config_table) {
+  const auto game_config_path =
+      GetGameConfigPath(fmt::format("{:08X}", title_id));
+
+  try {
+    xe::filesystem::CreateParentFolder(game_config_path);
+    std::ofstream file(game_config_path);
+    if (!file.is_open()) {
+      throw std::runtime_error("Failed to open file for writing");
+    }
+
+    file << "# Game-specific config overrides\n";
+    file << "# Title ID: " << fmt::format("{:08X}", title_id) << "\n\n";
+    file << config_table << "\n";
+    file.close();
+
+    XELOGI("Saved game config for title {:08X}", title_id);
+  } catch (const std::exception& e) {
+    XELOGE("Failed to save game config {}: {}",
+           xe::path_to_utf8(game_config_path), e.what());
+    throw;
+  }
+}
+
+void SaveGameConfigSetting(xe::Emulator* emulator, const char* section,
+                           const char* cvar_name, const std::string& value) {
+  if (!emulator || !emulator->is_title_open()) {
+    return;
+  }
+
+  uint32_t title_id = emulator->title_id();
+  toml::table config_table = LoadGameConfig(title_id);
+
+  if (!config_table.contains(section)) {
+    config_table.insert(section, toml::table{});
+  }
+
+  auto* section_table = config_table[section].as_table();
+  if (section_table) {
+    section_table->insert_or_assign(cvar_name, value);
+  }
+
+  SaveGameConfig(title_id, config_table);
+}
+
+void SaveGameConfigSetting(xe::Emulator* emulator, const char* section,
+                           const char* cvar_name, bool value) {
+  if (!emulator || !emulator->is_title_open()) {
+    return;
+  }
+
+  uint32_t title_id = emulator->title_id();
+  toml::table config_table = LoadGameConfig(title_id);
+
+  if (!config_table.contains(section)) {
+    config_table.insert(section, toml::table{});
+  }
+
+  auto* section_table = config_table[section].as_table();
+  if (section_table) {
+    section_table->insert_or_assign(cvar_name, value);
+  }
+
+  SaveGameConfig(title_id, config_table);
+}
+
+void SaveGameConfigSetting(xe::Emulator* emulator, const char* section,
+                           const char* cvar_name, int32_t value) {
+  if (!emulator || !emulator->is_title_open()) {
+    return;
+  }
+
+  uint32_t title_id = emulator->title_id();
+  toml::table config_table = LoadGameConfig(title_id);
+
+  if (!config_table.contains(section)) {
+    config_table.insert(section, toml::table{});
+  }
+
+  auto* section_table = config_table[section].as_table();
+  if (section_table) {
+    section_table->insert_or_assign(cvar_name, value);
+  }
+
+  SaveGameConfig(title_id, config_table);
+}
+
+void SaveGameConfigSetting(xe::Emulator* emulator, const char* section,
+                           const char* cvar_name, uint32_t value) {
+  if (!emulator || !emulator->is_title_open()) {
+    return;
+  }
+
+  uint32_t title_id = emulator->title_id();
+  toml::table config_table = LoadGameConfig(title_id);
+
+  if (!config_table.contains(section)) {
+    config_table.insert(section, toml::table{});
+  }
+
+  auto* section_table = config_table[section].as_table();
+  if (section_table) {
+    section_table->insert_or_assign(cvar_name, value);
+  }
+
+  SaveGameConfig(title_id, config_table);
+}
+
+void SaveGameConfigSetting(xe::Emulator* emulator, const char* section,
+                           const char* cvar_name, double value) {
+  if (!emulator || !emulator->is_title_open()) {
+    return;
+  }
+
+  uint32_t title_id = emulator->title_id();
+  toml::table config_table = LoadGameConfig(title_id);
+
+  if (!config_table.contains(section)) {
+    config_table.insert(section, toml::table{});
+  }
+
+  auto* section_table = config_table[section].as_table();
+  if (section_table) {
+    section_table->insert_or_assign(cvar_name, value);
+  }
+
+  SaveGameConfig(title_id, config_table);
+}
+
+toml::table LoadGameConfig(uint32_t title_id) {
+  const auto game_config_path =
+      GetGameConfigPath(fmt::format("{:08X}", title_id));
+
+  toml::table config_table;
+  if (std::filesystem::exists(game_config_path)) {
+    try {
+      config_table = toml::parse_file(game_config_path.string());
+    } catch (const std::exception& e) {
+      XELOGE("Failed to parse game config {}: {}",
+             xe::path_to_utf8(game_config_path), e.what());
+    }
+  }
+  return config_table;
+}
+
+void ReloadConfig() {
+  if (config_path.empty()) {
+    return;
+  }
+
+  if (std::filesystem::exists(config_path)) {
+    ReadConfig(config_path, false);
+    XELOGI("Reloaded config from: {}", xe::path_to_utf8(config_path));
+  }
 }
 
 void SaveConfig() {
@@ -290,6 +627,15 @@ void SaveConfig() {
     fwrite(sb.buffer(), 1, sb.length(), handle);
     fclose(handle);
   }
+
+  // Notify that config was saved
+  if (config_saved_callback) {
+    config_saved_callback();
+  }
+}
+
+void SetConfigSavedCallback(std::function<void()> callback) {
+  config_saved_callback = callback;
 }
 
 void SetupConfig(const std::filesystem::path& config_folder) {
@@ -318,18 +664,6 @@ void SetupConfig(const std::filesystem::path& config_folder) {
     // parameters to the user, if new options were added, descriptions were
     // updated, or default values were changed.
     SaveConfig();
-  }
-}
-
-void LoadGameConfig(const std::string_view title_id) {
-  const auto game_config_folder = config_folder / "config";
-  const auto game_config_path =
-      game_config_folder / (std::string(title_id) + game_config_suffix);
-  if (std::filesystem::exists(game_config_path)) {
-    ReadGameConfig(game_config_path);
-    // Lock out SaveConfig() for the rest of this process: the live cvars now carry
-    // this game's sparse overrides and must never be written back to the global file.
-    game_config_loaded = true;
   }
 }
 

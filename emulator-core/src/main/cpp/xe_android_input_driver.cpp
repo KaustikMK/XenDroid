@@ -268,6 +268,24 @@ namespace xe {
 
             InputType AndroidInputDriver::GetInputType() const { return InputType::Controller; }
 
+            std::vector<InputDeviceInfo> AndroidInputDriver::EnumerateDevices() {
+                // XenDroid: edge's InputSystem only routes guest input to drivers
+                // that are bound to a slot (slot_bindings_), and bindings are built
+                // from EnumerateDevices(). Advertise a single always-present Android
+                // controller so ReconcileBindings auto-binds it to player 1; both the
+                // on-screen pad and physical controllers feed this driver's slot 0
+                // through GetState(0).
+                std::vector<InputDeviceInfo> out;
+                InputDeviceInfo info{};
+                info.driver_slot = 0;
+                info.stable_id = "android-gamepad";
+                info.display_name = "Android Controller";
+                info.preferred_slot = 0;  // player 1
+                // subtype defaults to XINPUT_DEVSUBTYPE_GAMEPAD, auto_bind to true.
+                out.push_back(std::move(info));
+                return out;
+            }
+
         }
     }
 }

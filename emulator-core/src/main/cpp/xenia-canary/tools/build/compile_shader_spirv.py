@@ -73,7 +73,7 @@ def main():
 
     src_name = os.path.basename(input_path)
     src_dir = os.path.dirname(input_path)
-    src_is_xesl = src_name.endswith(".xesl")
+    src_is_xesl = src_name.endswith(".xesl") or src_name.endswith(".slang")
 
     stage_key, spirv_stage = parse_stage(src_name)
     if spirv_stage is None:

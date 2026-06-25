@@ -25,6 +25,16 @@
 #include <dlfcn.h>
 #elif XE_PLATFORM_WIN32
 #include "xenia/base/platform_win.h"
+#elif XE_PLATFORM_MAC
+// MoltenVK is statically linked; declare the two entry points we resolve at
+// load time (vulkan_api.h sets VK_NO_PROTOTYPES, so the prototypes from
+// vulkan.h aren't visible).
+extern "C" {
+VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL
+vkGetInstanceProcAddr(VkInstance instance, const char* pName);
+VKAPI_ATTR void VKAPI_CALL
+vkDestroyInstance(VkInstance instance, const VkAllocationCallbacks* pAllocator);
+}
 #endif
 
 #if XE_PLATFORM_xendroid||XE_PLATFORM_ANDROID
@@ -66,7 +76,7 @@ namespace ui {
 namespace vulkan {
 
 std::unique_ptr<VulkanInstance> VulkanInstance::Create(
-    const bool with_surface, const bool try_enable_validation) {
+    const bool with_surface, const int validation_level) {
   std::unique_ptr<VulkanInstance> vulkan_instance(new VulkanInstance());
 
   // Load the RenderDoc API if connected.
@@ -142,6 +152,9 @@ std::unique_ptr<VulkanInstance> VulkanInstance::Create(
   functions_loaded &=                                                    \
       (ifn.name = PFN_##name(dlsym(vulkan_instance->loader_, #name))) != \
       nullptr;
+#elif XE_PLATFORM_MAC
+  // MoltenVK is statically linked; the vk* entry points are real symbols.
+#define XE_VULKAN_LOAD_LOADER_FUNCTION(name) ifn.name = &::name;
 #elif XE_PLATFORM_WIN32
   vulkan_instance->loader_ = LoadLibraryW(L"vulkan-1.dll");
   if (!vulkan_instance->loader_) {
@@ -217,17 +230,33 @@ std::unique_ptr<VulkanInstance> VulkanInstance::Create(
     // #1.
     requested_extensions.emplace("VK_KHR_surface",
                                  &vulkan_instance->extensions_.ext_KHR_surface);
+    // #120. Required by VK_EXT_full_screen_exclusive.
+    requested_extensions.emplace(
+        "VK_KHR_get_surface_capabilities2",
+        &vulkan_instance->extensions_.ext_KHR_get_surface_capabilities2);
 #ifdef VK_USE_PLATFORM_XCB_KHR
     // #6.
     requested_extensions.emplace(
         "VK_KHR_xcb_surface",
         &vulkan_instance->extensions_.ext_KHR_xcb_surface);
 #endif
+#ifdef VK_USE_PLATFORM_WAYLAND_KHR
+    // #7.
+    requested_extensions.emplace(
+        "VK_KHR_wayland_surface",
+        &vulkan_instance->extensions_.ext_KHR_wayland_surface);
+#endif
 #ifdef VK_USE_PLATFORM_ANDROID_KHR
     // #9.
     requested_extensions.emplace(
         "VK_KHR_android_surface",
         &vulkan_instance->extensions_.ext_KHR_android_surface);
+#endif
+#ifdef VK_USE_PLATFORM_METAL_EXT
+    // #218.
+    requested_extensions.emplace(
+        "VK_EXT_metal_surface",
+        &vulkan_instance->extensions_.ext_EXT_metal_surface);
 #endif
 #ifdef VK_USE_PLATFORM_WIN32_KHR
     // #10.
@@ -303,17 +332,16 @@ std::unique_ptr<VulkanInstance> VulkanInstance::Create(
                              &layer_renderdoc_capture);
   }
   bool layer_khronos_validation = false;
-  if (try_enable_validation) {
+  // VK_EXT_validation_features (#248) is provided by the validation layer;
+  // request it alongside so we can chain VkValidationFeaturesEXT.
+  bool ext_EXT_validation_features = false;
+  if (validation_level >= 1) {
     requested_layers.emplace("VK_LAYER_KHRONOS_validation",
                              &layer_khronos_validation);
-    // Also turn on synchronization validation (WAR/RAW/WAW hazards from
-    // missing or insufficient barriers). Standard API validation can't see
-    // these, but they're the usual cause of intermittent rendering glitches
-    // (e.g. a depth buffer read/tested before a prior write completes -> stale
-    // depth -> flickering occlusion). The Khronos validation layer reads
-    // VK_LAYER_ENABLES at vkCreateInstance; set it before instance creation.
-    setenv("VK_LAYER_ENABLES",
-           "VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT", 1);
+    if (validation_level >= 2) {
+      requested_extensions.emplace("VK_EXT_validation_features",
+                                   &ext_EXT_validation_features);
+    }
   }
 
   std::vector<const char*> enabled_layers;
@@ -444,22 +472,9 @@ std::unique_ptr<VulkanInstance> VulkanInstance::Create(
           ? VulkanDevice::kHighestUsedApiMinorVersion
           : VK_MAKE_API_VERSION(0, 1, 0, 0);
 
-  // Turn on synchronization validation when the validation layer is enabled -
-  // catches WAR/RAW/WAW hazards (missing/insufficient barriers -> stale reads)
-  // that plain API validation can't see. Chained via the layer-provided
-  // VK_EXT_validation_features; must outlive the vkCreateInstance call(s) below.
-  static const VkValidationFeatureEnableEXT kEnabledValidationFeatures[] = {
-      VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT};
-  VkValidationFeaturesEXT validation_features = {};
-  validation_features.sType = VK_STRUCTURE_TYPE_VALIDATION_FEATURES_EXT;
-  validation_features.enabledValidationFeatureCount = uint32_t(
-      sizeof(kEnabledValidationFeatures) / sizeof(kEnabledValidationFeatures[0]));
-  validation_features.pEnabledValidationFeatures = kEnabledValidationFeatures;
-
   VkInstanceCreateInfo instance_create_info;
   instance_create_info.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
-  instance_create_info.pNext =
-      layer_khronos_validation ? &validation_features : nullptr;
+  instance_create_info.pNext = nullptr;
   instance_create_info.flags = 0;
   // VK_KHR_get_physical_device_properties2 is needed to get the portability
   // subset features.
@@ -475,6 +490,33 @@ std::unique_ptr<VulkanInstance> VulkanInstance::Create(
   instance_create_info.enabledExtensionCount =
       uint32_t(enabled_extensions.size());
   instance_create_info.ppEnabledExtensionNames = enabled_extensions.data();
+
+  // Opt into extra validation features when the corresponding level is set and
+  // VK_EXT_validation_features was provided by the validation layer.
+  VkValidationFeatureEnableEXT validation_feature_enables[3];
+  VkValidationFeaturesEXT validation_features = {
+      VK_STRUCTURE_TYPE_VALIDATION_FEATURES_EXT};
+  if (ext_EXT_validation_features) {
+    uint32_t enable_count = 0;
+    if (validation_level >= 2) {
+      validation_feature_enables[enable_count++] =
+          VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT;
+    }
+    if (validation_level >= 3) {
+      validation_feature_enables[enable_count++] =
+          VK_VALIDATION_FEATURE_ENABLE_GPU_ASSISTED_EXT;
+      validation_feature_enables[enable_count++] =
+          VK_VALIDATION_FEATURE_ENABLE_GPU_ASSISTED_RESERVE_BINDING_SLOT_EXT;
+    }
+    if (enable_count) {
+      validation_features.enabledValidationFeatureCount = enable_count;
+      validation_features.pEnabledValidationFeatures =
+          validation_feature_enables;
+      validation_features.pNext = instance_create_info.pNext;
+      instance_create_info.pNext = &validation_features;
+    }
+  }
+
   VkResult instance_create_result = ifn.vkCreateInstance(
       &instance_create_info, nullptr, &vulkan_instance->instance_);
 
@@ -489,11 +531,14 @@ std::unique_ptr<VulkanInstance> VulkanInstance::Create(
          requested_layers) {
       *requested_layer.second = false;
     }
-    // The validation layer is gone now, so drop the validation-features pNext.
-    instance_create_info.pNext = nullptr;
     instance_create_info.enabledLayerCount = 0;
     instance_create_info.enabledExtensionCount =
         uint32_t(enabled_implementation_extension_count);
+    // VkValidationFeaturesEXT comes from the validation layer; if we're
+    // retrying without it, unchain the struct.
+    if (instance_create_info.pNext == &validation_features) {
+      instance_create_info.pNext = validation_features.pNext;
+    }
     instance_create_result = ifn.vkCreateInstance(
         &instance_create_info, nullptr, &vulkan_instance->instance_);
   }
@@ -540,9 +585,19 @@ std::unique_ptr<VulkanInstance> VulkanInstance::Create(
 #include "xenia/ui/vulkan/functions/instance_khr_xcb_surface.inc"
   }
 #endif
+#ifdef VK_USE_PLATFORM_WAYLAND_KHR
+  if (vulkan_instance->extensions_.ext_KHR_wayland_surface) {
+#include "xenia/ui/vulkan/functions/instance_khr_wayland_surface.inc"
+  }
+#endif
 #ifdef VK_USE_PLATFORM_ANDROID_KHR
   if (vulkan_instance->extensions_.ext_KHR_android_surface) {
 #include "xenia/ui/vulkan/functions/instance_khr_android_surface.inc"
+  }
+#endif
+#ifdef VK_USE_PLATFORM_METAL_EXT
+  if (vulkan_instance->extensions_.ext_EXT_metal_surface) {
+#include "xenia/ui/vulkan/functions/instance_ext_metal_surface.inc"
   }
 #endif
 #ifdef VK_USE_PLATFORM_WIN32_KHR

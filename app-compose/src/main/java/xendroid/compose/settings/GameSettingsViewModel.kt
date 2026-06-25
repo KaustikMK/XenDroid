@@ -20,9 +20,11 @@ class GameSettingsViewModel(private val repo: GameSettingsRepository) : ViewMode
     val categories: List<SettingsCategory> = SettingsSchema.categories
     override val isCustomDriverSupported get() = repo.isCustomDriverSupported
 
-    /** key -> overridden flag, re-emitted so the screen recomposes on toggle/value change. */
-    private val _overrides = MutableStateFlow<Map<String, Boolean>>(emptyMap())
-    val overrides: StateFlow<Map<String, Boolean>> = _overrides.asStateFlow()
+    /** key -> raw override value (overridden keys only); containsKey == overridden. Value-carrying
+     *  so a value-only edit changes the map and the StateFlow emits (a Boolean flag map would be
+     *  equals-equal and MutableStateFlow would dedupe -> no recompose). */
+    private val _overrides = MutableStateFlow<Map<String, String>>(emptyMap())
+    val overrides: StateFlow<Map<String, String>> = _overrides.asStateFlow()
 
     init { load() }
 
@@ -36,11 +38,16 @@ class GameSettingsViewModel(private val repo: GameSettingsRepository) : ViewMode
     }
 
     private fun reloadAll() {
-        _overrides.value = SettingsSchema.allSettings.associate { it.key to repo.isOverridden(it) }
+        _overrides.value = SettingsSchema.allSettings
+            .mapNotNull { s -> repo.rawOverride(s)?.let { s.key to it } }
+            .toMap()
     }
 
     private fun refreshKey(s: Setting) {
-        _overrides.value = _overrides.value.toMutableMap().apply { put(s.key, repo.isOverridden(s)) }
+        _overrides.value = _overrides.value.toMutableMap().apply {
+            val raw = repo.rawOverride(s)
+            if (raw != null) put(s.key, raw) else remove(s.key)
+        }
     }
 
     fun isOverridden(s: Setting) = repo.isOverridden(s)

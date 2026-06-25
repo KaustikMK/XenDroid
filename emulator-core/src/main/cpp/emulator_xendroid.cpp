@@ -3,6 +3,7 @@
 #include "xendroid_emu.h"
 
 #include <atomic>   // single-xe::Memory-per-process guard in extract_xex_meta
+#include <filesystem>  // std::filesystem::path/u8path for the zar extract/create JNI bridge
 
 #include "xenia/app/emulator_window.h"
 #include "xenia/emulator.h"
@@ -21,9 +22,14 @@
 #include "xenia/memory.h"                      // xe::Memory standalone guest address space
 #include "xenia/cpu/processor.h"               // xe::cpu::Processor (bare, for XexModule ctor)
 #include "xenia/kernel/xam/xdbf/spa_info.h"    // xe::kernel::xam::SpaInfo + title_icon()
-#include "xe_saf_disc_image_device.h"         // SAF_DiscImageDevice (ISO)
-#include "xe_saf_disc_image_entry.h"          // SAF_DiscImageEntry accessors (mmap/data_offset/data_size)
-#include "document_file.h"                    // DocumentFile::find / open_fd
+
+#include "xenia/vfs/devices/disc_image_device.h"     // real-path DiscImageDevice (ISO)
+#include "xenia/vfs/devices/disc_zarchive_device.h"  // real-path DiscZarchiveDevice (.zar)
+#include "xenia/vfs/file.h"                           // vfs::File::ReadSync
+#include "xenia/vfs/iso_metadata.h"                   // ExtractIsoMetadata(path)
+#include "xenia/vfs/zar_metadata.h"                   // ExtractZarMetadata(path)
+#include "xenia/vfs/xex_metadata.h"                   // ExtractXexMetadata(path)
+#include "xenia/vfs/stfs_metadata.h"                  // ExtractStfsMetadata(path)
 
 #include <cstdio>
 
@@ -33,19 +39,12 @@
 
 //#include "cpptoml/include/cpptoml.h"
 
-jclass g_class_DocumentFile;
 jclass g_class_Emulator;
 
 jobject g_context;
-jobject g_doocument_file_tree;
-
-jmethodID mid_open_uri_fd;
-
-// Set in JNI_OnLoad (compose.cpp); used by DocumentFile::find for the ISO path.
-extern JavaVM* g_jvm;
 
 // Title-id format codes -- MUST match GameFormat.titleIdCode in Kotlin.
-enum : jint { TID_FMT_ISO = 0, TID_FMT_XEX_FOLDER = 1 };
+enum : jint { TID_FMT_ISO = 0, TID_FMT_XEX_FOLDER = 1, TID_FMT_ZAR = 2 };
 
 std::vector<std::string> g_launch_args;
 std::string g_uri_info_list_file_path;
@@ -60,11 +59,6 @@ static void j_setup_context(JNIEnv* env,jobject self,jobject context ){
     const char* native_library_dir_c_str=env->GetStringUTFChars(native_library_dir,NULL);
     g_native_lib_dir=native_library_dir_c_str;
     env->ReleaseStringUTFChars(native_library_dir,native_library_dir_c_str);
-}
-
-//public native void setup_document_file_tree(DocumentFile tree);
-static void j_setup_document_file_tree(JNIEnv* env,jobject self,jobject tree ){
-    g_doocument_file_tree = env->NewGlobalRef(tree);
 }
 
 //public native void setup_launch_args(String[] args);
@@ -435,114 +429,140 @@ static jstring make_title_id_jstring(JNIEnv* env, bool ok, uint32_t title_id) {
     return env->NewStringUTF(fmt::format("{:08X}", title_id).c_str());
 }
 
-// public native String title_id_from_uri(Context ctx, String uri, int format)
-static jstring j_title_id_from_uri(JNIEnv* env, jobject self,
-                                   jobject context, jstring uri_str, jint format) {
-    if (!uri_str) return nullptr;
+// ===========================================================================
+// All-Files-Access (real-path) scan natives.
+//
+// These mount the core's REAL-PATH devices (DiscImageDevice / DiscZarchiveDevice)
+// or call the header-only Extract*Metadata(path) helpers from a std::filesystem
+// path -- no Context, no ContentResolver, no /proc/self/fd. Used when the user
+// has granted MANAGE_EXTERNAL_STORAGE (the only games path).
+// format codes match TID_FMT_* / GameFormat.titleIdCode (0=ISO,1=XEX_FOLDER,2=ZAR).
+// ===========================================================================
 
-    jclass uri_class = env->FindClass("android/net/Uri");
-    jmethodID parse_method =
-            env->GetStaticMethodID(uri_class, "parse",
-                                   "(Ljava/lang/String;)Landroid/net/Uri;");
-    jobject uri = env->CallStaticObjectMethod(uri_class, parse_method, uri_str);
-    if (!uri) return nullptr;
-
-    uint32_t title_id = 0;
-    bool ok = false;
-
-    switch (format) {
-        case TID_FMT_XEX_FOLDER: {
-            // launchUri already points at default.xex; read its bytes directly.
-            int fd = env->CallStaticIntMethod(g_class_Emulator, mid_open_uri_fd,
-                                              context, uri);
-            if (fd == -1) break;
-            std::unique_ptr<xe::MappedMemory> mmap =
-                    xe::MappedMemory::OpenForUnixFd(fd);  // takes ownership of fd
-            if (!mmap) break;
-            ok = read_xex_title_id(mmap->data(), mmap->size(), &title_id);
+// Read a single VFS entry fully into a buffer via Open/ReadSync (decompresses
+// .zar; reads disc extents). Empty on any failure. Shared by the ISO + ZAR
+// real-path metadata routes (real-path DiscImageEntry exposes no public
+// mmap/offset accessor, unlike the SAF entry, so go through the File API).
+static std::vector<uint8_t> read_vfs_entry_bytes(xe::vfs::Entry* e) {
+    using namespace xe;
+    std::vector<uint8_t> out;
+    if (!e) return out;
+    vfs::File* in = nullptr;
+    if (e->Open(vfs::FileAccess::kFileReadData, &in) != X_STATUS_SUCCESS || !in) {
+        return out;
+    }
+    const size_t size = e->size();
+    out.resize(size);
+    size_t total = 0;
+    while (total < size) {
+        size_t got = 0;
+        if (in->ReadSync(std::span<uint8_t>(out.data() + total, size - total),
+                         total, &got) != X_STATUS_SUCCESS ||
+            got == 0) {
             break;
         }
-        case TID_FMT_ISO: {
-            // Mount the disc just long enough to resolve+read default.xex. RAII
-            // frees the fd/mmap on scope exit; do NOT cache Entry/mmap past it.
-            std::unique_ptr<DocumentFile> file = DocumentFile::find(g_jvm, uri);
-            if (!file) break;                              // not in granted tree
-            xe::vfs::SAF_DiscImageDevice dev("\\Device\\Cdrom0", std::move(file));
-            if (!dev.Initialize()) break;                  // not XDVDFS / corrupt
-            xe::vfs::Entry* e = dev.ResolvePath("default.xex");
-            if (!e) break;                                 // multi-disc / custom launch
-            auto* de = static_cast<xe::vfs::SAF_DiscImageEntry*>(e);
-            if (!de->mmap()) break;
-            // GDFX file extents come straight from the on-disc directory and are NOT
-            // validated against the mapping size, so clamp the span to the actual mmap
-            // before the (untrusted-file) header read -- a truncated/crafted ISO must
-            // not OOB-read.
-            const size_t map_size = de->mmap()->size();
-            if (de->data_offset() > map_size) break;
-            const size_t span = std::min<size_t>(de->data_size(), map_size - de->data_offset());
-            const uint8_t* base = de->mmap()->data() + de->data_offset();
-            ok = read_xex_title_id(base, span, &title_id);
-            break;                                         // dev (mmap/fd) freed here
-        }
-        default:
-            break;                                         // GOD/ZAR not routed here
+        total += got;
     }
-
-    return make_title_id_jstring(env, ok, title_id);
+    in->Destroy();
+    out.resize(total);  // trim to bytes actually read
+    return out;
 }
 
-// public native GameInfo meta_from_xex(Context ctx, String uri, int format)
-// ISO (0): uri = ISO container; XEX_FOLDER (1): uri = default.xex child. Returns a
-// GameInfo {name, titleId, icon} from a SINGLE default.xex decompress, or null when
-// nothing was readable. name/icon may individually be absent (null) -> Kotlin falls
-// back to the filename name / app_icon. uri field echoes the input.
-static jobject j_meta_from_xex(JNIEnv* env, jobject self,
-                               jobject context, jstring uri_str, jint format) {
-    if (!uri_str) return nullptr;
+// Read default.xex out of a real-path ISO / .zar into a buffer (empty on
+// failure), mounting the core's real-path DiscImageDevice / DiscZarchiveDevice.
+static std::vector<uint8_t> read_disc_default_xex(const std::filesystem::path& p,
+                                                  jint format) {
+    using namespace xe;
+    std::vector<uint8_t> out;
+    if (format == TID_FMT_ISO) {
+        vfs::DiscImageDevice dev("\\Device\\Cdrom0", p);
+        if (!dev.Initialize()) return out;             // not XDVDFS / corrupt
+        out = read_vfs_entry_bytes(dev.ResolvePath("default.xex"));
+    } else if (format == TID_FMT_ZAR) {
+        vfs::DiscZarchiveDevice dev("\\Device\\Cdrom0", p);
+        if (!dev.Initialize()) return out;             // not a valid .zar
+        out = read_vfs_entry_bytes(dev.ResolvePath("default.xex"));
+    }
+    return out;  // dev (mmap / ZArchiveReader) freed here
+}
 
-    jclass uri_class = env->FindClass("android/net/Uri");
-    jmethodID parse_method =
-            env->GetStaticMethodID(uri_class, "parse",
-                                   "(Ljava/lang/String;)Landroid/net/Uri;");
-    jobject uri = env->CallStaticObjectMethod(uri_class, parse_method, uri_str);
-    if (!uri) return nullptr;
+// public native String title_id_from_path(String path, int format)
+// Header-only title-id read from a real host path (no XDBF decompress). Returns
+// an 8-char uppercase-hex id, or null for unsupported/unreadable/00000000.
+static jstring j_title_id_from_path(JNIEnv* env, jobject self,
+                                    jstring path_str, jint format) {
+    if (!path_str) return nullptr;
+    const char* path_c = env->GetStringUTFChars(path_str, nullptr);
+    if (!path_c) return nullptr;
+    std::filesystem::path p = std::filesystem::u8path(path_c);
+    env->ReleaseStringUTFChars(path_str, path_c);
+
+    std::optional<xe::vfs::XexMetadata> meta;
+    switch (format) {
+        case TID_FMT_ISO:
+            meta = xe::vfs::ExtractIsoMetadata(p);
+            break;
+        case TID_FMT_XEX_FOLDER:
+            meta = xe::vfs::ExtractXexMetadata(p);  // p == default.xex
+            break;
+        case TID_FMT_ZAR:
+            meta = xe::vfs::ExtractZarMetadata(p);
+            break;
+        default:
+            break;  // GOD not routed here
+    }
+
+    if (!meta) return nullptr;
+    return make_title_id_jstring(env, true, meta->title_id);
+}
+
+// public native GameInfo meta_from_path(String path, int format)
+// ISO (0): path = ISO container; XEX_FOLDER (1): path = default.xex; ZAR (2):
+// path = .zar container. Returns a GameInfo {name, titleId, icon} from a SINGLE
+// default.xex decompress, or null when nothing was readable. uri field echoes
+// the input path string (the launch + cache key in real-path mode).
+static jobject j_meta_from_path(JNIEnv* env, jobject self,
+                                jstring path_str, jint format) {
+    if (!path_str) return nullptr;
+    const char* path_c = env->GetStringUTFChars(path_str, nullptr);
+    if (!path_c) return nullptr;
+    std::filesystem::path p = std::filesystem::u8path(path_c);
+    env->ReleaseStringUTFChars(path_str, path_c);
 
     XexMeta meta;  // name/icon empty, title_id 0 on failure
 
     switch (format) {
         case TID_FMT_XEX_FOLDER: {
-            // launchUri already points at default.xex; read its bytes directly.
-            int fd = env->CallStaticIntMethod(g_class_Emulator, mid_open_uri_fd,
-                                              context, uri);
-            if (fd == -1) break;
+            // path already points at default.xex; mmap its bytes directly.
             std::unique_ptr<xe::MappedMemory> mmap =
-                    xe::MappedMemory::OpenForUnixFd(fd);  // takes ownership of fd
+                    xe::MappedMemory::Open(p, xe::MappedMemory::Mode::kRead);
             if (!mmap) break;
             meta = extract_xex_meta(mmap->data(), mmap->size());
-            break;  // mmap (fd) freed here
+            break;  // mmap freed here
         }
-        case TID_FMT_ISO: {
-            // Mount the disc just long enough to resolve+read default.xex. RAII
-            // frees the fd/mmap on scope exit; do NOT cache Entry/mmap past it.
-            std::unique_ptr<DocumentFile> file = DocumentFile::find(g_jvm, uri);
-            if (!file) break;                              // not in granted tree
-            xe::vfs::SAF_DiscImageDevice dev("\\Device\\Cdrom0", std::move(file));
-            if (!dev.Initialize()) break;                  // not XDVDFS / corrupt
-            xe::vfs::Entry* e = dev.ResolvePath("default.xex");
-            if (!e) break;                                 // multi-disc / custom launch
-            auto* de = static_cast<xe::vfs::SAF_DiscImageEntry*>(e);
-            if (!de->mmap()) break;
-            // Clamp the span to the actual mmap (untrusted on-disc extents).
-            const size_t map_size = de->mmap()->size();
-            if (de->data_offset() > map_size) break;
-            const size_t span = std::min<size_t>(de->data_size(),
-                                                 map_size - de->data_offset());
-            const uint8_t* dbase = de->mmap()->data() + de->data_offset();
-            meta = extract_xex_meta(dbase, span);
-            break;                                         // dev (mmap/fd) freed here
+        case TID_FMT_ISO:
+        case TID_FMT_ZAR: {
+            std::vector<uint8_t> xex = read_disc_default_xex(p, format);
+            if (!xex.empty()) meta = extract_xex_meta(xex.data(), xex.size());
+            break;
         }
         default:
-            break;                                         // GOD/ZAR not routed here
+            break;  // GOD not routed here
+    }
+
+    // extract_xex_meta yields the NAME + ICON but its title-id parse may bail
+    // before it (e.g. no resources) even when the header carries a valid id.
+    // Backfill the title-id from the header-only Extract*Metadata(path) so the
+    // per-game config stem is still populated (matches the SAF fallback intent).
+    if (meta.title_id == 0) {
+        std::optional<xe::vfs::XexMetadata> hdr;
+        switch (format) {
+            case TID_FMT_ISO:        hdr = xe::vfs::ExtractIsoMetadata(p); break;
+            case TID_FMT_XEX_FOLDER: hdr = xe::vfs::ExtractXexMetadata(p); break;
+            case TID_FMT_ZAR:        hdr = xe::vfs::ExtractZarMetadata(p); break;
+            default: break;
+        }
+        if (hdr) meta.title_id = hdr->title_id;
     }
 
     // Nothing readable at all -> null (Kotlin keeps the filename name, no icon).
@@ -558,16 +578,18 @@ static jobject j_meta_from_xex(JNIEnv* env, jobject self,
     jfieldID fid_icon = env->GetFieldID(cls, "icon", "[B");
 
     jobject game_info = env->NewObject(cls, ctor);
-    env->SetObjectField(game_info, fid_uri, uri_str);
+    // uri echoes the input path string (the launch + cache key), mirroring how
+    // the SAF version echoes the content:// uri.
+    env->SetObjectField(game_info, fid_uri, path_str);
 
-    // NAME: already NUL-cut + UTF-8-validated by the bounded reader. Empty -> leave
-    // field null so Kotlin uses the filename fallback (do NOT set "").
+    // NAME: bounded reader already NUL-cut + UTF-8-validated. Empty -> leave
+    // null so Kotlin uses the filename fallback (do NOT set "").
     if (!meta.name.empty()) {
         jstring name_j = env->NewStringUTF(meta.name.c_str());
         env->SetObjectField(game_info, fid_name, name_j);
     }
 
-    // TITLE_ID: reuse the existing 8-hex helper (null when 0).
+    // TITLE_ID: reuse the 8-hex helper (null when 0).
     env->SetObjectField(game_info, fid_title_id,
                         make_title_id_jstring(env, meta.title_id != 0, meta.title_id));
 
@@ -583,158 +605,55 @@ static jobject j_meta_from_xex(JNIEnv* env, jobject self,
     return game_info;
 }
 
-static jobject j_meta_info_from_god_game(JNIEnv* env,jobject self,jobject context,jstring uri_str ) {
-    jclass cls_Emulator$GameInfo = env->FindClass("xendroid/compose/Emulator$GameInfo");
-    jmethodID mid_Emulator$GameInfo = env->GetMethodID(cls_Emulator$GameInfo, "<init>", "()V");
-    jfieldID fid_name = env->GetFieldID(cls_Emulator$GameInfo, "name", "Ljava/lang/String;");
-    jfieldID fid_uri = env->GetFieldID(cls_Emulator$GameInfo, "uri", "Ljava/lang/String;");
-    jfieldID fid_title_id = env->GetFieldID(cls_Emulator$GameInfo, "titleId", "Ljava/lang/String;");
-    jfieldID fid_icon = env->GetFieldID(cls_Emulator$GameInfo, "icon", "[B");
+// public native GameInfo meta_info_from_god_path(String path)
+// GOD container header read from a real host path. ExtractStfsMetadata(path) carries
+// title_name / title_id / icon_data directly (no header-fd memcpy). Returns null
+// when the STFS header is unreadable.
+static jobject j_meta_info_from_god_path(JNIEnv* env, jobject self,
+                                         jstring path_str) {
+    if (!path_str) return nullptr;
+    const char* path_c = env->GetStringUTFChars(path_str, nullptr);
+    if (!path_c) return nullptr;
+    std::filesystem::path p = std::filesystem::u8path(path_c);
+    env->ReleaseStringUTFChars(path_str, path_c);
 
-    jclass uri_class = env->FindClass("android/net/Uri");
-    jmethodID parse_method = env->GetStaticMethodID(uri_class, "parse", "(Ljava/lang/String;)Landroid/net/Uri;");
+    std::optional<xe::vfs::StfsMetadata> meta =
+            xe::vfs::ExtractStfsMetadata(p, xe::XLanguage::kEnglish);
+    if (!meta) return nullptr;
 
-    jobject game_info = env->NewObject(cls_Emulator$GameInfo, mid_Emulator$GameInfo);
-    env->SetObjectField(game_info, fid_uri, uri_str);
+    jclass cls = env->FindClass("xendroid/compose/Emulator$GameInfo");
+    jmethodID ctor = env->GetMethodID(cls, "<init>", "()V");
+    jfieldID fid_name = env->GetFieldID(cls, "name", "Ljava/lang/String;");
+    jfieldID fid_uri = env->GetFieldID(cls, "uri", "Ljava/lang/String;");
+    jfieldID fid_title_id = env->GetFieldID(cls, "titleId", "Ljava/lang/String;");
+    jfieldID fid_icon = env->GetFieldID(cls, "icon", "[B");
 
-    jobject uri = env->CallStaticObjectMethod(uri_class, parse_method, uri_str);
+    jobject game_info = env->NewObject(cls, ctor);
+    env->SetObjectField(game_info, fid_uri, path_str);
 
-    xe::vfs::XContentContainerHeader header;
-    // read header
-    {
-        //public static int nc_open_uri_fd(Context ctx,Uri uri)
-        int header_file_fd = env->CallStaticIntMethod(g_class_Emulator, mid_open_uri_fd, context, uri);
-
-        if (header_file_fd == -1) {
-            return NULL;
-        }
-        std::unique_ptr<xe::MappedMemory> mmap = xe::MappedMemory::OpenForUnixFd(header_file_fd);
-        if (!mmap) {
-            return NULL;
-        }
-        if(mmap->size() < sizeof(header)) {
-            return NULL;
-        }
-        std::memcpy(&header, mmap->data(), sizeof(header));
+    // NAME: title_name (STFS). Empty -> leave null (Kotlin filename fallback).
+    const std::string& name = !meta->title_name.empty() ? meta->title_name
+                                                         : meta->display_name;
+    if (!name.empty()) {
+        env->SetObjectField(game_info, fid_name, env->NewStringUTF(name.c_str()));
     }
 
-    std::string name = xe::to_utf8(header.content_metadata.title_name());
-    env->SetObjectField(game_info, fid_name, env->NewStringUTF(name.c_str()));
-
-    // Title id for the per-game config file stem (<TITLE_ID>.config.toml). Same
-    // accessor + format spec xenia uses at emulator.cc:995 / :1687 so the stem
-    // matches what config::LoadGameConfig consumes.
-    uint32_t title_id = header.content_metadata.execution_info.title_id.get();
-    std::string title_id_hex = fmt::format("{:08X}", title_id);
+    // TITLE_ID: 8-char uppercase hex for the per-game config stem (null when 0).
     env->SetObjectField(game_info, fid_title_id,
-                        env->NewStringUTF(title_id_hex.c_str()));
+                        make_title_id_jstring(env, meta->title_id != 0, meta->title_id));
 
-    jbyteArray icon = env->NewByteArray(header.content_metadata.thumbnail_size);
-    env->SetByteArrayRegion(icon, 0, header.content_metadata.thumbnail_size, (const jbyte*)header.content_metadata.thumbnail);
-    env->SetObjectField(game_info, fid_icon, icon);
+    // ICON: embedded title_thumbnail PNG, or leave null.
+    if (!meta->icon_data.empty()) {
+        jbyteArray icon = env->NewByteArray(static_cast<jsize>(meta->icon_data.size()));
+        if (icon) {
+            env->SetByteArrayRegion(
+                    icon, 0, static_cast<jsize>(meta->icon_data.size()),
+                    reinterpret_cast<const jbyte*>(meta->icon_data.data()));
+            env->SetObjectField(game_info, fid_icon, icon);
+        }
+    }
     return game_info;
 }
-#if 0
-static std::unique_ptr<xe::apu::AudioSystem> create_nop_audio_system(
-        xe::cpu::Processor* processor) {
-    return std::make_unique<xe::apu::nop::NopAudioSystem>(processor);
-}
-
-static std::unique_ptr<xe::gpu::GraphicsSystem> create_null_graphics_system() {
-    return std::make_unique<xe::gpu::null::NullGraphicsSystem>();
-}
-
-static std::vector<std::unique_ptr<xe::hid::InputDriver>> create_nop_input_drivers(
-        xe::ui::Window* window) {
-
-    std::vector<std::unique_ptr<xe::hid::InputDriver>> drivers;
-    drivers.emplace_back(xe::hid::nop::Create(window, xe::app::EmulatorWindow::kZOrderHidInput));
-
-    return drivers;
-}
-//public native GameInfo meta_info_from_uri(String uri) throws RuntimeException;
-static jobject j_meta_info_from_uri(JNIEnv* env,jobject self,jstring uri_str ){
-
-    /*
-    public static class GameInfo{
-        public String name;
-        public String uri;
-        public int fd;
-        public byte[] icon;
-     */
-    jclass cls_Emulator$GameInfo = env->FindClass("xendroid/compose/Emulator$GameInfo");
-    jmethodID mid_Emulator$GameInfo = env->GetMethodID(cls_Emulator$GameInfo, "<init>", "()V");
-    jobject game_info = env->NewObject(cls_Emulator$GameInfo, mid_Emulator$GameInfo);
-    jfieldID fid_name = env->GetFieldID(cls_Emulator$GameInfo, "name", "Ljava/lang/String;");
-    jfieldID fid_uri = env->GetFieldID(cls_Emulator$GameInfo, "uri", "Ljava/lang/String;");
-    env->SetObjectField(game_info, fid_uri, uri_str);
-
-
-    jclass uri_class = env->FindClass("android/net/Uri");
-    jmethodID parse_method = env->GetStaticMethodID(uri_class, "parse", "(Ljava/lang/String;)Landroid/net/Uri;");
-    jobject uri = env->CallStaticObjectMethod(uri_class, parse_method, uri_str);
-
-    std::unique_ptr<DocumentFile> file = DocumentFile::find(env, uri);
-
-    std::vector<char*> args;
-    args.push_back(NULL);
-    for(auto& i:g_launch_args){
-        args.push_back((char*)i.c_str());
-    }
-
-    int argc=args.size();
-    char** argv=args.data();
-
-    cvar::ParseLaunchArguments(argc, argv, "",{});
-    xe::InitializeLogging(file->getName());
-
-    AndroidWindowedAppContext app_context;
-    std::unique_ptr<xe::Emulator> emulator = std::make_unique<xe::Emulator>("","","","");
-    auto emulator_wnd = xe::app::EmulatorWindow::Create(emulator.get(), app_context);
-    xe::X_STATUS result = emulator->Setup(
-            emulator_wnd->window(), emulator_wnd->imgui_drawer(), true,
-            create_nop_audio_system, create_null_graphics_system, create_nop_input_drivers);
-    if (XFAILED(result)) {
-        env->SetObjectField(game_info, fid_name, env->NewStringUTF("???")) ;
-        return game_info;
-    }
-    std::string result_str;
-    bool ret=false;
-    emulator->on_launch.AddListener([&](auto title_id, const auto& game_title) {
-        result_str=game_title.empty() ? "Unknown Title" : std::string(game_title);
-        XELOGI("#############: {}", result_str);
-        ret=true;
-    });
-
-    std::string name = file->getName();
-    if(name.ends_with(".xex")){
-        result = emulator->LaunchXexFile(std::move(file));
-    }
-    else{
-        const char* path = env->GetStringUTFChars(uri_str,NULL);
-        std::string data_dir = std::string (path)+".data";
-        env->ReleaseStringUTFChars(uri_str,path);
-
-        jstring data_dir_str = env->NewStringUTF(data_dir.c_str());
-        jobject data_dir_uri = env->CallStaticObjectMethod(uri_class, parse_method, data_dir_str);
-
-        std::unique_ptr<DocumentFile> data_dir_file =
-                DocumentFile::find(env, data_dir_uri);
-
-        result = emulator->LaunchStfsContainer(std::move(file), std::move(data_dir_file));
-    }
-
-    if (XFAILED(result)) {
-        env->SetObjectField(game_info, fid_name, env->NewStringUTF("????")) ;
-        return game_info;
-    }
-
-    while (!ret);
-    XELOGI("################Game: {}", result_str);
-    env->SetObjectField(game_info, fid_name, env->NewStringUTF(result_str.c_str())) ;
-    return game_info;
-}
-#endif
 
 static const std::string gen_skips[]={
         //"CPU",
@@ -1193,24 +1112,75 @@ static jboolean j_show_debug_overlay_enabled(JNIEnv* env, jobject thiz) {
     return cvars::show_debug_overlay ? JNI_TRUE : JNI_FALSE;
 }
 
-int register_xendroid_Emulator(JNIEnv* env){
+//public native int compressIsoToZar(String isoPath,String outZarPath);
+// Mount the ISO at isoPath (a real host path == game.launchUri), walk its
+// filesystem and pack it into a VERIFIED .zar at outZarPath (a real host path,
+// e.g. app cache/files dir). Returns X_STATUS (0 == success). The archive is
+// only declared good after it re-opens and matches the source disc walk
+// (file-count + total bytes); on any failure the partial .zar is removed and a
+// non-zero status is returned, so the Kotlin SAFE-replace path keeps the ISO.
+// Blocking VFS walk + zstd compression + verify -- the Kotlin caller MUST
+// dispatch this off the main thread (Dispatchers.IO).
+#if XE_PLATFORM_xendroid
+// Live ISO->.zar compress progress (file-static so the progress getter can read it
+// while j_compressIsoToZar blocks on another thread). Bytes packed / total bytes.
+static std::atomic<uint64_t> g_zar_progress_done{0};
+static std::atomic<uint64_t> g_zar_progress_total{0};
+#endif
 
-    g_class_DocumentFile=env->FindClass("androidx/documentfile/provider/DocumentFile");
-    g_class_DocumentFile=(jclass)env->NewGlobalRef(g_class_DocumentFile);
+// Fraction 0..1 of the in-flight ISO->.zar compression (0 if none / not started).
+static jfloat j_compressProgress(JNIEnv* env, jobject self) {
+#if XE_PLATFORM_xendroid
+    const uint64_t total = g_zar_progress_total.load();
+    if (!total) return 0.0f;
+    return (jfloat)((double)g_zar_progress_done.load() / (double)total);
+#else
+    return 0.0f;
+#endif
+}
+
+static jint j_compressIsoToZar(JNIEnv* env, jobject self, jstring isoPath,
+                               jstring outZarPath) {
+#if XE_PLATFORM_xendroid
+    using namespace xe;  // X_STATUS (xbox.h) so the X_STATUS_* macros resolve.
+    if (!isoPath || !outZarPath) return (jint)X_STATUS_INVALID_PARAMETER;
+
+    const char* ip = env->GetStringUTFChars(isoPath, nullptr);
+    const char* op = env->GetStringUTFChars(outZarPath, nullptr);
+    std::filesystem::path in = std::filesystem::u8path(ip);
+    std::filesystem::path out = std::filesystem::u8path(op);
+    env->ReleaseStringUTFChars(isoPath, ip);
+    env->ReleaseStringUTFChars(outZarPath, op);
+
+    // Mount the ISO from its real host path via the core real-path DiscImageDevice.
+    // RAII frees the mmap on scope exit; the device walk stays entirely native.
+    auto dev = std::make_unique<xe::vfs::DiscImageDevice>("\\Device\\Cdrom0", in);
+    if (!dev->Initialize()) return (jint)X_STATUS_UNSUCCESSFUL;  // not XDVDFS / corrupt
+
+    // Transient emulator: the zar ops touch no runtime state -- same pattern as
+    // the metadata probes. It never boots a title.
+    auto emulator = std::make_unique<xe::Emulator>("", "", "", "");
+    g_zar_progress_total.store(0);  // reset so the getter reads 0 until the pre-walk
+    g_zar_progress_done.store(0);
+    xe::X_STATUS s = emulator->CompressDiscToZarchive(
+            dev.get(), out, &g_zar_progress_done, &g_zar_progress_total);
+    return (jint)s;  // dev (mmap) freed here on scope exit
+#else
+    return (jint)X_STATUS_UNSUCCESSFUL;
+#endif
+}
+
+int register_xendroid_Emulator(JNIEnv* env){
 
     g_class_Emulator = env->FindClass("xendroid/compose/Emulator");
     g_class_Emulator = (jclass)env->NewGlobalRef(g_class_Emulator);
 
-    //public static int nc_open_uri_fd(Context ctx,String uri)
-    mid_open_uri_fd = env->GetStaticMethodID(g_class_Emulator, "nc_open_uri_fd", "(Landroid/content/Context;Landroid/net/Uri;)I");
-
     static const JNINativeMethod methods[] = {
             { "setup_context", "(Landroid/content/Context;)V", (void *) j_setup_context },
-            { "setup_document_file_tree", "(Landroidx/documentfile/provider/DocumentFile;)V", (void *) j_setup_document_file_tree },
             { "setup_launch_args", "([Ljava/lang/String;)V", (void *) j_setup_launch_args },
-            { "meta_info_from_god_game", "(Landroid/content/Context;Ljava/lang/String;)Lxendroid/compose/Emulator$GameInfo;", (void *) j_meta_info_from_god_game },
-            { "title_id_from_uri", "(Landroid/content/Context;Ljava/lang/String;I)Ljava/lang/String;", (void *) j_title_id_from_uri },
-            { "meta_from_xex", "(Landroid/content/Context;Ljava/lang/String;I)Lxendroid/compose/Emulator$GameInfo;", (void *) j_meta_from_xex },
+            { "title_id_from_path", "(Ljava/lang/String;I)Ljava/lang/String;", (void *) j_title_id_from_path },
+            { "meta_from_path", "(Ljava/lang/String;I)Lxendroid/compose/Emulator$GameInfo;", (void *) j_meta_from_path },
+            { "meta_info_from_god_path", "(Ljava/lang/String;)Lxendroid/compose/Emulator$GameInfo;", (void *) j_meta_info_from_god_path },
             { "setup_uri_info_list_file", "(Ljava/lang/String;)V", (void *) j_setup_uri_info_list_file },
             {"simple_device_info", "()Ljava/lang/String;", (void *) j_simple_device_info}
             ,{"generate_config_xml", "(Ljava/lang/String;)Ljava/lang/String;", (void *) generate_config_xml}
@@ -1218,6 +1188,8 @@ int register_xendroid_Emulator(JNIEnv* env){
             ,{"instant_fps", "()D", (void *) j_instant_fps}
             ,{"last_frame_time_ms", "()D", (void *) j_last_frame_time_ms}
             ,{"show_debug_overlay_enabled", "()Z", (void *) j_show_debug_overlay_enabled}
+            ,{"compressIsoToZar", "(Ljava/lang/String;Ljava/lang/String;)I", (void *) j_compressIsoToZar}
+            ,{"compressProgress", "()F", (void *) j_compressProgress}
     };
     return env->RegisterNatives(g_class_Emulator,methods, sizeof(methods)/sizeof(methods[0]));
 }

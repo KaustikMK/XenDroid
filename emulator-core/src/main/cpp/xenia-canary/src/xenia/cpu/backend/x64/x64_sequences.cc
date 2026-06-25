@@ -71,7 +71,10 @@ using namespace xe::cpu::hir;
 using xe::cpu::hir::Instr;
 
 typedef bool (*SequenceSelectFn)(X64Emitter&, const Instr*, InstrKeyValue ikey);
-std::unordered_map<uint32_t, SequenceSelectFn> sequence_table;
+std::unordered_map<uint32_t, SequenceSelectFn>& SequenceTable() {
+  static auto* table = new std::unordered_map<uint32_t, SequenceSelectFn>();
+  return *table;
+}
 
 // ============================================================================
 // OPCODE_COMMENT
@@ -2178,7 +2181,8 @@ struct RECIP_F32 : Sequence<RECIP_F32, I<OPCODE_RECIP, F32Op, F32Op>> {
   static void Emit(X64Emitter& e, const EmitArgType& i) {
     e.ChangeMxcsrMode(MXCSRMode::Fpu);
     Xmm src1 = GetInputRegOrConstant(e, i.src1, e.xmm3);
-    // AVX512's vrcp14ss has precision issues, division gives exact results
+    // Note: AVX512's vrcp14ss has precision issues
+    // For now, always use division which gives exact results
     e.vmovaps(e.xmm0, e.GetXmmConstPtr(XMMOne));
     e.vdivss(i.dest, e.xmm0, src1);
   }
@@ -2187,7 +2191,8 @@ struct RECIP_F64 : Sequence<RECIP_F64, I<OPCODE_RECIP, F64Op, F64Op>> {
   static void Emit(X64Emitter& e, const EmitArgType& i) {
     e.ChangeMxcsrMode(MXCSRMode::Fpu);
     Xmm src1 = GetInputRegOrConstant(e, i.src1, e.xmm3);
-    // AVX512's vrcp14ss has precision issues, division gives exact results
+    // Note: AVX512's vrcp14sd has precision issues
+    // For now, always use division which gives exact results
     e.vmovapd(e.xmm0, e.GetXmmConstPtr(XMMOnePD));
     e.vdivsd(i.dest, e.xmm0, src1);
   }
@@ -2196,7 +2201,7 @@ struct RECIP_V128 : Sequence<RECIP_V128, I<OPCODE_RECIP, V128Op, V128Op>> {
   static void Emit(X64Emitter& e, const EmitArgType& i) {
     e.ChangeMxcsrMode(MXCSRMode::Vmx);
     Xmm src1 = GetInputRegOrConstant(e, i.src1, e.xmm3);
-    // AVX512's vrcp14ps has precision issues, devision gives exact results
+    // Note: AVX512's vrcp14ps has precision issues so best to avoid
     e.vmovaps(e.xmm0, e.GetXmmConstPtr(XMMOne));
     e.vdivps(i.dest, e.xmm0, src1);
   }
@@ -3332,8 +3337,9 @@ bool SelectSequence(X64Emitter* e, const Instr* i, const Instr** new_tail) {
   } else {
     const InstrKey key(i);
 
-    auto it = sequence_table.find(key);
-    if (it != sequence_table.end()) {
+    auto& table = SequenceTable();
+    auto it = table.find(key);
+    if (it != table.end()) {
       if (it->second(*e, i, InstrKey(i))) {
         *new_tail = i->next;
         return true;

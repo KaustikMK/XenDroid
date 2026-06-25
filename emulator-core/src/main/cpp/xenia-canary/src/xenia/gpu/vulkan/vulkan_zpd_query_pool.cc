@@ -30,13 +30,14 @@ bool VulkanZPDQueryPool::EnsureInitialized(
 
   if (capacity_ != 0 && capacity_ != requested_capacity) {
     if (!can_recreate) {
-      return fbo_initialized() || (initialize_fsi_counter && fsi_initialized());
+      return is_initialized() ||
+             (initialize_fsi_counter && fsi_counter_initialized());
     }
     Shutdown();
   }
 
-  if (capacity_ == requested_capacity && fbo_initialized() &&
-      (!initialize_fsi_counter || fsi_initialized())) {
+  if (capacity_ == requested_capacity && is_initialized() &&
+      (!initialize_fsi_counter || fsi_counter_initialized())) {
     return true;
   }
 
@@ -63,7 +64,7 @@ bool VulkanZPDQueryPool::EnsureInitialized(
   };
 
   auto initialize_host_query_path = [&]() -> bool {
-    if (fbo_initialized()) {
+    if (is_initialized()) {
       return true;
     }
 
@@ -174,7 +175,7 @@ bool VulkanZPDQueryPool::EnsureInitialized(
   };
 
   auto initialize_fsi_counter_path = [&]() -> bool {
-    if (fsi_initialized()) {
+    if (fsi_counter_initialized()) {
       return true;
     }
 
@@ -447,6 +448,8 @@ void VulkanZPDQueryPool::ReleaseQueryIndex(uint32_t query_index,
   }
 
   if (!GenerationMatches(query_index, query_generation)) {
+    XELOGW("VulkanZPDQueryPool: stale release index={} gen={}", query_index,
+           query_generation);
     return;
   }
 
@@ -501,25 +504,24 @@ void VulkanZPDQueryPool::QueueQueryResolve(uint32_t query_index,
     return;
   }
 
-  // Guard against duplicates within the same submission.
-  if (uses_fsi_counter) {
-    if (!fsi_counter_resolve_batch_pending_[query_index]) {
-      fsi_counter_resolve_batch_pending_[query_index] = 1;
-      fsi_counter_resolve_batch_indices_.push_back(query_index);
-    }
-    return;
-  }
+  std::vector<uint8_t>& pending = uses_fsi_counter
+                                      ? fsi_counter_resolve_batch_pending_
+                                      : resolve_batch_pending_;
+  std::vector<uint32_t>& indices = uses_fsi_counter
+                                       ? fsi_counter_resolve_batch_indices_
+                                       : resolve_batch_indices_;
 
-  if (!resolve_batch_pending_[query_index]) {
-    resolve_batch_pending_[query_index] = 1;
-    resolve_batch_indices_.push_back(query_index);
+  // Guard against duplicates within the same submission.
+  if (!pending[query_index]) {
+    pending[query_index] = 1;
+    indices.push_back(query_index);
   }
 }
 
 void VulkanZPDQueryPool::ClearFSICounter(
     DeferredCommandBuffer& deferred_command_buffer,
     uint32_t query_index) const {
-  if (!fsi_initialized() || query_index >= capacity_) {
+  if (!fsi_counter_initialized() || query_index >= capacity_) {
     return;
   }
 
@@ -600,7 +602,7 @@ void VulkanZPDQueryPool::RecordResolveBatch(VkCommandBuffer command_buffer) {
   const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device_->functions();
 
   if (!resolve_batch_indices_.empty()) {
-    if (!fbo_initialized()) {
+    if (!is_initialized()) {
       for (uint32_t index : resolve_batch_indices_) {
         resolve_batch_pending_[index] = 0;
       }
@@ -653,7 +655,7 @@ void VulkanZPDQueryPool::RecordResolveBatch(VkCommandBuffer command_buffer) {
     return;
   }
 
-  if (!fsi_initialized()) {
+  if (!fsi_counter_initialized()) {
     for (uint32_t index : fsi_counter_resolve_batch_indices_) {
       fsi_counter_resolve_batch_pending_[index] = 0;
     }

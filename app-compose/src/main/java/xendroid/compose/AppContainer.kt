@@ -16,6 +16,11 @@ import xendroid.compose.settings.SettingsViewModel
 import xendroid.compose.ui.library.GameLibraryViewModel
 import xendroid.compose.data.KeymapStore
 import xendroid.compose.ui.keymap.KeymapViewModel
+import xendroid.compose.ui.compress.GameCompressViewModel
+import xendroid.compose.patches.AssetPatchAssets
+import xendroid.compose.patches.GamePatchesViewModel
+import xendroid.compose.patches.PatchPaths
+import xendroid.compose.patches.PatchStore
 
 /** Manual DI (no Hilt). One instance per process, created lazily in MainActivity
  *  from applicationContext (so it survives config changes / outlives any Activity). */
@@ -65,6 +70,32 @@ class AppContainer(context: Context) {
             override fun <T : ViewModel> create(modelClass: Class<T>): T {
                 require(modelClass == GameSettingsViewModel::class.java) { "Unknown ViewModel ${modelClass.name}" }
                 return GameSettingsViewModel(GameSettingsRepository(configStore, titleId)) as T
+            }
+        }
+
+    /** Per-game patches VM for one title id. Stateless asset reads + on-disk toggles; no native. */
+    fun gamePatchesViewModelFactory(titleId: String): ViewModelProvider.Factory =
+        object : ViewModelProvider.Factory {
+            @Suppress("UNCHECKED_CAST")
+            override fun <T : ViewModel> create(modelClass: Class<T>): T {
+                require(modelClass == GamePatchesViewModel::class.java) { "Unknown ViewModel ${modelClass.name}" }
+                return GamePatchesViewModel(
+                    titleId,
+                    PatchStore(AssetPatchAssets(appContext), PatchPaths.patchesDir()),
+                ) as T
+            }
+        }
+
+    /** Per-game ISO->.zar compressor. The launch path is passed into compress() at call
+     *  time so the VM is reusable across games. */
+    fun gameCompressViewModelFactory(): ViewModelProvider.Factory =
+        object : ViewModelProvider.Factory {
+            @Suppress("UNCHECKED_CAST")
+            override fun <T : ViewModel> create(modelClass: Class<T>): T {
+                require(modelClass == GameCompressViewModel::class.java) {
+                    "Unknown ViewModel ${modelClass.name}"
+                }
+                return GameCompressViewModel(appContext) as T
             }
         }
 

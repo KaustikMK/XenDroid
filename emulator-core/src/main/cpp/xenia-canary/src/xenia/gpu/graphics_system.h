@@ -34,6 +34,28 @@ class Emulator;
 namespace xe {
 namespace gpu {
 
+constexpr std::array<std::pair<uint16_t, uint16_t>, 17>
+    internal_display_resolution_entries = {{{640, 480},
+                                            {640, 576},
+                                            {720, 480},
+                                            {720, 576},
+                                            {800, 600},
+                                            {848, 480},
+                                            {1024, 768},
+                                            {1152, 864},
+                                            {1280, 720},
+                                            {1280, 768},
+                                            {1280, 960},
+                                            {1280, 1024},
+                                            {1360, 768},
+                                            {1440, 900},
+                                            {1680, 1050},
+                                            {1920, 540},
+                                            {1920, 1080}}};
+
+constexpr std::array<std::pair<uint16_t, uint16_t>, 3>
+    driver_display_resolution = {{{1440, 900}, {1280, 720}, {1680, 1050}}};
+
 class CommandProcessor;
 
 class GraphicsSystem {
@@ -72,6 +94,8 @@ class GraphicsSystem {
 
   virtual void ClearCaches();
 
+  void InvalidateGpuMemory();
+
   void InitializeShaderStorage(
       const std::filesystem::path& cache_root, uint32_t title_id, bool blocking,
       std::function<void()> completion_callback = nullptr);
@@ -87,7 +111,7 @@ class GraphicsSystem {
   bool Save(ByteStream* stream);
   bool Restore(ByteStream* stream);
 
-  std::pair<uint32_t, uint32_t> GetResolution() const;
+  static std::pair<uint16_t, uint16_t> GetInternalDisplayResolution();
 
   std::pair<uint32_t, uint32_t> GetScaledAspectRatio() const {
     return {scaled_aspect_x_, scaled_aspect_y_};
@@ -122,6 +146,13 @@ class GraphicsSystem {
 
   std::atomic<bool> frame_limiter_worker_running_;
   kernel::object_ref<kernel::XHostThread> frame_limiter_worker_thread_;
+
+  // Anchors for synthesizing D1MODE_V_COUNTER. last_vblank_guest_tick_ is
+  // the guest tick at the most recent MarkVblank; vblank_period_ticks_ is
+  // the most recent measured interval between MarkVblank calls. Both are
+  // 0 before the first vblank fires.
+  std::atomic<uint64_t> last_vblank_guest_tick_{0};
+  std::atomic<uint64_t> vblank_period_ticks_{0};
 
   RegisterFile* register_file_;
   std::unique_ptr<CommandProcessor> command_processor_;

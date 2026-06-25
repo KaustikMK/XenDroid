@@ -20,7 +20,6 @@
 #pragma clang diagnostic pop
 #endif
 
-#include "xenia/app/console_settings_dialog.h"
 #include "xenia/base/assert.h"
 #include "xenia/base/clock.h"
 #include "xenia/base/cvar.h"
@@ -176,9 +175,7 @@ EmulatorWindow::EmulatorWindow(Emulator* emulator,
       window_listener_(*this),
       window_(ui::Window::Create(app_context, kBaseTitle, width, height)),
       imgui_drawer_(
-          std::make_unique<ui::ImGuiDrawer>(window_.get(), kZOrderImGui)),
-      display_config_game_config_load_callback_(
-          new DisplayConfigGameConfigLoadCallback(*emulator, *this)) {
+          std::make_unique<ui::ImGuiDrawer>(window_.get(), kZOrderImGui)) {
   base_title_ = std::string(kBaseTitle) +
 #ifdef DEBUG
 #if _NO_DEBUG_HEAP == 1
@@ -231,6 +228,11 @@ void EmulatorWindow::SetupGraphicsSystemPresenterPainting() {
     return;
   }
 
+#if XE_PLATFORM_xendroid
+  XELOGI("SetupGraphicsSystemPresenterPainting: window={} presenter={}",
+         static_cast<void*>(window_.get()), static_cast<void*>(presenter));
+#endif
+
   ApplyDisplayConfigForCvars();
 
   window_->SetPresenter(presenter);
@@ -256,14 +258,6 @@ void EmulatorWindow::ShutdownGraphicsSystemPresenterPainting() {
 }
 
 void EmulatorWindow::OnEmulatorInitialized() {
-  if (!emulator_->kernel_state()
-           ->xam_state()
-           ->profile_manager()
-           ->GetAccountCount()) {
-    new NoProfileDialog(imgui_drawer_.get(), this);
-    disable_hotkeys_ = true;
-  }
-
   emulator_initialized_ = true;
   window_->SetMainMenuEnabled(true);
   // When the user can see that the emulator isn't initializing anymore (the
@@ -328,420 +322,17 @@ void EmulatorWindow::EmulatorWindowListener::OnUsbDeviceChanged(
   }
 }
 
-void EmulatorWindow::DisplayConfigGameConfigLoadCallback::PostGameConfigLoad() {
-  emulator_window_.ApplyDisplayConfigForCvars();
-}
-
-void EmulatorWindow::DisplayConfigDialog::OnDraw(ImGuiIO& io) {
-  gpu::GraphicsSystem* graphics_system =
-      emulator_window_.emulator_->graphics_system();
-  if (!graphics_system) {
-    return;
-  }
-
-  // In the top-left corner so it's close to the menu bar from where it was
-  // opened.
-  // Origin Y coordinate 20 was taken from the Dear ImGui demo.
-  ImGui::SetNextWindowPos(ImVec2(20, 20), ImGuiCond_FirstUseEver);
-  ImGui::SetNextWindowSize(ImVec2(20, 20), ImGuiCond_FirstUseEver);
-  // Alpha from Dear ImGui tooltips (0.35 from the overlay provides too low
-  // visibility). Translucent so some effect of the changes can still be seen
-  // through it.
-  ImGui::SetNextWindowBgAlpha(0.6f);
-  bool dialog_open = true;
-  if (!ImGui::Begin("Post-processing", &dialog_open,
-                    ImGuiWindowFlags_NoCollapse |
-                        ImGuiWindowFlags_AlwaysAutoResize |
-                        ImGuiWindowFlags_HorizontalScrollbar)) {
-    ImGui::End();
-    Close();
-    return;
-  }
-
-  // Even if the close button has been pressed, still paint everything not to
-  // have one frame with an empty window.
-
-  // Prevent user confusion which has been reported multiple times.
-  ImGui::TextUnformatted("All effects can be used on GPUs of any brand.");
-  ImGui::Spacing();
-
-  gpu::CommandProcessor* command_processor =
-      graphics_system->command_processor();
-  if (command_processor) {
-    if (ImGui::TreeNodeEx(
-            "Anti-aliasing",
-            ImGuiTreeNodeFlags_Framed | ImGuiTreeNodeFlags_DefaultOpen)) {
-      gpu::CommandProcessor::SwapPostEffect current_swap_post_effect =
-          command_processor->GetDesiredSwapPostEffect();
-      int new_swap_post_effect_index = int(current_swap_post_effect);
-      ImGui::RadioButton("None", &new_swap_post_effect_index,
-                         int(gpu::CommandProcessor::SwapPostEffect::kNone));
-      ImGui::RadioButton(
-          "NVIDIA Fast Approximate Anti-Aliasing (FXAA) [Normal Quality]",
-          &new_swap_post_effect_index,
-          int(gpu::CommandProcessor::SwapPostEffect::kFxaa));
-      ImGui::RadioButton(
-          "NVIDIA Fast Approximate Anti-Aliasing (FXAA) [Extreme Quality]",
-          &new_swap_post_effect_index,
-          int(gpu::CommandProcessor::SwapPostEffect::kFxaaExtreme));
-      gpu::CommandProcessor::SwapPostEffect new_swap_post_effect =
-          gpu::CommandProcessor::SwapPostEffect(new_swap_post_effect_index);
-      if (current_swap_post_effect != new_swap_post_effect) {
-        command_processor->SetDesiredSwapPostEffect(new_swap_post_effect);
-      }
-
-      // Override the values in the cvars to save them to the config at exit if
-      // the user has set them to anything new.
-      if (GetSwapPostEffectForCvarValue(cvars::postprocess_antialiasing) !=
-          new_swap_post_effect) {
-        OVERRIDE_string(postprocess_antialiasing,
-                        GetCvarValueForSwapPostEffect(new_swap_post_effect));
-      }
-
-      ImGui::TreePop();
-    }
-  }
-
-  ui::Presenter* presenter = graphics_system->presenter();
-  if (presenter) {
-    const ui::Presenter::GuestOutputPaintConfig& current_presenter_config =
-        presenter->GetGuestOutputPaintConfigFromUIThread();
-    ui::Presenter::GuestOutputPaintConfig new_presenter_config =
-        current_presenter_config;
-
-    if (ImGui::TreeNodeEx(
-            "Resampling and sharpening",
-            ImGuiTreeNodeFlags_Framed | ImGuiTreeNodeFlags_DefaultOpen)) {
-      // Filtering effect.
-      int new_effect_index = int(new_presenter_config.GetEffect());
-      ImGui::RadioButton(
-          "None / Bilinear", &new_effect_index,
-          int(ui::Presenter::GuestOutputPaintConfig::Effect::kBilinear));
-      ImGui::RadioButton(
-          "AMD FidelityFX Contrast Adaptive Sharpening (CAS)",
-          &new_effect_index,
-          int(ui::Presenter::GuestOutputPaintConfig::Effect::kCas));
-      ImGui::RadioButton(
-          "AMD FidelityFX Super Resolution 1.0 (FSR)", &new_effect_index,
-          int(ui::Presenter::GuestOutputPaintConfig::Effect::kFsr));
-      new_presenter_config.SetEffect(
-          ui::Presenter::GuestOutputPaintConfig::Effect(new_effect_index));
-
-      // effect_description must be one complete, but short enough, sentence per
-      // line, as TextWrapped doesn't work correctly in auto-resizing windows
-      // (in the initial frames, the window becomes extremely tall, and widgets
-      // added after the wrapped text have no effect on the width of the text).
-      const char* effect_description = nullptr;
-      switch (new_presenter_config.GetEffect()) {
-        case ui::Presenter::GuestOutputPaintConfig::Effect::kBilinear:
-          effect_description =
-              "Simple bilinear filtering is done if resampling is needed.\n"
-              "Otherwise, only anti-aliasing is done if enabled, or displaying "
-              "as is.";
-          break;
-        case ui::Presenter::GuestOutputPaintConfig::Effect::kCas:
-          effect_description =
-              "Sharpening and resampling to up to 2x2 to improve the fidelity "
-              "of details.\n"
-              "For scaling by more than 2x2, bilinear stretching is done "
-              "afterwards.";
-          break;
-        case ui::Presenter::GuestOutputPaintConfig::Effect::kFsr:
-          effect_description =
-              "High-quality edge-preserving upscaling to arbitrary target "
-              "resolutions.\n"
-              "For scaling by more than 2x2, multiple upsampling passes are "
-              "done.\n"
-              "If not upscaling, Contrast Adaptive Sharpening (CAS) is used "
-              "instead.";
-          break;
-      }
-      if (effect_description) {
-        ImGui::TextUnformatted(effect_description);
-      }
-
-      if (new_presenter_config.GetEffect() ==
-              ui::Presenter::GuestOutputPaintConfig::Effect::kCas ||
-          new_presenter_config.GetEffect() ==
-              ui::Presenter::GuestOutputPaintConfig::Effect::kFsr) {
-        if (effect_description) {
-          ImGui::Spacing();
-        }
-
-        ImGui::TextUnformatted(
-            "FXAA is highly recommended when using CAS or FSR.");
-
-        ImGui::Spacing();
-
-        // 2 decimal places is more or less enough precision for the sharpness
-        // given the minor visual effect of small changes, the width of the
-        // slider, and readability convenience (2 decimal places is like an
-        // integer percentage). However, because Dear ImGui parses the string
-        // representation of the number and snaps the value to it internally,
-        // 2 decimal places actually offer less precision than the slider itself
-        // does. This is especially prominent in the low range of the non-linear
-        // FSR sharpness reduction slider. 3 decimal places are optimal in this
-        // case.
-
-        if (new_presenter_config.GetEffect() ==
-            ui::Presenter::GuestOutputPaintConfig::Effect::kFsr) {
-          float fsr_sharpness_reduction =
-              new_presenter_config.GetFsrSharpnessReduction();
-          ImGui::TextUnformatted(
-              "FSR sharpness reduction when upscaling (lower is sharper):");
-          const auto label = fmt::format(
-              "{} %%", static_cast<int>(fsr_sharpness_reduction * 100));
-          // Power 2.0 scaling as the reduction is in stops, used in exp2.
-          fsr_sharpness_reduction = sqrt(2.f * fsr_sharpness_reduction);
-          ImGui::SliderFloat(
-              "##FSRSharpnessReduction", &fsr_sharpness_reduction,
-              ui::Presenter::GuestOutputPaintConfig::kFsrSharpnessReductionMin,
-              ui::Presenter::GuestOutputPaintConfig::kFsrSharpnessReductionMax,
-              label.c_str(), ImGuiSliderFlags_NoInput);
-          fsr_sharpness_reduction =
-              .5f * fsr_sharpness_reduction * fsr_sharpness_reduction;
-          ImGui::SameLine();
-          if (ImGui::Button("Reset##ResetFSRSharpnessReduction")) {
-            fsr_sharpness_reduction = ui::Presenter::GuestOutputPaintConfig ::
-                kFsrSharpnessReductionDefault;
-          }
-          new_presenter_config.SetFsrSharpnessReduction(
-              fsr_sharpness_reduction);
-        }
-
-        float cas_additional_sharpness =
-            new_presenter_config.GetCasAdditionalSharpness();
-        ImGui::TextUnformatted(
-            new_presenter_config.GetEffect() ==
-                    ui::Presenter::GuestOutputPaintConfig::Effect::kFsr
-                ? "CAS additional sharpness when not upscaling (higher is "
-                  "sharper):"
-                : "CAS additional sharpness (higher is sharper):");
-        const auto label = fmt::format(
-            "{} %%", static_cast<int>(cas_additional_sharpness * 100));
-        ImGui::SliderFloat(
-            "##CASAdditionalSharpness", &cas_additional_sharpness,
-            ui::Presenter::GuestOutputPaintConfig::kCasAdditionalSharpnessMin,
-            ui::Presenter::GuestOutputPaintConfig::kCasAdditionalSharpnessMax,
-            label.c_str(), ImGuiSliderFlags_NoInput);
-        ImGui::SameLine();
-        if (ImGui::Button("Reset##ResetCASAdditionalSharpness")) {
-          cas_additional_sharpness = ui::Presenter::GuestOutputPaintConfig ::
-              kCasAdditionalSharpnessDefault;
-        }
-        new_presenter_config.SetCasAdditionalSharpness(
-            cas_additional_sharpness);
-
-        // There's no need to expose the setting for the maximum number of FSR
-        // EASU passes as it's largely meaningless if the user doesn't have a
-        // very high-resolution monitor compared to the original image size as
-        // most of the values of the slider will have no effect, and that's just
-        // very fine-grained performance control for a fixed-overhead pass only
-        // for huge screen resolutions.
-      }
-
-      ImGui::TreePop();
-    }
-
-    if (ImGui::TreeNodeEx("Dithering", ImGuiTreeNodeFlags_Framed |
-                                           ImGuiTreeNodeFlags_DefaultOpen)) {
-      bool dither = current_presenter_config.GetDither();
-      ImGui::Checkbox(
-          "Dither the final output to 8bpc to make gradients smoother",
-          &dither);
-      new_presenter_config.SetDither(dither);
-
-      ImGui::TreePop();
-    }
-
-    presenter->SetGuestOutputPaintConfigFromUIThread(new_presenter_config);
-
-    // Override the values in the cvars to save them to the config at exit if
-    // the user has set them to anything new.
-    ui::Presenter::GuestOutputPaintConfig cvars_presenter_config =
-        GetGuestOutputPaintConfigForCvars();
-    if (cvars_presenter_config.GetEffect() !=
-        new_presenter_config.GetEffect()) {
-      OVERRIDE_string(postprocess_scaling_and_sharpening,
-                      GetCvarValueForGuestOutputPaintEffect(
-                          new_presenter_config.GetEffect()));
-    }
-    if (cvars_presenter_config.GetCasAdditionalSharpness() !=
-        new_presenter_config.GetCasAdditionalSharpness()) {
-      OVERRIDE_double(postprocess_ffx_cas_additional_sharpness,
-                      new_presenter_config.GetCasAdditionalSharpness());
-    }
-    if (cvars_presenter_config.GetFsrSharpnessReduction() !=
-        new_presenter_config.GetFsrSharpnessReduction()) {
-      OVERRIDE_double(postprocess_ffx_fsr_sharpness_reduction,
-                      new_presenter_config.GetFsrSharpnessReduction());
-    }
-    if (cvars_presenter_config.GetDither() !=
-        new_presenter_config.GetDither()) {
-      OVERRIDE_bool(postprocess_dither, new_presenter_config.GetDither());
-    }
-  }
-
-  ImGui::End();
-
-  if (!dialog_open) {
-    Close();
-    emulator_window_.ToggleDisplayConfigDialog();
-    // `this` might have been destroyed by ToggleDisplayConfigDialog.
-    return;
-  }
-}
-
-void EmulatorWindow::ContentInstallDialog::OnDraw(ImGuiIO& io) {
-  ImGui::SetNextWindowPos(ImVec2(20, 20), ImGuiCond_FirstUseEver);
-  ImGui::SetNextWindowSize(ImVec2(20, 20), ImGuiCond_FirstUseEver);
-
-  bool dialog_open = true;
-  if (!ImGui::Begin(
-          fmt::format("Installation Progress###{}", window_id_).c_str(),
-          &dialog_open,
-          ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_AlwaysAutoResize |
-              ImGuiWindowFlags_HorizontalScrollbar)) {
-    Close();
-    ImGui::End();
-    return;
-  }
-
-  bool is_everything_installed = true;
-  for (const auto& entry : *installation_entries_) {
-    ImGui::BeginTable(fmt::format("table_{}", entry.name_).c_str(), 2);
-    ImGui::TableNextRow(0);
-    ImGui::TableSetColumnIndex(0);
-    if (entry.icon_) {
-      ImGui::Image(reinterpret_cast<ImTextureID>(entry.icon_.get()),
-                   ui::default_image_icon_size);
-    } else {
-      ImGui::Dummy(ui::default_image_icon_size);
-    }
-    ImGui::TableNextColumn();
-
-    ImGui::Text("Name: %s", entry.name_.c_str());
-    ImGui::Text("Installation Path:");
-    ImGui::SameLine();
-    if (ImGui::TextLink(
-            xe::path_to_utf8(entry.data_installation_path_).c_str())) {
-      LaunchFileExplorer(emulator_window_.emulator_->content_root() /
-                         entry.data_installation_path_);
-    }
-
-    if (entry.content_type_ != xe::XContentType::kInvalid) {
-      ImGui::Text("Content Type: %s",
-                  XContentTypeMap.at(entry.content_type_).c_str());
-    }
-
-    std::string result = fmt::format(
-        "Status: {}", xe::Emulator::installStateStringName[static_cast<uint8_t>(
-                          entry.installation_state_)]);
-
-    if (entry.installation_state_ == xe::Emulator::InstallState::failed) {
-      result += fmt::format(" - {} ({:08X})",
-                            entry.installation_error_message_.c_str(),
-                            entry.installation_result_);
-    }
-
-    ImGui::Text("%s", result.c_str());
-    ImGui::EndTable();
-
-    if (entry.content_size_ > 0) {
-      ImGui::ProgressBar(static_cast<float>(entry.currently_installed_size_) /
-                         entry.content_size_);
-
-      if (entry.currently_installed_size_ != entry.content_size_ &&
-          entry.installation_result_ == X_ERROR_SUCCESS) {
-        is_everything_installed = false;
-      }
-    } else {
-      ImGui::ProgressBar(0.0f);
-    }
-
-    if (installation_entries_->size() > 1) {
-      ImGui::Separator();
-    }
-  }
-  ImGui::Spacing();
-
-  ImGui::BeginDisabled(!is_everything_installed);
-  if (ImGui::Button("Close")) {
-    ImGui::EndDisabled();
-    Close();
-    ImGui::End();
-    return;
-  }
-  ImGui::EndDisabled();
-
-  if (!dialog_open && is_everything_installed) {
-    Close();
-    ImGui::End();
-    return;
-  }
-  ImGui::End();
-}
-
-void EmulatorWindow::XMPConfigDialog::OnDraw(ImGuiIO& io) {
-  ImGui::SetNextWindowPos(ImVec2(20, 20), ImGuiCond_FirstUseEver);
-  ImGui::SetNextWindowSize(ImVec2(20, 20), ImGuiCond_FirstUseEver);
-
-  bool dialog_open = true;
-  if (!ImGui::Begin("Audio Player Menu", &dialog_open,
-                    ImGuiWindowFlags_NoCollapse |
-                        ImGuiWindowFlags_AlwaysAutoResize |
-                        ImGuiWindowFlags_HorizontalScrollbar)) {
-    Close();
-    ImGui::End();
-    return;
-  }
-
-  auto audio_player = emulator_window_.emulator_->audio_media_player();
-  using xmp_state = kernel::xam::apps::XmpApp::State;
-  if (audio_player) {
-    ImGui::Text("Audio player status:");
-    ImGui::SameLine();
-    switch (audio_player->GetState()) {
-      case xmp_state::kIdle:
-        ImGui::Text("Idle");
-        break;
-      case xmp_state::kPaused:
-        ImGui::Text("Paused");
-        break;
-      case xmp_state::kPlaying:
-        ImGui::Text("Playing");
-        break;
-      default:
-        break;
-    }
-
-    if (audio_player->IsPlaying()) {
-      if (ImGui::Button("Pause")) {
-        audio_player->Pause();
-      }
-    } else if (audio_player->IsPaused()) {
-      if (ImGui::Button("Resume")) {
-        audio_player->Continue();
-      }
-    }
-
-    volume_ =
-        emulator_window_.emulator_->audio_media_player()->GetVolume()->load();
-
-    if (ImGui::SliderFloat("Audio player volume", &volume_, 0.0f, 1.0f,
-                           "%.2f")) {
-      audio_player->SetVolume(volume_);
-    }
-  }
-
-  ImGui::End();
-
-  if (!dialog_open) {
-    Close();
-    emulator_window_.xmp_config_dialog_.release();
-    return;
-  }
-}
+// XenDroid: DisplayConfigGameConfigLoadCallback::PostGameConfigLoad removed —
+// edge deleted Emulator::GameConfigLoadCallback. Intentionally not re-hooked on
+// Android (no live per-game cvar overlay; display config is reapplied on every
+// launch/relaunch via SetupGraphicsSystemPresenterPainting). See emulator_window.h.
+//
+// XenDroid: the display / content-install / XMP config dialog OnDraw
+// implementations were dropped here -- the native ImGui config dialogs are
+// vestigial on Android (Compose owns the real UI). The cvar helpers below
+// (GetSwapPostEffectForCvarValue / GetGuestOutputPaintConfigForCvars /
+// ApplyDisplayConfigForCvars / ...) are KEPT: they still feed
+// SetupGraphicsSystemPresenterPainting().
 
 bool EmulatorWindow::Initialize() {
   window_->AddListener(&window_listener_);
@@ -760,9 +351,6 @@ bool EmulatorWindow::Initialize() {
                          std::bind(&EmulatorWindow::FileOpen, this)));
     file_menu->AddChild(std::move(recent_menu));
     file_menu->AddChild(MenuItem::Create(MenuItem::Type::kSeparator));
-    file_menu->AddChild(
-        MenuItem::Create(MenuItem::Type::kString, "Install Content...",
-                         std::bind(&EmulatorWindow::InstallContent, this)));
     zar_menu->AddChild(
         MenuItem::Create(MenuItem::Type::kString, "Create",
                          std::bind(&EmulatorWindow::CreateZarchive, this)));
@@ -786,15 +374,6 @@ bool EmulatorWindow::Initialize() {
                          [this]() { window_->RequestClose(); }));
   }
   main_menu->AddChild(std::move(file_menu));
-
-  // Profile Menu
-  auto profile_menu = MenuItem::Create(MenuItem::Type::kPopup, "&Profile");
-  {
-    profile_menu->AddChild(MenuItem::Create(
-        MenuItem::Type::kString, "&Show Profile Menu", "",
-        std::bind(&EmulatorWindow::ToggleProfilesConfigDialog, this)));
-  }
-  main_menu->AddChild(std::move(profile_menu));
 
   // CPU menu.
   auto cpu_menu = MenuItem::Create(MenuItem::Type::kPopup, "&CPU");
@@ -848,12 +427,6 @@ bool EmulatorWindow::Initialize() {
   // Display menu.
   auto display_menu = MenuItem::Create(MenuItem::Type::kPopup, "&Display");
   {
-    display_menu->AddChild(MenuItem::Create(
-        MenuItem::Type::kString, "&Post-processing settings", "F6",
-        std::bind(&EmulatorWindow::ToggleDisplayConfigDialog, this)));
-  }
-  display_menu->AddChild(MenuItem::Create(MenuItem::Type::kSeparator));
-  {
     display_menu->AddChild(
         MenuItem::Create(MenuItem::Type::kString, "&Fullscreen", "F11",
                          std::bind(&EmulatorWindow::ToggleFullscreen, this)));
@@ -874,24 +447,6 @@ bool EmulatorWindow::Initialize() {
         std::bind(&EmulatorWindow::DisplayHotKeysConfig, this)));
   }
   main_menu->AddChild(std::move(hid_menu));
-
-  // XMP menu
-  auto xmp_menu = MenuItem::Create(MenuItem::Type::kPopup, "&XMP");
-  {
-    xmp_menu->AddChild(MenuItem::Create(
-        MenuItem::Type::kString, "&Show XMP Menu", "",
-        std::bind(&EmulatorWindow::ToggleXMPConfigDialog, this)));
-  }
-  main_menu->AddChild(std::move(xmp_menu));
-
-  // Console menu
-  auto console_menu = MenuItem::Create(MenuItem::Type::kPopup, "&Console");
-  {
-    console_menu->AddChild(MenuItem::Create(
-        MenuItem::Type::kString, "&Open console settings", "",
-        std::bind(&EmulatorWindow::ToggleConsoleSettingsDialog, this)));
-  }
-  main_menu->AddChild(std::move(console_menu));
 
   // Help menu.
   auto help_menu = MenuItem::Create(MenuItem::Type::kPopup, "&Help");
@@ -1056,9 +611,6 @@ void EmulatorWindow::OnKeyDown(ui::KeyEvent& e) {
       GpuClearCaches();
     } break;
 
-    case ui::VirtualKey::kF6: {
-      ToggleDisplayConfigDialog();
-    } break;
     case ui::VirtualKey::kF11: {
       ToggleFullscreen();
     } break;
@@ -1116,7 +668,7 @@ void EmulatorWindow::OnKeyDown(ui::KeyEvent& e) {
 }
 
 void EmulatorWindow::OnMouseDown(const ui::MouseEvent& e) {
-  if (imgui_drawer_->IsAnyDialogOpen()) {
+  if (imgui_drawer_->HasOpenDialogs()) {
     return;
   }
 
@@ -1270,48 +822,6 @@ void EmulatorWindow::FileOpen() {
 
 void EmulatorWindow::FileClose() { emulator_->TerminateTitle(); }
 
-void EmulatorWindow::InstallContent() {
-  std::vector<std::filesystem::path> paths;
-
-  auto file_picker = xe::ui::FilePicker::Create();
-  file_picker->set_mode(ui::FilePicker::Mode::kOpen);
-  file_picker->set_type(ui::FilePicker::Type::kFile);
-  file_picker->set_multi_selection(true);
-  file_picker->set_title("Select Content Package");
-  file_picker->set_extensions({
-      {"All Files (*.*)", "*.*"},
-  });
-  if (file_picker->Show(window_.get())) {
-    paths = file_picker->selected_files();
-  }
-
-  if (paths.empty()) {
-    return;
-  }
-
-  std::shared_ptr<std::vector<Emulator::ContentInstallEntry>>
-      content_installation_status =
-          std::make_shared<std::vector<Emulator::ContentInstallEntry>>();
-
-  for (const auto& path : paths) {
-    content_installation_status->push_back({path});
-  }
-
-  for (auto& entry : *content_installation_status) {
-    emulator_->ProcessContentPackageHeader(entry.path_, entry);
-  }
-
-  auto installationThread = std::thread([this, content_installation_status] {
-    for (auto& entry : *content_installation_status) {
-      emulator_->InstallContentPackage(entry.path_, entry);
-    }
-  });
-  installationThread.detach();
-
-  new ContentInstallDialog(imgui_drawer_.get(), *this,
-                           content_installation_status);
-}
-
 void EmulatorWindow::ExtractZarchive() {
   std::vector<std::filesystem::path> zarchive_files;
   std::filesystem::path extract_dir;
@@ -1373,8 +883,7 @@ void EmulatorWindow::ExtractZarchive() {
       XELOGI("Extracting zar package: {}\n",
              zarchive_file_path.filename().string());
 
-      auto result =
-          emulator_->ExtractZarchivePackage(abs_path, abs_extract_dir);
+      X_STATUS result = X_STATUS_NOT_IMPLEMENTED;
 
       if (result != X_STATUS_SUCCESS) {
         std::error_code ec;
@@ -1474,8 +983,7 @@ void EmulatorWindow::CreateZarchive() {
 
       XELOGI("Creating zar package: {}\n", zarchive_file.filename().string());
 
-      auto result =
-          emulator_->CreateZarchivePackage(abs_content_dir, zarchive_file);
+      X_STATUS result = X_STATUS_NOT_IMPLEMENTED;
 
       if (result != X_ERROR_SUCCESS) {
         std::error_code ec;
@@ -1567,61 +1075,6 @@ void EmulatorWindow::SetFullscreen(bool fullscreen_) {
 
 void EmulatorWindow::ToggleFullscreen() {
   SetFullscreen(!window_->IsFullscreen());
-}
-
-void EmulatorWindow::ToggleDisplayConfigDialog() {
-  if (!display_config_dialog_) {
-    display_config_dialog_ =
-        std::make_unique<DisplayConfigDialog>(imgui_drawer_.get(), *this);
-  } else {
-    if (display_config_dialog_->IsClosing()) {
-      display_config_dialog_.release();
-    } else {
-      display_config_dialog_.reset();
-    }
-  }
-}
-
-void EmulatorWindow::ToggleProfilesConfigDialog() {
-  if (!profile_config_dialog_) {
-    disable_hotkeys_ = true;
-    emulator_->kernel_state()->BroadcastNotification(kXNotificationSystemUI, 1);
-    profile_config_dialog_ =
-        std::make_unique<ProfileConfigDialog>(imgui_drawer_.get(), this);
-    emulator_->kernel_state()->xam_state()->xam_dialogs_shown_++;
-  } else {
-    disable_hotkeys_ = false;
-    emulator_->kernel_state()->BroadcastNotification(kXNotificationSystemUI, 0);
-    if (profile_config_dialog_->IsClosing()) {
-      profile_config_dialog_.release();
-    } else {
-      profile_config_dialog_.reset();
-    }
-    emulator_->kernel_state()->xam_state()->xam_dialogs_shown_--;
-  }
-}
-
-void EmulatorWindow::ToggleXMPConfigDialog() {
-  if (!xmp_config_dialog_) {
-    xmp_config_dialog_ = std::unique_ptr<XMPConfigDialog>(
-        new XMPConfigDialog(imgui_drawer_.get(), *this));
-  } else {
-    xmp_config_dialog_.reset();
-  }
-}
-
-void EmulatorWindow::ToggleConsoleSettingsDialog() {
-  if (!console_settings_dialog_) {
-    console_settings_dialog_ =
-        std::unique_ptr<ConsoleSettingsDialog>(new ConsoleSettingsDialog(
-            imgui_drawer_.get(), *this, emulator_->kernel_state()->xconfig()));
-  } else {
-    if (console_settings_dialog_->IsClosing()) {
-      console_settings_dialog_.release();
-    } else {
-      console_settings_dialog_.reset();
-    }
-  }
 }
 
 void EmulatorWindow::ToggleControllerVibration() {
@@ -2096,13 +1549,30 @@ void EmulatorWindow::ToggleGPUSetting(gpu::GPUSetting setting) {
 }
 
 void EmulatorWindow::CycleReadbackResolve() {
+  gpu::GraphicsSystem* graphics_system = emulator_->graphics_system();
+  if (!graphics_system) {
+    return;
+  }
+
+  gpu::CommandProcessor* command_processor =
+      graphics_system->command_processor();
+  if (!command_processor) {
+    return;
+  }
+
+  // Edge moved SetReadbackResolveMode onto CommandProcessor and switched it
+  // from a string to the ReadbackResolveMode enum. Preserve the original
+  // cycle order: fast -> full -> none -> fast.
   const std::string& current = cvars::readback_resolve;
   if (current == "fast") {
-    gpu::SetReadbackResolveMode("full");
+    command_processor->SetReadbackResolveMode(
+        gpu::ReadbackResolveMode::kFull);
   } else if (current == "full") {
-    gpu::SetReadbackResolveMode("none");
+    command_processor->SetReadbackResolveMode(
+        gpu::ReadbackResolveMode::kDisabled);
   } else {
-    gpu::SetReadbackResolveMode("fast");
+    command_processor->SetReadbackResolveMode(
+        gpu::ReadbackResolveMode::kFast);
   }
 }
 
@@ -2222,15 +1692,6 @@ xe::X_STATUS EmulatorWindow::RunTitle(
   auto result = emulator_->LaunchPath(abs_path);
 
   disable_hotkeys_ = false;
-
-  if (profile_config_dialog_) {
-    profile_config_dialog_.reset();
-    emulator_->kernel_state()->xam_state()->xam_dialogs_shown_--;
-  }
-
-  if (display_config_dialog_) {
-    display_config_dialog_.reset();
-  }
 
   ClearDialogs();
 
@@ -2361,18 +1822,6 @@ void EmulatorWindow::AddRecentlyLaunchedTitle(
 }
 
 void EmulatorWindow::ClearDialogs() {
-  if (profile_config_dialog_) {
-    profile_config_dialog_.reset();
-  }
-
-  if (display_config_dialog_) {
-    display_config_dialog_.reset();
-  }
-
-  if (console_settings_dialog_) {
-    console_settings_dialog_.reset();
-  }
-
   imgui_drawer_.get()->ClearDialogs();
   emulator_->kernel_state()->xam_state()->xam_dialogs_shown_ = 0;
 }

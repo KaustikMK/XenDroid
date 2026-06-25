@@ -47,6 +47,10 @@ DEFINE_bool(log_to_logcat, true, "Write log output to Android Logcat.",
             "Logging");
 #else
 DEFINE_path(log_file, "", "Logs are written to the given file", "Logging");
+DEFINE_transient_bool(log_append, false,
+                      "Append to existing log file instead of overwriting. "
+                      "Used for title-to-title launches.",
+                      "Logging");
 DEFINE_bool(log_to_stdout, true, "Write log output to stdout", "Logging");
 DEFINE_bool(log_to_debugprint, false, "Dump the log to DebugPrint.", "Logging");
 #endif  // XE_PLATFORM_ANDROID
@@ -443,17 +447,19 @@ void InitializeLogging(const std::string_view app_name) {
     logger_->AddLogSink(std::make_unique<AndroidLogSink>(app_name));
   }
 #else
-  FILE* log_file = nullptr;
-  if (cvars::log_file.empty()) {
-    // Default to app name.
-    auto file_name = fmt::format("{}.log", app_name);
-    auto file_path = xe::filesystem::GetExecutableFolder() / file_name;
-    log_file = xe::filesystem::OpenFile(file_path, "wt");
-  } else {
-    xe::filesystem::CreateParentFolder(cvars::log_file);
-    log_file = xe::filesystem::OpenFile(cvars::log_file, "wt");
+  {
+    FILE* log_file = nullptr;
+    const char* file_mode = cvars::log_append ? "at" : "wt";
+    if (cvars::log_file.empty()) {
+      std::string file_name = fmt::format("{}.log", app_name);
+      auto file_path = xe::filesystem::GetExecutableFolder() / file_name;
+      log_file = xe::filesystem::OpenFile(file_path, file_mode);
+    } else {
+      xe::filesystem::CreateParentFolder(cvars::log_file);
+      log_file = xe::filesystem::OpenFile(cvars::log_file, file_mode);
+    }
+    logger_->AddLogSink(std::make_unique<FileLogSink>(log_file, true));
   }
-  logger_->AddLogSink(std::make_unique<FileLogSink>(log_file, true));
 
   if (cvars::log_to_stdout) {
     logger_->AddLogSink(std::make_unique<FileLogSink>(stdout, false));
@@ -477,8 +483,9 @@ void FlushLog() {
   if (!logger_) {
     return;
   }
-
-  xe::threading::Sleep(10ms);
+  // Give the write thread a moment to process pending logs
+  xe::threading::Sleep(std::chrono::milliseconds(10));
+  // Force flush all sinks
   logger_->FlushAllSinks();
 }
 
@@ -532,7 +539,10 @@ void FatalError(const std::string_view str) {
   // Throw an error that can be reported to the developers via the store.
   std::abort();
 #else
-  std::exit(EXIT_FAILURE);
+  // skip static destructors so they can't race with worker threads still
+  // running and corrupt the heap, at_quick_exit handlers will take care
+  // of necessary cleanup (e.g. /dev/shm/xenia* files on linux )
+  std::quick_exit(EXIT_FAILURE);
 #endif  // XE_PLATFORM_ANDROID
 }
 

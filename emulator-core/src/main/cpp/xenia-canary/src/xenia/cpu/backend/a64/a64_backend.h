@@ -54,6 +54,9 @@ struct A64BackendStackpoint {
   unsigned guest_return_address_;
 };
 
+uint32_t FindStackpointSyncDepth(const A64BackendStackpoint* stackpoints,
+                                 uint32_t current_depth, uint32_t guest_sp);
+
 enum : uint32_t {
   kA64BackendFPCRModeBit = 0,
   kA64BackendHasReserveBit = 1,
@@ -78,6 +81,7 @@ struct A64BackendContext {
   uint64_t cached_reserve_offset;
   uint32_t cached_reserve_bit;
   unsigned int current_stackpoint_depth;
+  unsigned int pending_stackpoint_sync_depth;
   unsigned int fpcr_fpu;
   unsigned int fpcr_vmx;
   // bit 0 = 0 if fpcr is fpu, else it is vmx
@@ -100,6 +104,8 @@ class A64Backend : public Backend {
 
   A64CodeCache* code_cache() const { return code_cache_.get(); }
   uintptr_t emitter_data() const { return emitter_data_; }
+
+  std::string name() const override { return "a64"; }
 
   HostToGuestThunk host_to_guest_thunk() const { return host_to_guest_thunk_; }
   GuestToHostThunk guest_to_host_thunk() const { return guest_to_host_thunk_; }
@@ -140,6 +146,16 @@ class A64Backend : public Backend {
   void SetGuestRoundingMode(void* ctx, unsigned int mode) override;
   bool PopulatePseudoStacktrace(GuestPseudoStackTrace* st) override;
 
+  bool trace_instr_available() const override;
+  bool trace_data_available() const override;
+  bool trace_func_available() const override;
+  bool trace_instr_enabled() const override;
+  void set_trace_instr_enabled(bool value) override;
+  bool trace_data_enabled() const override;
+  void set_trace_data_enabled(bool value) override;
+  bool trace_func_enabled() const override;
+  void set_trace_func_enabled(bool value) override;
+
   void RecordMMIOExceptionForGuestInstruction(void* host_address);
 
  private:
@@ -165,6 +181,7 @@ class A64Backend : public Backend {
   alignas(64) ReserveHelper reserve_helper_;
   BitMap guest_trampoline_address_bitmap_;
   uint8_t* guest_trampoline_memory_ = nullptr;
+  bool guest_trampolines_sub4gb_ = false;
 };
 
 }  // namespace a64

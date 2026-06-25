@@ -29,7 +29,7 @@ fun defaultLayout(landscape: Boolean): List<OnScreenControl> {
         OnScreenControl.Button(ControlId.RB, Kc.SHOULDER_R, "RB", 0.90f, yU),
         OnScreenControl.Button(ControlId.RT, Kc.TRIGGER_R, "RT", 0.96f, yU - 0.10f),
         // Back / Start center.
-        OnScreenControl.Button(ControlId.BACK, Kc.BACK, "⮜", 0.43f, 0.93f, baseSizeDp = 48f),
+        OnScreenControl.Button(ControlId.BACK, Kc.BACK, "◀", 0.43f, 0.93f, baseSizeDp = 48f),
         OnScreenControl.Button(ControlId.START, Kc.START, "☰", 0.57f, 0.93f, baseSizeDp = 48f),
         // Stick clicks (small, near the sticks).
         OnScreenControl.Button(

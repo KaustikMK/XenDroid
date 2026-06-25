@@ -34,7 +34,6 @@ target_sources(emu
         xendroid_emu.cpp
         emulator.cpp
         emulator_xendroid.cpp
-        document_file.cpp
         xe_aaudio_audio_driver.cpp
         xe_aaudio_audio_system.cpp
         xe_android_hid.cpp
@@ -42,22 +41,8 @@ target_sources(emu
         xe_android_util.cpp
         xe_opensles_audio_driver.cpp
         xe_opensles_audio_system.cpp
-        xe_saf_disc_image_device.cpp
-        xe_saf_disc_image_entry.cpp
-        xe_saf_disc_image_file.cpp
-        xe_saf_disc_archive_file.cpp
-        xe_saf_disc_archive_device.cpp
-        xe_saf_disc_archive_entry.cpp
-        xe_saf_stfs_device.cpp
-        xe_saf_stfs_entry.cpp
-        xe_saf_stfs_file.cpp
-        xe_saf_xex_device.cpp
-        xe_saf_xex_entry.cpp
-        xe_saf_xex_file.cpp
         xe_system_xendroid.cpp
         xenia-canary/src/xenia/app/emulator_window.cc
-        xenia-canary/src/xenia/app/profile_dialogs.cc
-        xenia-canary/src/xenia/app/console_settings_dialog.cc
         xenia-canary/src/xenia/ui/file_picker_android.cc
         xenia-canary/src/xenia/ui/surface_android.cc
         cpuinfo.cpp
@@ -86,6 +71,29 @@ foreach(_tool glslangValidator spirv-opt spirv-dis)
             "  Then ensure the tools are on PATH or under $VULKAN_SDK/bin. See BUILD.md.")
     endif()
 endforeach()
+
+# Regenerate the Vulkan SPIR-V shader bytecode at configure time. Edge's in-tree
+# shader pipeline (xenia-shader-cc + slangc) can't run in the arm64 NDK cross
+# build, so gpu/vulkan and ui/vulkan have their edge shader rules guarded off on
+# Android (see those CMakeLists) and consume bytecode produced here by the host
+# Python + system glslang toolchain validated just above. Incremental, so it is
+# a near no-op once generated. Output dirs are git-ignored generated headers.
+find_program(XE_PYTHON3 NAMES python3 python)
+if(NOT XE_PYTHON3)
+    message(FATAL_ERROR "python3 not found; required to generate SPIR-V shader bytecode.")
+endif()
+set(_xe_shader_root "${CMAKE_CURRENT_SOURCE_DIR}/xenia-canary/src/xenia")
+execute_process(
+    COMMAND "${XE_PYTHON3}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/xenia-canary/tools/build/gen_android_spirv.py"
+            "${_xe_shader_root}/gpu/shaders"
+            "${_xe_shader_root}/ui/shaders"
+    RESULT_VARIABLE _xe_spirv_result
+    OUTPUT_VARIABLE _xe_spirv_out)
+message(STATUS "XenDroid SPIR-V shader bytecode: ${_xe_spirv_out}")
+if(NOT _xe_spirv_result EQUAL 0)
+    message(FATAL_ERROR "SPIR-V shader bytecode generation failed (exit ${_xe_spirv_result}).")
+endif()
 
 add_subdirectory(xenia-canary EXCLUDE_FROM_ALL)
 

@@ -12,8 +12,10 @@
 #include <cstdlib>
 
 #include "xenia/base/cvar.h"
+#include "xenia/base/filesystem.h"
 #include "xenia/base/logging.h"
 #include "xenia/base/math.h"
+#include "xenia/base/string.h"
 #include "xenia/ui/d3d12/d3d12_immediate_drawer.h"
 #include "xenia/ui/d3d12/d3d12_presenter.h"
 #include "xenia/ui/d3d12/d3d12_util.h"
@@ -201,24 +203,39 @@ bool D3D12Provider::Initialize() {
         "will be unavailable - DXIL may be unsupported by your OS version");
   }
 
-  // Load optional dxcompiler.dll.
+  // Load optional dxcompiler.dll - prefer the one next to the executable
+  // to avoid loading an older system version.
   pfn_dxcompiler_dxc_create_instance_ = nullptr;
-  library_dxcompiler_ = LoadLibraryW(L"dxcompiler.dll");
+  {
+    auto exe_dir = xe::filesystem::GetExecutablePath().parent_path();
+    auto dxcompiler_path = exe_dir / "dxcompiler.dll";
+    auto dxcompiler_path_utf16 = xe::path_to_utf16(dxcompiler_path);
+    library_dxcompiler_ =
+        LoadLibraryW(reinterpret_cast<LPCWSTR>(dxcompiler_path_utf16.c_str()));
+    if (library_dxcompiler_) {
+      XELOGI("Loaded dxcompiler.dll from executable directory");
+    } else {
+      // Fall back to system search path.
+      library_dxcompiler_ = LoadLibraryW(L"dxcompiler.dll");
+    }
+  }
   if (library_dxcompiler_) {
     pfn_dxcompiler_dxc_create_instance_ = DxcCreateInstanceProc(
         GetProcAddress(library_dxcompiler_, "DxcCreateInstance"));
     if (pfn_dxcompiler_dxc_create_instance_ == nullptr) {
-      XELOGD(
-          "Failed to get DxcCreateInstance from dxcompiler.dll, converted DXIL "
-          "disassembly for debugging will be unavailable");
+      XELOGW(
+          "Failed to get DxcCreateInstance from dxcompiler.dll, DXIL shaders "
+          "will be unavailable");
+    } else {
+      XELOGI("dxcompiler.dll loaded successfully");
     }
   } else {
-    XELOGD(
-        "Failed to load dxcompiler.dll, converted DXIL disassembly for "
-        "debugging will be unavailable - if needed, download the DirectX "
-        "Shader Compiler from "
-        "https://github.com/microsoft/DirectXShaderCompiler/releases and place "
-        "the DLL in the Xenia directory");
+    DWORD error = GetLastError();
+    XELOGW(
+        "Failed to load dxcompiler.dll (error {}), DXIL shaders will be "
+        "unavailable - download from "
+        "https://github.com/microsoft/DirectXShaderCompiler/releases",
+        error);
   }
 
   // Configure the DXGI debug info queue.
@@ -331,9 +348,32 @@ bool D3D12Provider::Initialize() {
   }
   adapter->Release();
 
+  // Report whether the bundled DirectX 12 Agility SDK runtime was loaded.
+  // d3d12.dll loads D3D12Core.dll from D3D12SDKPath on the first device
+  // creation, so it is present by now if the SDK is in use.
+  if (HMODULE d3d12_core = GetModuleHandleW(L"D3D12Core.dll")) {
+    WCHAR core_path[MAX_PATH];
+    DWORD core_path_length = GetModuleFileNameW(d3d12_core, core_path,
+                                                DWORD(xe::countof(core_path)));
+    if (core_path_length != 0 && core_path_length < xe::countof(core_path)) {
+      XELOGI(
+          "DirectX 12 Agility SDK runtime loaded: {}",
+          xe::to_utf8(std::u16string_view(
+              reinterpret_cast<const char16_t*>(core_path), core_path_length)));
+    } else {
+      XELOGI("DirectX 12 Agility SDK runtime loaded");
+    }
+  } else {
+    XELOGI(
+        "DirectX 12 Agility SDK runtime not loaded; using the in-box Direct3D "
+        "12 runtime");
+  }
+
   // Configure the Direct3D 12 debug info queue.
   ID3D12InfoQueue* d3d12_info_queue;
   if (SUCCEEDED(device->QueryInterface(IID_PPV_ARGS(&d3d12_info_queue)))) {
+    // Increase message storage limit for debugging.
+    d3d12_info_queue->SetMessageCountLimit(1024);
     D3D12_MESSAGE_SEVERITY d3d12_info_queue_denied_severities[] = {
         D3D12_MESSAGE_SEVERITY_INFO,
     };
@@ -457,6 +497,12 @@ bool D3D12Provider::Initialize() {
     programmable_sample_positions_tier_ =
         options2.ProgrammableSamplePositionsTier;
   }
+  barycentrics_supported_ = false;
+  D3D12_FEATURE_DATA_D3D12_OPTIONS3 options3;
+  if (SUCCEEDED(device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS3,
+                                            &options3, sizeof(options3)))) {
+    barycentrics_supported_ = bool(options3.BarycentricsSupported);
+  }
   D3D12_FEATURE_DATA_D3D12_OPTIONS8 options8;
   if (SUCCEEDED(device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS8,
                                             &options8, sizeof(options8)))) {
@@ -471,8 +517,18 @@ bool D3D12Provider::Initialize() {
     virtual_address_bits_per_resource_ =
         virtual_address_support.MaxGPUVirtualAddressBitsPerResource;
   }
+  // Check highest supported shader model.
+  highest_shader_model_ = 0x51;  // Default to SM 5.1.
+  D3D12_FEATURE_DATA_SHADER_MODEL shader_model_support;
+  shader_model_support.HighestShaderModel = D3D_SHADER_MODEL_6_6;
+  if (SUCCEEDED(device->CheckFeatureSupport(D3D12_FEATURE_SHADER_MODEL,
+                                            &shader_model_support,
+                                            sizeof(shader_model_support)))) {
+    highest_shader_model_ = uint16_t(shader_model_support.HighestShaderModel);
+  }
   XELOGD3D(
       "Direct3D 12 device and OS features:\n"
+      "* Highest shader model: {}.{}\n"
       "* Max GPU virtual address bits per resource: {}\n"
       "* Non-zeroed heap creation: {}\n"
       "* Pixel-shader-specified stencil reference: {}\n"
@@ -481,6 +537,7 @@ bool D3D12Provider::Initialize() {
       "* Resource binding: tier {}\n"
       "* Tiled resources: tier {}\n"
       "* Unaligned block-compressed textures: {}",
+      (highest_shader_model_ >> 4) & 0xF, highest_shader_model_ & 0xF,
       virtual_address_bits_per_resource_,
       (heap_flag_create_not_zeroed_ & D3D12_HEAP_FLAG_CREATE_NOT_ZEROED) ? "yes"
                                                                          : "no",
@@ -518,6 +575,69 @@ std::unique_ptr<Presenter> D3D12Provider::CreatePresenter(
 
 std::unique_ptr<ImmediateDrawer> D3D12Provider::CreateImmediateDrawer() {
   return D3D12ImmediateDrawer::Create(*this);
+}
+
+void D3D12Provider::LogD3D12DebugMessages() const {
+  if (!device_) {
+    XELOGE("LogD3D12DebugMessages: No device");
+    return;
+  }
+
+  ID3D12InfoQueue* info_queue = nullptr;
+  if (FAILED(device_->QueryInterface(IID_PPV_ARGS(&info_queue)))) {
+    XELOGE(
+        "LogD3D12DebugMessages: InfoQueue not available (debug layer not "
+        "enabled? Use --d3d12_debug)");
+    return;
+  }
+
+  UINT64 message_count = info_queue->GetNumStoredMessages();
+  for (UINT64 i = 0; i < message_count; ++i) {
+    SIZE_T message_size = 0;
+    if (FAILED(info_queue->GetMessage(i, nullptr, &message_size))) {
+      continue;
+    }
+
+    D3D12_MESSAGE* message =
+        reinterpret_cast<D3D12_MESSAGE*>(alloca(message_size));
+    if (FAILED(info_queue->GetMessage(i, message, &message_size))) {
+      continue;
+    }
+
+    const char* severity_str = "INFO";
+    switch (message->Severity) {
+      case D3D12_MESSAGE_SEVERITY_CORRUPTION:
+        severity_str = "CORRUPTION";
+        break;
+      case D3D12_MESSAGE_SEVERITY_ERROR:
+        severity_str = "ERROR";
+        break;
+      case D3D12_MESSAGE_SEVERITY_WARNING:
+        severity_str = "WARNING";
+        break;
+      case D3D12_MESSAGE_SEVERITY_INFO:
+        severity_str = "INFO";
+        break;
+      case D3D12_MESSAGE_SEVERITY_MESSAGE:
+        severity_str = "MESSAGE";
+        break;
+    }
+
+    if (message->Severity == D3D12_MESSAGE_SEVERITY_ERROR ||
+        message->Severity == D3D12_MESSAGE_SEVERITY_CORRUPTION) {
+      XELOGE("D3D12 {}: [ID {}] {}", severity_str,
+             static_cast<int>(message->ID), message->pDescription);
+    } else if (message->Severity == D3D12_MESSAGE_SEVERITY_WARNING) {
+      XELOGW("D3D12 {}: [ID {}] {}", severity_str,
+             static_cast<int>(message->ID), message->pDescription);
+    } else {
+      XELOGI("D3D12 {}: [ID {}] {}", severity_str,
+             static_cast<int>(message->ID), message->pDescription);
+    }
+  }
+
+  info_queue->ClearStoredMessages();
+  info_queue->Release();
 }
 
 }  // namespace d3d12

@@ -17,6 +17,7 @@
 #include "xenia/base/logging.h"
 #include "xenia/emulator.h"
 #include "xenia/hid/input_system.h"
+#include "xenia/kernel/guest_scheduler.h"
 #include "xenia/kernel/user_module.h"
 #include "xenia/kernel/util/shim_utils.h"
 #include "xenia/kernel/xboxkrnl/xboxkrnl_memory.h"
@@ -65,9 +66,9 @@ KernelState::KernelState(Emulator* emulator)
   processor_ = emulator->processor();
   file_system_ = emulator->file_system();
   xam_state_ = std::make_unique<xam::XamState>(emulator, this);
+  guest_scheduler_ = std::make_unique<GuestScheduler>(this);
   smc_ = std::make_unique<SystemManagementController>();
-  xconfig_ =
-      std::make_unique<XConfig>(emulator->storage_root() / "xconfig.settings");
+  xconfig_ = std::make_unique<XConfig>();
 
   InitializeKernelGuestGlobals();
   kernel_version_ = KernelVersion(cvars::kernel_build_version);
@@ -84,11 +85,7 @@ KernelState::KernelState(Emulator* emulator)
 KernelState::~KernelState() {
   SetExecutableModule(nullptr);
 
-  if (dispatch_thread_running_) {
-    dispatch_thread_running_ = false;
-    dispatch_cond_.notify_all();
-    dispatch_thread_->Wait(0, 0, 0, nullptr);
-  }
+  ShutdownDispatchThread();
 
   executable_module_.reset();
   user_modules_.clear();
@@ -101,6 +98,14 @@ KernelState::~KernelState() {
 
   assert_true(shared_kernel_state_ == this);
   shared_kernel_state_ = nullptr;
+}
+
+void KernelState::ShutdownDispatchThread() {
+  if (dispatch_thread_running_) {
+    dispatch_thread_running_ = false;
+    dispatch_cond_.notify_all();
+    dispatch_thread_->Wait(0, 0, 0, nullptr);
+  }
 }
 
 KernelState* KernelState::shared() { return shared_kernel_state_; }
@@ -863,73 +868,26 @@ void KernelState::InitXmpVolumePatch() {
 }
 
 void KernelState::TerminateTitle() {
-  XELOGD("KernelState::TerminateTitle");
-  xmp_volume_patch_.reset();
-  auto global_lock = global_critical_region_.Acquire();
+  XELOGI("KernelState::TerminateTitle");
+  xe::FlushLog();
+  std::quick_exit(EXIT_SUCCESS);
+}
 
-  // Call terminate routines.
-  // TODO(benvanik): these might take arguments.
-  // FIXME: Calling these will send some threads into kernel code and they'll
-  // hold the lock when terminated! Do we need to wait for all threads to exit?
-  /*
-  if (from_guest_thread) {
-    for (auto routine : terminate_notifications_) {
-      auto thread_state = XThread::GetCurrentThread()->thread_state();
-      processor()->Execute(thread_state, routine.guest_routine);
-    }
-  }
-  terminate_notifications_.clear();
-  */
-
-  // Kill all guest threads.
-  for (auto it = threads_by_id_.begin(); it != threads_by_id_.end();) {
-    if (!XThread::IsInThread(it->second) && it->second->is_guest_thread()) {
-      auto thread = it->second;
-
-      if (thread->is_running()) {
-        // Need to step the thread to a safe point (returns it to guest code
-        // so it's guaranteed to not be holding any locks / in host kernel
-        // code / etc). Can't do that properly if we have the lock.
-        if (!emulator_->is_paused()) {
-          thread->thread()->Suspend();
-        }
-
-        global_lock.unlock();
-        processor_->StepToGuestSafePoint(thread->thread_id());
-        thread->Terminate(0);
-        global_lock.lock();
+void KernelState::ExitToDashboard() {
+  XELOGI("KernelState::ExitToDashboard");
+  if (auto on_exit_to_dashboard = emulator_->on_exit_to_dashboard()) {
+    if (on_exit_to_dashboard()) {
+      // Park off guest code until the in-process reset terminates us; Suspend
+      // can return on POSIX, so loop rather than fall through to
+      // TerminateTitle.
+      auto* current_thread = XThread::GetCurrentThread();
+      current_thread->Suspend(nullptr);
+      while (true) {
+        xe::threading::NanoSleep(int64_t(1'000'000'000));
       }
-
-      // Erase it from the thread list.
-      it = threads_by_id_.erase(it);
-    } else {
-      ++it;
     }
   }
-
-  // Third: Unload all user modules (including the executable).
-  for (size_t i = 0; i < user_modules_.size(); i++) {
-    user_modules_[i]->ReleaseHandle();
-  }
-  user_modules_.clear();
-
-  // Release all objects in the object table.
-  object_table_.PurgeAllObjects();
-
-  // Unregister all notify listeners.
-  notify_listeners_.clear();
-
-  // Unset the executable module.
-  executable_module_ = nullptr;
-
-  if (XThread::IsInThread()) {
-    threads_by_id_.erase(XThread::GetCurrentThread()->thread_id());
-
-    // Now commit suicide (using Terminate, because we can't call into guest
-    // code anymore).
-    global_lock.unlock();
-    XThread::GetCurrentThread()->Terminate(0);
-  }
+  TerminateTitle();
 }
 
 void KernelState::RegisterThread(XThread* thread) {
@@ -1256,57 +1214,6 @@ void KernelState::UpdateKeTimestampBundle() {
   xe::store_and_swap<uint64_t>(&lpKeTimeStampBundle->system_time,
                                Clock::QueryGuestSystemTime());
   xe::store_and_swap<uint32_t>(&lpKeTimeStampBundle->tick_count, uptime_ms);
-
-  // Every 20 ticks (~20ms), decay priority on running guest threads.
-  // This simulates the Xenon decrementer-driven quantum expiration.
-  // Also advance each running thread's per-thread millisecond tick
-  // (X_KTHREAD::ms_tick): the XDK D3D runtime measures its blocking waits'
-  // watchdog timeouts (e.g. the 5-second GPU-hang recovery) and spin-wait
-  // patience windows as deltas of this field, so without it those
-  // deadlock-breakers never fire. 20ms granularity is ample for the
-  // 5000-tick timeouts the guests use; only deltas matter.
-  if (++quantum_timer_counter_ >= 20) {
-    quantum_timer_counter_ = 0;
-    auto global_lock = global_critical_region_.Acquire();
-    uint32_t ticked = 0;
-    uint32_t sample_object = 0;
-    for (auto& [id, thread] : threads_by_id_) {
-      if (thread->is_running()) {
-        thread->CheckQuantumAndDecay();
-        if (auto* kthread = thread->guest_object<X_KTHREAD>()) {
-          kthread->ms_tick = uptime_ms;
-          ++ticked;
-          if (!sample_object) {
-            sample_object = thread->guest_object();
-          }
-        }
-      }
-    }
-    // Diagnostic heartbeat while validating the ms_tick emulation.
-    if (++tick_log_counter_ >= 250) {
-      tick_log_counter_ = 0;
-      XELOGI("KernelState: ms_tick={} written to {} threads (sample @{:08X})",
-             uptime_ms, ticked, sample_object);
-      // Thread PC census every ~30s: each thread's last guest lr/r1 names
-      // where it sits when the wait reporters are silent (timed-wait retry
-      // loops, host threads wedged inside guest callbacks). Racy reads -
-      // diagnostic only.
-      static uint32_t pc_census_counter = 0;
-      if (++pc_census_counter >= 6) {
-        pc_census_counter = 0;
-        for (auto& [census_id, census_thread] : threads_by_id_) {
-          if (!census_thread || !census_thread->thread_state()) {
-            continue;
-          }
-          auto* ctx = census_thread->thread_state()->context();
-          XELOGI("  pc-census {:08X} {} lr={:08X} r1={:08X}",
-                 census_thread->handle(),
-                 census_thread->is_guest_thread() ? "guest" : "host ",
-                 uint32_t(ctx->lr), uint32_t(ctx->r[1]));
-        }
-      }
-    }
-  }
 }
 
 uint32_t KernelState::GetKeTimestampBundle() {
@@ -1322,27 +1229,19 @@ XE_COLD
 uint32_t KernelState::CreateKeTimestampBundle() {
   auto crit = global_critical_region::Acquire();
 
-  uint32_t pKeTimeStampBundle =
-      memory_->SystemHeapAlloc(sizeof(X_TIME_STAMP_BUNDLE));
-  X_TIME_STAMP_BUNDLE* lpKeTimeStampBundle =
-      memory_->TranslateVirtual<X_TIME_STAMP_BUNDLE*>(pKeTimeStampBundle);
+  // Check again under lock - should have been initialized during boot
+  if (ke_timestamp_bundle_ptr_) {
+    // Already initialized during InitializeKernelGuestGlobals
+    // Timer should also already be running
+    assert_not_null(timestamp_timer_);
+    return ke_timestamp_bundle_ptr_;
+  }
 
-  xe::store_and_swap<uint64_t>(&lpKeTimeStampBundle->interrupt_time,
-                               Clock::QueryGuestInterruptTime());
-
-  xe::store_and_swap<uint64_t>(&lpKeTimeStampBundle->system_time,
-                               Clock::QueryGuestSystemTime());
-
-  xe::store_and_swap<uint32_t>(&lpKeTimeStampBundle->tick_count,
-                               Clock::QueryGuestUptimeMillis());
-
-  xe::store_and_swap<uint32_t>(&lpKeTimeStampBundle->padding, 0);
-
-  ke_timestamp_bundle_ptr_ = pKeTimeStampBundle;
-  timestamp_timer_ = xe::threading::HighResolutionTimer::CreateRepeating(
-      std::chrono::milliseconds(1),
-      [this]() { this->UpdateKeTimestampBundle(); });
-  return pKeTimeStampBundle;
+  // Should never reach here - timestamp bundle should be initialized during
+  // InitializeKernelGuestGlobals()
+  assert_always(
+      "CreateKeTimestampBundle called but bundle not initialized during boot");
+  return 0;
 }
 
 bool KernelState::Restore(ByteStream* stream) {
@@ -1701,6 +1600,28 @@ void KernelState::InitializeKernelGuestGlobals() {
        kernel_guest_globals_ +
            offsetof32(KernelGuestGlobals, IoDeviceObjectType)}};
   xboxkrnl::xeKeSetEvent(&block->UsbdBootEnumerationDoneEvent, 1, 0);
+
+  // Initialize timestamp bundle early to avoid race conditions with update
+  // timer and ensure deterministic initial values at kernel boot time
+  uint32_t pKeTimeStampBundle =
+      memory_->SystemHeapAlloc(sizeof(X_TIME_STAMP_BUNDLE));
+  X_TIME_STAMP_BUNDLE* lpKeTimeStampBundle =
+      memory_->TranslateVirtual<X_TIME_STAMP_BUNDLE*>(pKeTimeStampBundle);
+
+  xe::store_and_swap<uint64_t>(&lpKeTimeStampBundle->interrupt_time,
+                               Clock::QueryGuestInterruptTime());
+  xe::store_and_swap<uint64_t>(&lpKeTimeStampBundle->system_time,
+                               Clock::QueryGuestSystemTime());
+  xe::store_and_swap<uint32_t>(&lpKeTimeStampBundle->tick_count,
+                               Clock::QueryGuestUptimeMillis());
+  xe::store_and_swap<uint32_t>(&lpKeTimeStampBundle->padding, 0);
+
+  ke_timestamp_bundle_ptr_ = pKeTimeStampBundle;
+
+  // Start the update timer
+  timestamp_timer_ = xe::threading::HighResolutionTimer::CreateRepeating(
+      std::chrono::milliseconds(1),
+      [this]() { this->UpdateKeTimestampBundle(); });
 }
 
 void KernelState::InitializeXbdmCpuCounters() {

@@ -13,7 +13,6 @@
 #include <memory>
 #include <string>
 
-#include "xenia/app/profile_dialogs.h"
 #include "xenia/emulator.h"
 #include "xenia/gpu/command_processor.h"
 #include "xenia/ui/imgui_dialog.h"
@@ -28,8 +27,6 @@
 
 namespace xe {
 namespace app {
-
-class ConsoleSettingsDialog;
 
 struct RecentTitleEntry {
   std::string title_name;
@@ -94,10 +91,6 @@ class EmulatorWindow {
   void SaveImage(const std::filesystem::path& path,
                  const xe::ui::RawImage& image);
 
-  void ToggleProfilesConfigDialog();
-  void ToggleXMPConfigDialog();
-  void ToggleConsoleSettingsDialog();
-
   void SetHotkeysState(bool enabled) { disable_hotkeys_ = !enabled; }
 
   // Types of button functions for hotkeys.
@@ -160,80 +153,24 @@ class EmulatorWindow {
     EmulatorWindow& emulator_window_;
   };
 
-  class DisplayConfigGameConfigLoadCallback
-      : public Emulator::GameConfigLoadCallback {
-   public:
-    DisplayConfigGameConfigLoadCallback(Emulator& emulator,
-                                        EmulatorWindow& emulator_window)
-        : Emulator::GameConfigLoadCallback(emulator),
-          emulator_window_(emulator_window) {}
-
-    void PostGameConfigLoad() override;
-
-   private:
-    EmulatorWindow& emulator_window_;
-  };
-
-  class ContentInstallDialog final : public ui::ImGuiDialog {
-   public:
-    ContentInstallDialog(
-        ui::ImGuiDrawer* imgui_drawer, EmulatorWindow& emulator_window,
-        std::shared_ptr<std::vector<Emulator::ContentInstallEntry>> entries)
-        : ui::ImGuiDialog(imgui_drawer),
-          emulator_window_(emulator_window),
-          installation_entries_(entries) {
-      window_id_ = GetWindowId();
-    }
-
-    ~ContentInstallDialog() {
-      for (auto& entry : *installation_entries_) {
-        entry.icon_.release();
-      }
-    }
-
-   protected:
-    void OnDraw(ImGuiIO& io) override;
-
-   private:
-    uint64_t window_id_;
-
-    EmulatorWindow& emulator_window_;
-    std::shared_ptr<std::vector<Emulator::ContentInstallEntry>>
-        installation_entries_;
-  };
-
-  class DisplayConfigDialog final : public ui::ImGuiDialog {
-   public:
-    DisplayConfigDialog(ui::ImGuiDrawer* imgui_drawer,
-                        EmulatorWindow& emulator_window)
-        : ui::ImGuiDialog(imgui_drawer), emulator_window_(emulator_window) {}
-
-   protected:
-    void OnDraw(ImGuiIO& io) override;
-
-   private:
-    EmulatorWindow& emulator_window_;
-  };
-
-  class XMPConfigDialog final : public ui::ImGuiDialog {
-   public:
-    XMPConfigDialog(ui::ImGuiDrawer* imgui_drawer,
-                    EmulatorWindow& emulator_window)
-        : ui::ImGuiDialog(imgui_drawer), emulator_window_(emulator_window) {
-      if (emulator_window_.emulator_->audio_media_player()) {
-        volume_ = emulator_window_.emulator_->audio_media_player()
-                      ->GetVolume()
-                      ->load();
-      }
-    }
-
-   protected:
-    void OnDraw(ImGuiIO& io) override;
-
-   private:
-    EmulatorWindow& emulator_window_;
-    float volume_ = 0.0f;
-  };
+  // XenDroid: edge removed Emulator::GameConfigLoadCallback during its per-game
+  // config redesign, dropping the DisplayConfigGameConfigLoadCallback that
+  // re-applied the display config when a per-game config was overlaid onto live
+  // cvars. Not re-hooked on purpose: on Android no path overlays per-game config
+  // onto live cvars in the running process. config::LoadGameConfigForFile is
+  // desktop-only (called only from xenia_main.cc, which is NOT in the Android
+  // build per emulator-core/.../cpp/CMakeLists.txt); EmulatorApp::OnInitialize
+  // only calls config::SetupConfig at boot, and Jetpack Compose is the sole
+  // writer of the config files (process-per-game model). The display cvars are
+  // (re)applied on every launch AND in-process relaunch because the on_launch
+  // listener (xendroid_emu.cpp) re-runs SetupGraphicsSystemPresenterPainting(),
+  // which calls ApplyDisplayConfigForCvars() (emulator_window.cc). No gap to
+  // close.
+  //
+  // XenDroid: the native Dear ImGui config dialogs (content-install, display /
+  // post-processing, XMP player, profile, and console-settings dialogs) were
+  // dropped here -- on Android the real UI is Jetpack Compose. The imgui_drawer_
+  // itself stays for guest-output / in-game notification rendering.
 
   explicit EmulatorWindow(Emulator* emulator,
                           ui::WindowedAppContext& app_context, uint32_t width,
@@ -264,7 +201,6 @@ class EmulatorWindow {
   void OnMouseUp(const ui::MouseEvent& e);
   void FileOpen();
   void FileClose();
-  void InstallContent();
   void ExtractZarchive();
   void CreateZarchive();
   void ShowContentDirectory();
@@ -275,7 +211,6 @@ class EmulatorWindow {
   void CpuBreakIntoHostDebugger();
   void GpuTraceFrame();
   void GpuClearCaches();
-  void ToggleDisplayConfigDialog();
   void ToggleControllerVibration();
   void ShowCompatibility();
   void ShowFAQ();
@@ -305,8 +240,6 @@ class EmulatorWindow {
   EmulatorWindowListener window_listener_;
   std::unique_ptr<ui::Window> window_;
   std::unique_ptr<ui::ImGuiDrawer> imgui_drawer_;
-  std::unique_ptr<DisplayConfigGameConfigLoadCallback>
-      display_config_game_config_load_callback_;
   // Creation may fail, in this case immediate drawer UI must not be drawn.
   std::unique_ptr<ui::ImmediateDrawer> immediate_drawer_;
 
@@ -315,15 +248,6 @@ class EmulatorWindow {
 
   std::string base_title_;
   bool initializing_shader_storage_ = false;
-
-  std::unique_ptr<DisplayConfigDialog> display_config_dialog_;
-  std::unique_ptr<ConsoleSettingsDialog> console_settings_dialog_;
-
-  // Storing pointers and toggling dialog state is useful for broadcasting
-  // messages back to guest.
-  std::unique_ptr<ProfileConfigDialog> profile_config_dialog_;
-
-  std::unique_ptr<XMPConfigDialog> xmp_config_dialog_;
 
   std::vector<RecentTitleEntry> recently_launched_titles_;
 };

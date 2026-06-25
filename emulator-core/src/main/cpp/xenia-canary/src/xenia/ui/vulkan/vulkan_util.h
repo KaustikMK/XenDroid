@@ -13,8 +13,11 @@
 #include <algorithm>
 #include <cstdint>
 
+#include "xenia/base/cvar.h"
 #include "xenia/base/math.h"
 #include "xenia/ui/vulkan/vulkan_device.h"
+
+DECLARE_bool(vulkan_rebar);
 
 namespace xe {
 namespace ui {
@@ -54,6 +57,16 @@ inline uint32_t ChooseHostMemoryType(
     const bool is_readback) {
   supported_types &= memory_types.host_visible;
   uint32_t memory_type;
+  // For upload, prefer HOST_VISIBLE | DEVICE_LOCAL (ReBAR/SAM) if available
+  // and enabled. This places staging buffers in GPU VRAM, making copies
+  // GPU-internal.
+  if (!is_readback && cvars::vulkan_rebar) {
+    if (xe::bit_scan_forward(
+            supported_types & memory_types.device_local_host_visible,
+            &memory_type)) {
+      return memory_type;
+    }
+  }
   // For upload, uncached is preferred so writes do not pollute the CPU cache.
   // For readback, cached is preferred so multiple CPU reads are fast.
   // If the preferred caching behavior is not available, pick any host-visible.
@@ -167,16 +180,20 @@ inline VkShaderModule CreateShaderModule(
              : VK_NULL_HANDLE;
 }
 
+// If required_subgroup_size is non-zero and VK_EXT_subgroup_size_control is
+// supported with the requested size in range, the pipeline will be created
+// with that subgroup size requirement. This can be used to request wave64
+// mode on RDNA GPUs for 64-thread compute shaders.
 VkPipeline CreateComputePipeline(
     const VulkanDevice* vulkan_device, VkPipelineLayout layout,
     VkShaderModule shader,
     const VkSpecializationInfo* specialization_info = nullptr,
-    const char* entry_point = "main");
+    const char* entry_point = "main", uint32_t required_subgroup_size = 0);
 VkPipeline CreateComputePipeline(
     const VulkanDevice* vulkan_device, VkPipelineLayout layout,
     const uint32_t* shader_code, size_t shader_code_size_bytes,
     const VkSpecializationInfo* specialization_info = nullptr,
-    const char* entry_point = "main");
+    const char* entry_point = "main", uint32_t required_subgroup_size = 0);
 
 }  // namespace util
 }  // namespace vulkan

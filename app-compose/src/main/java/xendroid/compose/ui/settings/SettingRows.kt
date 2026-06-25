@@ -5,6 +5,9 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -55,7 +58,9 @@ private fun BoolRow(host: SettingsHost, s: Setting.Bool, modified: Boolean) {
 @Composable
 private fun IntRow(host: SettingsHost, s: Setting.IntRange, modified: Boolean) {
     var showDialog by remember { mutableStateOf(false) }
-    val current = remember(modified) { host.currentInt(s) }
+    // Read live (like InheritedPreview); a remember(modified) cache stays stale where modified is
+    // constant (the per-game editor always passes true).
+    val current = host.currentInt(s)
     Row(Modifier.fillMaxWidth().clickable { showDialog = true }
         .padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
         Box(Modifier.weight(1f)) { RowTitle(s.title, modified, sub = current.toString()) }
@@ -84,7 +89,7 @@ private fun IntRow(host: SettingsHost, s: Setting.IntRange, modified: Boolean) {
 @Composable
 private fun ListRow(host: SettingsHost, s: Setting.ListChoice, modified: Boolean) {
     var showDialog by remember { mutableStateOf(false) }
-    val currentValue = remember(modified) { host.currentListValue(s) }
+    val currentValue = host.currentListValue(s)   // read live (see IntRow)
     val currentLabel = s.options.firstOrNull { it.value == currentValue }?.label
         ?: if (currentValue.isEmpty()) "(default)" else currentValue
     Row(Modifier.fillMaxWidth().clickable { showDialog = true }
@@ -92,12 +97,15 @@ private fun ListRow(host: SettingsHost, s: Setting.ListChoice, modified: Boolean
         Box(Modifier.weight(1f)) { RowTitle(s.title, modified, sub = currentLabel) }
     }
     if (showDialog) {
+        val listState = rememberLazyListState()
+        val selectedIndex = s.options.indexOfFirst { it.value == currentValue }
+        LaunchedEffect(Unit) { if (selectedIndex > 0) listState.scrollToItem(selectedIndex) }
         AlertDialog(
             onDismissRequest = { showDialog = false },
             title = { Text(s.title) },
             text = {
-                Column {
-                    s.options.forEach { opt ->
+                LazyColumn(state = listState, modifier = Modifier.fillMaxWidth().heightIn(max = 400.dp)) {
+                    items(s.options, key = { it.value }) { opt ->
                         Row(Modifier.fillMaxWidth().selectable(
                             selected = opt.value == currentValue,
                             onClick = { host.onListChanged(s, opt.value); showDialog = false },
@@ -119,7 +127,7 @@ private fun ListRow(host: SettingsHost, s: Setting.ListChoice, modified: Boolean
 private fun DriverActionRow(host: SettingsHost, s: Setting.Action, modified: Boolean) {
     if (!host.isCustomDriverSupported) return  // gated: not an Adreno/kgsl device
     val context = LocalContext.current
-    val current = remember(modified) { host.currentDriverPath(s) }
+    val current = host.currentDriverPath(s)   // read live (see IntRow)
     // .zip picker -> install via Utils on the host Activity (see note below).
     val pickZip = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument()
@@ -136,7 +144,7 @@ private fun DriverActionRow(host: SettingsHost, s: Setting.Action, modified: Boo
             .padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
             Box(Modifier.weight(1f)) {
                 RowTitle(s.title, modified,
-                    sub = current.ifEmpty { "_default" })
+                    sub = current.ifEmpty { "Default" })
             }
         }
         // "" clears vulkan_lib_path -> native falls back to the system driver. (Writing a
@@ -157,14 +165,15 @@ private fun DriverActionRow(host: SettingsHost, s: Setting.Action, modified: Boo
 fun OverrideRow(
     host: SettingsHost,
     s: Setting,
-    overridden: Boolean,
+    overrideValue: String?,
     onOverrideToggle: (Boolean) -> Unit,
 ) {
+    val overridden = overrideValue != null
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         Switch(checked = overridden, onCheckedChange = onOverrideToggle,
             modifier = Modifier.padding(start = 12.dp))
         Box(Modifier.weight(1f)) {
-            if (overridden) SettingRow(host, s, modified = true)
+            if (overridden) key(overrideValue) { SettingRow(host, s, modified = true) }
             else InheritedPreview(host, s)
         }
     }
@@ -192,7 +201,7 @@ private fun InheritedPreview(host: SettingsHost, s: Setting) {
             InheritedTextRow(s.title, label, grey)
         }
         is Setting.Action ->
-            InheritedTextRow(s.title, host.currentDriverPath(s).ifEmpty { "_default" }, grey)
+            InheritedTextRow(s.title, host.currentDriverPath(s).ifEmpty { "Default" }, grey)
     }
 }
 

@@ -9,7 +9,9 @@
 #include "xe_aaudio_audio_driver.h"
 
 #include <atomic>
+#include <chrono>
 #include <cstring>
+#include <thread>
 
 #include "xenia/apu/apu_flags.h"
 #include "xenia/apu/conversion.h"
@@ -31,32 +33,6 @@ AAudioAudioDriver::~AAudioAudioDriver() {
 }
 
 bool AAudioAudioDriver::Initialize() {
-  aaudio_result_t result;
-
-  result = AAudio_createStreamBuilder(&builder_);
-  if (result != AAUDIO_OK) {
-    XELOGE("AAudio_createStreamBuilder failed: {}", result);
-    return false;
-  }
-
-  AAudioStreamBuilder_setFormat(builder_, AAUDIO_FORMAT_PCM_FLOAT);
-  AAudioStreamBuilder_setSampleRate(builder_, host_frame_frequency_);
-  AAudioStreamBuilder_setChannelCount(builder_, host_frame_channels_);
-  AAudioStreamBuilder_setFramesPerDataCallback(builder_, channel_samples_);
-  //AAudioStreamBuilder_setBufferCapacityInFrames(builder_, channel_samples_ * 2);
-
-  AAudioStreamBuilder_setDataCallback(builder_, AudioCallback, this);
-  AAudioStreamBuilder_setErrorCallback(builder_, AudioErrorCallback, this);
-
-  AAudioStreamBuilder_setPerformanceMode(builder_, AAUDIO_PERFORMANCE_MODE_LOW_LATENCY);
-  AAudioStreamBuilder_setSharingMode(builder_, AAUDIO_SHARING_MODE_EXCLUSIVE);
-
-  result = AAudioStreamBuilder_openStream(builder_, &stream_);
-  if (result != AAUDIO_OK) {
-    XELOGE("AAudioStreamBuilder_openStream failed: {}", result);
-    return false;
-  }
-
   {
     std::unique_lock<std::mutex> guard(frames_mutex_);
     for (int i = 0; i < 2; i++) {
@@ -65,25 +41,76 @@ bool AAudioAudioDriver::Initialize() {
     }
   }
 
-  stream_initialized_ = true;
-
-  result = AAudioStream_requestStart(stream_);
-  if (result != AAUDIO_OK) {
-    XELOGE("AAudioStream_requestStart failed: {}", result);
-    return false;
+  {
+    std::unique_lock<std::mutex> stream_guard(stream_mutex_);
+    if (!BuildStream()) {
+      return false;
+    }
   }
 
+  // Worker that rebuilds the stream on output-device changes.
+  recovery_thread_ = std::thread(&AAudioAudioDriver::RecoveryThreadMain, this);
   return true;
 }
 
+bool AAudioAudioDriver::BuildStream() {
+  // Open on the current default device (no setDeviceId); fall back to SHARED if
+  // the new device won't grant an exclusive MMAP stream.
+  const aaudio_sharing_mode_t modes[] = {AAUDIO_SHARING_MODE_EXCLUSIVE,
+                                         AAUDIO_SHARING_MODE_SHARED};
+  for (aaudio_sharing_mode_t mode : modes) {
+    aaudio_result_t result = AAudio_createStreamBuilder(&builder_);
+    if (result != AAUDIO_OK) {
+      XELOGE("AAudio_createStreamBuilder failed: {}", result);
+      return false;
+    }
+
+    AAudioStreamBuilder_setFormat(builder_, AAUDIO_FORMAT_PCM_FLOAT);
+    AAudioStreamBuilder_setSampleRate(builder_, host_frame_frequency_);
+    AAudioStreamBuilder_setChannelCount(builder_, host_frame_channels_);
+    AAudioStreamBuilder_setFramesPerDataCallback(builder_, channel_samples_);
+    AAudioStreamBuilder_setDataCallback(builder_, AudioCallback, this);
+    AAudioStreamBuilder_setErrorCallback(builder_, AudioErrorCallback, this);
+    AAudioStreamBuilder_setPerformanceMode(builder_,
+                                           AAUDIO_PERFORMANCE_MODE_LOW_LATENCY);
+    AAudioStreamBuilder_setSharingMode(builder_, mode);
+
+    result = AAudioStreamBuilder_openStream(builder_, &stream_);
+    if (result != AAUDIO_OK) {
+      XELOGE("AAudioStreamBuilder_openStream ({}) failed: {}",
+             mode == AAUDIO_SHARING_MODE_EXCLUSIVE ? "exclusive" : "shared",
+             result);
+      AAudioStreamBuilder_delete(builder_);
+      builder_ = nullptr;
+      continue;
+    }
+
+    result = AAudioStream_requestStart(stream_);
+    if (result != AAUDIO_OK) {
+      XELOGE("AAudioStream_requestStart failed: {}", result);
+      AAudioStream_close(stream_);
+      stream_ = nullptr;
+      AAudioStreamBuilder_delete(builder_);
+      builder_ = nullptr;
+      continue;
+    }
+
+    stream_initialized_ = true;
+    return true;
+  }
+  return false;
+}
+
 void AAudioAudioDriver::Pause() {
-  if (stream_initialized_) {
+  std::unique_lock<std::mutex> stream_guard(stream_mutex_);
+  if (stream_initialized_ && stream_) {
     AAudioStream_requestPause(stream_);
   }
 }
 
 void AAudioAudioDriver::Resume() {
-  if (stream_initialized_) {
+  std::unique_lock<std::mutex> stream_guard(stream_mutex_);
+  if (stream_initialized_ && stream_) {
     AAudioStream_requestStart(stream_);
   }
 }
@@ -105,50 +132,28 @@ aaudio_data_callback_result_t AAudioAudioDriver::AudioCallback(
 
   std::unique_lock<std::mutex> guard(driver->frames_mutex_);
 
-  // Starvation diagnostics: whether the device callback runs at all and
-  // whether it finds guest frames to consume (a consume is the only thing
-  // that releases the worker semaphore - see the tick-starvation note in
-  // SubmitFrame).
-  static std::atomic<uint32_t> cb_count{0}, cb_empty{0};
-  uint32_t cb_n = cb_count.fetch_add(1);
   if (driver->frames_queued_.empty()) {
-    uint32_t empty_n = cb_empty.fetch_add(1);
-    if (cb_n < 4 || (cb_n & 0x3FF) == 0) {
-      XELOGI("AAudioCB #{} queue empty (empty so far: {})", cb_n, empty_n + 1);
-    }
     std::memset(output_buffer, 0, samples_count * sizeof(float));
-    // Real hardware ticks the render driver client every 5.33ms whether or
-    // not it submitted - consume-driven credits leak one tick of runway per
-    // underrun burst and eventually starve the title's audio engine for good
-    // (Fable II boot). Grant the credit on empty bursts too; a failed
-    // release just means the guest already holds full runway.
-    bool released = driver->semaphore_->Release(1, nullptr);
-    if (!released && ((cb_n & 0x3FF) == 0)) {
-      XELOGI(
-          "AAudioCB #{} release FAILED (count at max, worker not consuming) "
-          "driver={:p} semaphore={:p}",
-          cb_n, (void*)driver, (void*)driver->semaphore_);
-    }
-  } else {
-    if (cb_n < 4 || (cb_n & 0x3FF) == 0) {
-      XELOGI("AAudioCB #{} consuming (depth {}, empty so far: {})", cb_n,
-             driver->frames_queued_.size(), cb_empty.load());
-    }
-    auto buffer = driver->frames_queued_.front();
-    driver->frames_queued_.pop();
-
-    if (cvars::mute) {
-      std::memset(output_buffer, 0, samples_count * sizeof(float));
-    } else {
-        conversion::sequential_6_BE_to_interleaved_2_LE(
-                output_buffer, buffer, channel_samples_);
-    }
-
-    driver->frames_unused_.push(buffer);
-
-      auto ret = driver->semaphore_->Release(1, nullptr);
-      assert_true(ret);
+    // Tick the pacing semaphore even on underrun so the guest audio engine
+    // keeps running, as it would on real hardware (a release at max count fails
+    // harmlessly).
+    driver->semaphore_->Release(1, nullptr);
+    return AAUDIO_CALLBACK_RESULT_CONTINUE;
   }
+
+  float* buffer = driver->frames_queued_.front();
+  driver->frames_queued_.pop();
+
+  if (cvars::volume == 0) {  // 0 == mute
+    std::memset(output_buffer, 0, samples_count * sizeof(float));
+  } else {
+    conversion::sequential_6_BE_to_interleaved_2_LE(output_buffer, buffer,
+                                                    channel_samples_);
+  }
+
+  driver->frames_unused_.push(buffer);
+  auto ret = driver->semaphore_->Release(1, nullptr);
+  assert_true(ret);
 
   return AAUDIO_CALLBACK_RESULT_CONTINUE;
 }
@@ -157,22 +162,72 @@ void AAudioAudioDriver::AudioErrorCallback(
     AAudioStream* stream,
     void* userdata,
     aaudio_result_t error) {
-  XELOGE("AAudio stream error: {}", error);
+  auto driver = static_cast<AAudioAudioDriver*>(userdata);
+  // A route change (headphones/BT) disconnects the stream; it must be reopened
+  // on the new default device. AAudio forbids closing the stream from this
+  // callback, so just flag a request for recovery_thread_.
+  XELOGW("AAudio stream error: {} - requesting stream rebuild", error);
+  {
+    std::lock_guard<std::mutex> lk(driver->recovery_mutex_);
+    driver->restart_requested_ = true;
+  }
+  driver->recovery_cv_.notify_one();
+}
+
+void AAudioAudioDriver::RecoveryThreadMain() {
+  bool retry_pending = false;
+  for (;;) {
+    {
+      std::unique_lock<std::mutex> lk(recovery_mutex_);
+      auto wake = [this] { return restart_requested_ || recovery_quit_; };
+      // A failed rebuild leaves no stream to re-trigger us, so poll to retry.
+      if (retry_pending) {
+        recovery_cv_.wait_for(lk, std::chrono::milliseconds(250), wake);
+      } else {
+        recovery_cv_.wait(lk, wake);
+      }
+      if (recovery_quit_) {
+        return;
+      }
+      restart_requested_ = false;
+    }
+    retry_pending = !RestartStream();
+  }
+}
+
+bool AAudioAudioDriver::RestartStream() {
+  std::unique_lock<std::mutex> stream_guard(stream_mutex_);
+  XELOGW("AAudio: rebuilding stream on the current default output device");
+  // Safe here (not the callback thread): close() blocks until the data callback
+  // returns.
+  if (stream_) {
+    AAudioStream_requestStop(stream_);
+    AAudioStream_close(stream_);
+    stream_ = nullptr;
+  }
+  if (builder_) {
+    AAudioStreamBuilder_delete(builder_);
+    builder_ = nullptr;
+  }
+  stream_initialized_ = false;
+
+  // Shutting down: tear down only, don't reopen.
+  if (shutting_down_.load(std::memory_order_acquire)) {
+    return true;
+  }
+
+  // The new stream's data callback resumes the pacing semaphore on its own, so
+  // the AudioSystem worker recovers without changes.
+  if (BuildStream()) {
+    XELOGI("AAudio: stream rebuilt; audio output restored");
+    return true;
+  }
+  XELOGE("AAudio: stream rebuild failed; will retry");
+  return false;
 }
 
 void AAudioAudioDriver::SubmitFrame(float* samples) {
-  // Note: the worker tick is credit-driven (one semaphore release per
-  // consumed frame) - a title whose render client skips submissions gets no
-  // further ticks once the prime credits drain. Counting submissions here
-  // tells the two starvation modes apart.
-  static std::atomic<uint32_t> submit_count{0};
-  uint32_t submit_n = submit_count.fetch_add(1);
-  if (submit_n < 8 || (submit_n & 0x1FF) == 0) {
-    XELOGI("AAudio SubmitFrame #{}", submit_n);
-  }
-    const auto input_frame = samples;
   float* output_frame;
-
   {
     std::unique_lock<std::mutex> guard(frames_mutex_);
     if (frames_unused_.empty()) {
@@ -183,7 +238,7 @@ void AAudioAudioDriver::SubmitFrame(float* samples) {
     }
   }
 
-  std::memcpy(output_frame, input_frame, x360_frame_samples_*sizeof(float));
+  std::memcpy(output_frame, samples, x360_frame_samples_ * sizeof(float));
 
   {
     std::unique_lock<std::mutex> guard(frames_mutex_);
@@ -192,18 +247,33 @@ void AAudioAudioDriver::SubmitFrame(float* samples) {
 }
 
 void AAudioAudioDriver::Shutdown() {
-  if (stream_) {
-    AAudioStream_requestStop(stream_);
-    AAudioStream_close(stream_);
-    stream_ = nullptr;
+  // Stop and join the recovery worker before tearing down the stream, so no
+  // rebuild is in flight while we do.
+  shutting_down_.store(true, std::memory_order_release);
+  {
+    std::lock_guard<std::mutex> lk(recovery_mutex_);
+    recovery_quit_ = true;
+  }
+  recovery_cv_.notify_one();
+  if (recovery_thread_.joinable()) {
+    recovery_thread_.join();
   }
 
-  if (builder_) {
-    AAudioStreamBuilder_delete(builder_);
-    builder_ = nullptr;
-  }
+  {
+    std::unique_lock<std::mutex> stream_guard(stream_mutex_);
+    if (stream_) {
+      AAudioStream_requestStop(stream_);
+      AAudioStream_close(stream_);
+      stream_ = nullptr;
+    }
 
-  stream_initialized_ = false;
+    if (builder_) {
+      AAudioStreamBuilder_delete(builder_);
+      builder_ = nullptr;
+    }
+
+    stream_initialized_ = false;
+  }
 
   std::unique_lock<std::mutex> guard(frames_mutex_);
   while (!frames_unused_.empty()) {

@@ -32,16 +32,16 @@ namespace d3d12 {
 
 // Generated with `xb buildshaders`.
 namespace shaders {
-#include "xenia/ui/shaders/bytecode/d3d12_5_1/guest_output_bilinear_dither_ps.h"
-#include "xenia/ui/shaders/bytecode/d3d12_5_1/guest_output_bilinear_ps.h"
-#include "xenia/ui/shaders/bytecode/d3d12_5_1/guest_output_ffx_cas_resample_dither_ps.h"
-#include "xenia/ui/shaders/bytecode/d3d12_5_1/guest_output_ffx_cas_resample_ps.h"
-#include "xenia/ui/shaders/bytecode/d3d12_5_1/guest_output_ffx_cas_sharpen_dither_ps.h"
-#include "xenia/ui/shaders/bytecode/d3d12_5_1/guest_output_ffx_cas_sharpen_ps.h"
-#include "xenia/ui/shaders/bytecode/d3d12_5_1/guest_output_ffx_fsr_easu_ps.h"
-#include "xenia/ui/shaders/bytecode/d3d12_5_1/guest_output_ffx_fsr_rcas_dither_ps.h"
-#include "xenia/ui/shaders/bytecode/d3d12_5_1/guest_output_ffx_fsr_rcas_ps.h"
-#include "xenia/ui/shaders/bytecode/d3d12_5_1/guest_output_triangle_strip_rect_vs.h"
+#include "xenia/ui/shaders/bytecode/d3d12_dxil/guest_output_bilinear_dither_ps.h"
+#include "xenia/ui/shaders/bytecode/d3d12_dxil/guest_output_bilinear_ps.h"
+#include "xenia/ui/shaders/bytecode/d3d12_dxil/guest_output_ffx_cas_resample_dither_ps.h"
+#include "xenia/ui/shaders/bytecode/d3d12_dxil/guest_output_ffx_cas_resample_ps.h"
+#include "xenia/ui/shaders/bytecode/d3d12_dxil/guest_output_ffx_cas_sharpen_dither_ps.h"
+#include "xenia/ui/shaders/bytecode/d3d12_dxil/guest_output_ffx_cas_sharpen_ps.h"
+#include "xenia/ui/shaders/bytecode/d3d12_dxil/guest_output_ffx_fsr_easu_ps.h"
+#include "xenia/ui/shaders/bytecode/d3d12_dxil/guest_output_ffx_fsr_rcas_dither_ps.h"
+#include "xenia/ui/shaders/bytecode/d3d12_dxil/guest_output_ffx_fsr_rcas_ps.h"
+#include "xenia/ui/shaders/bytecode/d3d12_dxil/guest_output_triangle_strip_rect_vs.h"
 }  // namespace shaders
 
 D3D12Presenter::~D3D12Presenter() {
@@ -330,6 +330,8 @@ D3D12Presenter::ConnectOrReconnectPaintingToSurfaceFromUIThread(
     paint_context_.swap_chain_height = new_swap_chain_height;
     paint_context_.swap_chain_allows_tearing =
         (swap_chain_desc.Flags & DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING) != 0;
+    XELOGI("D3D12Presenter: Swap chain created, allows tearing: {}",
+           paint_context_.swap_chain_allows_tearing ? "yes" : "no");
     for (uint32_t i = 0; i < PaintContext::kSwapChainBufferCount; ++i) {
       if (FAILED(paint_context_.swap_chain->GetBuffer(
               i, IID_PPV_ARGS(&paint_context_.swap_chain_buffers[i])))) {
@@ -1068,6 +1070,12 @@ Presenter::PaintResult D3D12Presenter::PaintAndPresentImpl(
       0, DXGI_PRESENT_RESTART | (paint_context_.swap_chain_allows_tearing
                                      ? DXGI_PRESENT_ALLOW_TEARING
                                      : 0));
+  static bool logged_present = false;
+  if (!logged_present) {
+    XELOGI("D3D12Presenter: First Present() call, result: 0x{:08X}",
+           present_result);
+    logged_present = true;
+  }
   // Even if presentation has failed, work might have been enqueued anyway
   // internally before the failure according to Jesse Natalie from the DirectX
   // Discord server.
@@ -1096,6 +1104,8 @@ bool D3D12Presenter::InitializeSurfaceIndependent() {
               sizeof(tearing_feature_data))) &&
           tearing_feature_data;
     }
+    XELOGI("D3D12Presenter: DXGI tearing support: {}",
+           dxgi_supports_tearing_ ? "yes" : "no");
   }
 
   ID3D12Device* device = provider_.GetDevice();

@@ -173,6 +173,10 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
     // #414.
     XE_UI_VULKAN_STRUCT_PROMOTED_EXTENSION(KHR_maintenance4, 1, 3)
   }
+  if (properties.apiVersion >= VK_MAKE_API_VERSION(0, 1, 1, 0)) {
+    // #55. Dynamic rendering removes render pass/framebuffer overhead.
+    XE_UI_VULKAN_STRUCT_PROMOTED_EXTENSION(KHR_dynamic_rendering, 1, 3)
+  }
 
   if (with_swapchain) {
     // #2.
@@ -180,17 +184,25 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
 #if XE_PLATFORM_WIN32
     // #256. Windows-only extension to control fullscreen exclusive behavior.
     // Used to prevent HDR state corruption during fullscreen transitions.
-    XE_UI_VULKAN_STRUCT_EXTENSION(EXT_full_screen_exclusive)
+    // Requires the VK_KHR_get_surface_capabilities2 instance extension.
+    if (vulkan_instance->extensions().ext_KHR_get_surface_capabilities2) {
+      XE_UI_VULKAN_STRUCT_EXTENSION(EXT_full_screen_exclusive)
+    }
 #endif
   }
 
   bool ext_1_2_KHR_sampler_mirror_clamp_to_edge = false;
   bool ext_1_2_EXT_host_query_reset = false;
+  bool ext_1_2_KHR_shader_float16_int8 = false;
   bool ext_1_1_KHR_maintenance1 = false;
   bool ext_1_2_KHR_shader_float_controls = false;
   bool ext_EXT_fragment_shader_interlock = false;
   bool ext_1_3_EXT_shader_demote_to_helper_invocation = false;
+  bool ext_1_3_KHR_dynamic_rendering = false;
   bool ext_EXT_non_seamless_cube_map = false;
+  bool ext_1_3_EXT_subgroup_size_control = false;
+  bool ext_KHR_fragment_shader_barycentric = false;
+  bool ext_NV_fragment_shader_barycentric = false;
   if (with_gpu_emulation) {
     // #15.
     XE_UI_VULKAN_LOCAL_PROMOTED_EXTENSION(KHR_sampler_mirror_clamp_to_edge, 1,
@@ -207,17 +219,31 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
       // #198. Also must be enabled for VK_KHR_spirv_1_4.
       XE_UI_VULKAN_LOCAL_PROMOTED_EXTENSION(KHR_shader_float_controls, 1, 2)
       XE_UI_VULKAN_LOCAL_PROMOTED_EXTENSION(EXT_host_query_reset, 1, 2)
+      // #83. Float16 and Int16 capabilities are declared by system shaders.
+      XE_UI_VULKAN_LOCAL_PROMOTED_EXTENSION(KHR_shader_float16_int8, 1, 2)
       // #252.
       XE_UI_VULKAN_LOCAL_EXTENSION(EXT_fragment_shader_interlock)
+      // #55.
+      XE_UI_VULKAN_LOCAL_PROMOTED_EXTENSION(KHR_dynamic_rendering, 1, 3)
       // #277.
       XE_UI_VULKAN_LOCAL_PROMOTED_EXTENSION(
           EXT_shader_demote_to_helper_invocation, 1, 3)
       // #423.
       XE_UI_VULKAN_LOCAL_EXTENSION(EXT_non_seamless_cube_map)
+      // #226.
+      XE_UI_VULKAN_LOCAL_PROMOTED_EXTENSION(EXT_subgroup_size_control, 1, 3)
+      // #322 (KHR) / #203 (NV). Barycentric coordinates for manual
+      // interpolation.
+      XE_UI_VULKAN_LOCAL_EXTENSION(KHR_fragment_shader_barycentric)
+      XE_UI_VULKAN_LOCAL_EXTENSION(NV_fragment_shader_barycentric)
     }
     if (properties.apiVersion >= VK_MAKE_API_VERSION(0, 1, 1, 0)) {
       // #237.
       XE_UI_VULKAN_STRUCT_PROMOTED_EXTENSION(KHR_spirv_1_4, 1, 2)
+    }
+    // #342. Driver-side fault description after VK_ERROR_DEVICE_LOST.
+    if (get_physical_device_properties2_supported) {
+      XE_UI_VULKAN_STRUCT_EXTENSION(EXT_device_fault)
     }
   }
 
@@ -291,12 +317,18 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
   VkPhysicalDeviceFeatures2 supported_features_2 = {
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
 
+  VulkanFeatures<VkPhysicalDeviceVulkan11Features,
+                 VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES>
+      features_1_1;
   VulkanFeatures<VkPhysicalDeviceVulkan12Features,
                  VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES>
       features_1_2;
   VulkanFeatures<VkPhysicalDeviceHostQueryResetFeatures,
                  VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_HOST_QUERY_RESET_FEATURES>
       features_EXT_host_query_reset;
+  VulkanFeatures<VkPhysicalDeviceShaderFloat16Int8Features,
+                 VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES>
+      features_KHR_shader_float16_int8;
   VulkanFeatures<VkPhysicalDeviceVulkan13Features,
                  VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES>
       features_1_3;
@@ -321,13 +353,46 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
       VkPhysicalDeviceNonSeamlessCubeMapFeaturesEXT,
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_NON_SEAMLESS_CUBE_MAP_FEATURES_EXT>
       features_EXT_non_seamless_cube_map;
+  VulkanFeatures<VkPhysicalDeviceDynamicRenderingFeatures,
+                 VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES>
+      features_1_3_KHR_dynamic_rendering;
+  // Vulkan 1.1 core subgroup properties.
+  VkPhysicalDeviceSubgroupProperties properties_subgroup = {
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES};
+  // VK_EXT_subgroup_size_control (#226, promoted to 1.3).
+  VkPhysicalDeviceSubgroupSizeControlProperties
+      properties_1_3_EXT_subgroup_size_control = {
+          VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_SIZE_CONTROL_PROPERTIES};
+  VulkanFeatures<
+      VkPhysicalDeviceSubgroupSizeControlFeatures,
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_SIZE_CONTROL_FEATURES>
+      features_1_3_EXT_subgroup_size_control;
+  // VK_KHR_fragment_shader_barycentric (#322) /
+  // VK_NV_fragment_shader_barycentric (#203). KHR and NV share the same feature
+  // structure type.
+  VulkanFeatures<
+      VkPhysicalDeviceFragmentShaderBarycentricFeaturesKHR,
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADER_BARYCENTRIC_FEATURES_KHR>
+      features_KHR_fragment_shader_barycentric;
+  VulkanFeatures<VkPhysicalDeviceFaultFeaturesEXT,
+                 VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT>
+      features_EXT_device_fault;
 
   if (get_physical_device_properties2_supported) {
+    if (properties.apiVersion >= VK_MAKE_API_VERSION(0, 1, 1, 0)) {
+      features_1_1.Link(supported_features_2, device_create_info);
+    }
     if (properties.apiVersion >= VK_MAKE_API_VERSION(0, 1, 2, 0)) {
       features_1_2.Link(supported_features_2, device_create_info);
-    } else if (ext_1_2_EXT_host_query_reset) {
-      features_EXT_host_query_reset.Link(supported_features_2,
-                                         device_create_info);
+    } else {
+      if (ext_1_2_EXT_host_query_reset) {
+        features_EXT_host_query_reset.Link(supported_features_2,
+                                           device_create_info);
+      }
+      if (ext_1_2_KHR_shader_float16_int8) {
+        features_KHR_shader_float16_int8.Link(supported_features_2,
+                                              device_create_info);
+      }
     }
     if (properties.apiVersion >= VK_MAKE_API_VERSION(0, 1, 3, 0)) {
       features_1_3.Link(supported_features_2, device_create_info);
@@ -335,6 +400,10 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
       if (ext_1_3_EXT_shader_demote_to_helper_invocation) {
         features_1_3_EXT_shader_demote_to_helper_invocation.Link(
             supported_features_2, device_create_info);
+      }
+      if (ext_1_3_KHR_dynamic_rendering) {
+        features_1_3_KHR_dynamic_rendering.Link(supported_features_2,
+                                                device_create_info);
       }
     }
     if (ext_KHR_portability_subset) {
@@ -357,8 +426,43 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
       features_EXT_non_seamless_cube_map.Link(supported_features_2,
                                               device_create_info);
     }
+    // Subgroup properties are Vulkan 1.1 core.
+    if (properties.apiVersion >= VK_MAKE_API_VERSION(0, 1, 1, 0)) {
+      properties_subgroup.pNext = properties_2.pNext;
+      properties_2.pNext = &properties_subgroup;
+    }
+    // VK_EXT_subgroup_size_control properties and features.
+    if (ext_1_3_EXT_subgroup_size_control) {
+      properties_1_3_EXT_subgroup_size_control.pNext = properties_2.pNext;
+      properties_2.pNext = &properties_1_3_EXT_subgroup_size_control;
+      // On Vulkan 1.3 these features come from VkPhysicalDeviceVulkan13Features
+      // (linked above). The standalone structure must not also be in the chain.
+      if (properties.apiVersion < VK_MAKE_API_VERSION(0, 1, 3, 0)) {
+        features_1_3_EXT_subgroup_size_control.Link(supported_features_2,
+                                                    device_create_info);
+      }
+    }
+    // VK_KHR_fragment_shader_barycentric / VK_NV_fragment_shader_barycentric.
+    if (ext_KHR_fragment_shader_barycentric ||
+        ext_NV_fragment_shader_barycentric) {
+      features_KHR_fragment_shader_barycentric.Link(supported_features_2,
+                                                    device_create_info);
+    }
+    if (device->extensions_.ext_EXT_device_fault) {
+      features_EXT_device_fault.Link(supported_features_2, device_create_info);
+    }
     ifn.vkGetPhysicalDeviceProperties2(physical_device, &properties_2);
     ifn.vkGetPhysicalDeviceFeatures2(physical_device, &supported_features_2);
+    // Mirror supported deviceFault into the enabled struct so the driver
+    // collects fault info during normal execution. Disable the extension flag
+    // if the feature wasn't actually supported - vkGetDeviceFaultInfoEXT is
+    // only valid to call when deviceFault was enabled at device creation.
+    if (device->extensions_.ext_EXT_device_fault &&
+        !features_EXT_device_fault.supported.deviceFault) {
+      device->extensions_.ext_EXT_device_fault = false;
+    }
+    features_EXT_device_fault.enabled.deviceFault =
+        features_EXT_device_fault.supported.deviceFault;
   }
 
   uint32_t queue_family_count = 0;
@@ -650,6 +754,7 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
     XE_UI_VULKAN_FEATURE(fragmentStoresAndAtomics)
     XE_UI_VULKAN_FEATURE(shaderClipDistance)
     XE_UI_VULKAN_FEATURE(shaderCullDistance)
+    XE_UI_VULKAN_FEATURE(shaderInt16)
     XE_UI_VULKAN_FEATURE(sparseBinding)
     XE_UI_VULKAN_FEATURE(sparseResidencyBuffer)
   }
@@ -660,6 +765,7 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
       XE_UI_VULKAN_FEATURE_2(features_1_2, uniformBufferStandardLayout);
       XE_UI_VULKAN_FEATURE_2(features_1_2, scalarBlockLayout);
       XE_UI_VULKAN_FEATURE_2(features_1_2, hostQueryReset);
+      XE_UI_VULKAN_FEATURE_2(features_1_2, shaderFloat16);
     }
   } else {
     if (ext_1_2_KHR_sampler_mirror_clamp_to_edge) {
@@ -668,13 +774,29 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
     if (ext_1_2_EXT_host_query_reset && with_gpu_emulation) {
       XE_UI_VULKAN_FEATURE_2(features_EXT_host_query_reset, hostQueryReset);
     }
+    if (ext_1_2_KHR_shader_float16_int8 && with_gpu_emulation) {
+      XE_UI_VULKAN_FEATURE_2(features_KHR_shader_float16_int8, shaderFloat16);
+    }
   }
   device->extensions_.ext_1_2_EXT_host_query_reset =
       ext_1_2_EXT_host_query_reset;
 
+  // shaderDrawParameters (Vulkan 1.1). Needed by shaders reading SV_VertexID
+  // with Direct3D semantics, which are compiled to VertexIndex minus BaseVertex
+  // (declaring the DrawParameters SPIR-V capability). The guest output triangle
+  // strip vertex shader used by the presenter is one such shader.
+  if (properties.apiVersion >= VK_MAKE_API_VERSION(0, 1, 1, 0)) {
+    features_1_1.enabled.shaderDrawParameters =
+        features_1_1.supported.shaderDrawParameters;
+    if (features_1_1.supported.shaderDrawParameters) {
+      XELOGI("* shaderDrawParameters");
+    }
+  }
+
   if (properties.apiVersion >= VK_MAKE_API_VERSION(0, 1, 3, 0)) {
     if (with_gpu_emulation) {
       XE_UI_VULKAN_FEATURE_2(features_1_3, shaderDemoteToHelperInvocation);
+      XE_UI_VULKAN_FEATURE_2(features_1_3, dynamicRendering);
     }
   } else {
     if (ext_1_3_EXT_shader_demote_to_helper_invocation) {
@@ -682,6 +804,12 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
         XE_UI_VULKAN_FEATURE_2(
             features_1_3_EXT_shader_demote_to_helper_invocation,
             shaderDemoteToHelperInvocation);
+      }
+    }
+    if (ext_1_3_KHR_dynamic_rendering) {
+      if (with_gpu_emulation) {
+        XE_UI_VULKAN_FEATURE_2(features_1_3_KHR_dynamic_rendering,
+                               dynamicRendering);
       }
     }
   }
@@ -737,6 +865,63 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
     }
   }
 
+  // Vulkan 1.1 core subgroup properties.
+  if (properties.apiVersion >= VK_MAKE_API_VERSION(0, 1, 1, 0)) {
+    XE_UI_VULKAN_PROPERTY_2(properties_subgroup, subgroupSize);
+    device->properties_.subgroupSupportedStages =
+        properties_subgroup.supportedStages;
+    XELOGI("* subgroupSupportedStages: {}",
+           vk::to_string(
+               vk::ShaderStageFlags(properties_subgroup.supportedStages)));
+    device->properties_.subgroupSupportedOperations =
+        properties_subgroup.supportedOperations;
+    XELOGI("* subgroupSupportedOperations: {}",
+           vk::to_string(vk::SubgroupFeatureFlags(
+               properties_subgroup.supportedOperations)));
+  }
+
+  // VK_EXT_subgroup_size_control (#226, promoted to 1.3).
+  if (ext_1_3_EXT_subgroup_size_control) {
+    XE_UI_VULKAN_PROPERTY_2(properties_1_3_EXT_subgroup_size_control,
+                            minSubgroupSize);
+    XE_UI_VULKAN_PROPERTY_2(properties_1_3_EXT_subgroup_size_control,
+                            maxSubgroupSize);
+    if (with_gpu_emulation) {
+      // On Vulkan 1.3 these are enabled through
+      // VkPhysicalDeviceVulkan13Features.
+      if (properties.apiVersion >= VK_MAKE_API_VERSION(0, 1, 3, 0)) {
+        XE_UI_VULKAN_FEATURE_2(features_1_3, subgroupSizeControl);
+        XE_UI_VULKAN_FEATURE_2(features_1_3, computeFullSubgroups);
+      } else {
+        XE_UI_VULKAN_FEATURE_2(features_1_3_EXT_subgroup_size_control,
+                               subgroupSizeControl);
+        XE_UI_VULKAN_FEATURE_2(features_1_3_EXT_subgroup_size_control,
+                               computeFullSubgroups);
+      }
+    }
+  }
+  device->extensions_.ext_1_3_EXT_subgroup_size_control =
+      ext_1_3_EXT_subgroup_size_control;
+
+  // VK_KHR_fragment_shader_barycentric (#322) /
+  // VK_NV_fragment_shader_barycentric (#203).
+  // MoltenVK advertises this, but SPIRV-Cross can't translate Xenia's
+  // PerVertexKHR usage to MSL, so leave the shader path on its fallback.
+  const bool driver_is_moltenvk =
+      device->properties_.driverID == VK_DRIVER_ID_MOLTENVK;
+  if ((ext_KHR_fragment_shader_barycentric ||
+       ext_NV_fragment_shader_barycentric) &&
+      !driver_is_moltenvk) {
+    if (with_gpu_emulation) {
+      XE_UI_VULKAN_FEATURE_2(features_KHR_fragment_shader_barycentric,
+                             fragmentShaderBarycentric);
+    }
+  }
+  device->extensions_.ext_KHR_fragment_shader_barycentric =
+      (ext_KHR_fragment_shader_barycentric ||
+       ext_NV_fragment_shader_barycentric) &&
+      !driver_is_moltenvk;
+
 #undef XE_UI_VULKAN_LIMIT
 #undef XE_UI_VULKAN_ENUM_LIMIT
 #undef XE_UI_VULKAN_FEATURE
@@ -782,6 +967,7 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
 #include "xenia/ui/vulkan/functions/device_1_2_ext_host_query_reset.inc"
   }
   if (properties.apiVersion >= VK_MAKE_API_VERSION(0, 1, 3, 0)) {
+#include "xenia/ui/vulkan/functions/device_1_3_khr_dynamic_rendering.inc"
 #include "xenia/ui/vulkan/functions/device_1_3_khr_maintenance4.inc"
   }
 #undef XE_UI_VULKAN_FUNCTION_PROMOTED
@@ -809,6 +995,9 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
     if (device->extensions_.ext_1_3_KHR_maintenance4) {
 #include "xenia/ui/vulkan/functions/device_1_3_khr_maintenance4.inc"
     }
+    if (device->extensions_.ext_1_3_KHR_dynamic_rendering) {
+#include "xenia/ui/vulkan/functions/device_1_3_khr_dynamic_rendering.inc"
+    }
   }
   if (device->extensions_.ext_KHR_swapchain) {
 #include "xenia/ui/vulkan/functions/device_khr_swapchain.inc"
@@ -816,6 +1005,15 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
 #undef XE_UI_VULKAN_FUNCTION_PROMOTED
 
 #undef XE_UI_VULKAN_FUNCTION
+
+  // Optional fault-info function pointer - failing to load is not fatal.
+  if (device->extensions_.ext_EXT_device_fault) {
+    device->vkGetDeviceFaultInfoEXT_ = PFN_vkGetDeviceFaultInfoEXT(
+        ifn.vkGetDeviceProcAddr(device->device_, "vkGetDeviceFaultInfoEXT"));
+    if (!device->vkGetDeviceFaultInfoEXT_) {
+      device->extensions_.ext_EXT_device_fault = false;
+    }
+  }
 
   if (!functions_loaded) {
     XELOGE("Failed to get all Vulkan device function pointers for '{}'",
@@ -860,6 +1058,28 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
     if (memory_type_flags & VK_MEMORY_PROPERTY_HOST_CACHED_BIT) {
       device->memory_types_.host_cached |= memory_type_bit;
     }
+    // Detect ReBAR/SAM memory (both device-local and host-visible)
+    if ((memory_type_flags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) &&
+        (memory_type_flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)) {
+      uint32_t heap_index =
+          memory_properties.memoryTypes[memory_type_index].heapIndex;
+      VkDeviceSize heap_size = memory_properties.memoryHeaps[heap_index].size;
+      // Require at least 256MB to consider this usable ReBAR memory.
+      // Smaller heaps aren't worth using for staging buffers.
+      constexpr VkDeviceSize kMinRebarHeapSize = 256 * 1024 * 1024;
+      if (heap_size >= kMinRebarHeapSize) {
+        device->memory_types_.device_local_host_visible |= memory_type_bit;
+        XELOGI(
+            "Vulkan memory type {}: HOST_VISIBLE | DEVICE_LOCAL (ReBAR/SAM), "
+            "heap {} ({} MB)",
+            memory_type_index, heap_index, heap_size >> 20);
+      } else {
+        XELOGI(
+            "Vulkan memory type {}: HOST_VISIBLE | DEVICE_LOCAL but heap {} "
+            "too small ({} MB < 256 MB), not using as ReBAR",
+            memory_type_index, heap_index, heap_size >> 20);
+      }
+    }
   }
 
   return device;
@@ -876,6 +1096,75 @@ VulkanDevice::VulkanDevice(const VulkanInstance* const vulkan_instance,
     : vulkan_instance_(vulkan_instance), physical_device_(physical_device) {
   assert_not_null(vulkan_instance);
   assert_not_null(physical_device);
+}
+
+void VulkanDevice::LogFaultInfo() {
+  if (!extensions_.ext_EXT_device_fault || !vkGetDeviceFaultInfoEXT_) {
+    return;
+  }
+  // Log only once, even if many observers call us.
+  if (fault_info_logged_.test_and_set(std::memory_order_acq_rel)) {
+    return;
+  }
+
+  // First pass: counts only.
+  VkDeviceFaultCountsEXT counts = {VK_STRUCTURE_TYPE_DEVICE_FAULT_COUNTS_EXT};
+  if (vkGetDeviceFaultInfoEXT_(device_, &counts, nullptr) != VK_SUCCESS) {
+    XELOGE("VK_EXT_device_fault: failed to query fault info counts");
+    return;
+  }
+
+  std::vector<VkDeviceFaultAddressInfoEXT> address_infos(
+      counts.addressInfoCount);
+  std::vector<VkDeviceFaultVendorInfoEXT> vendor_infos(counts.vendorInfoCount);
+  VkDeviceFaultInfoEXT info = {VK_STRUCTURE_TYPE_DEVICE_FAULT_INFO_EXT};
+  info.pAddressInfos = address_infos.empty() ? nullptr : address_infos.data();
+  info.pVendorInfos = vendor_infos.empty() ? nullptr : vendor_infos.data();
+  // Skip vendor binary - we don't have a place to dump it anyway.
+  counts.vendorBinarySize = 0;
+  if (vkGetDeviceFaultInfoEXT_(device_, &counts, &info) != VK_SUCCESS) {
+    XELOGE("VK_EXT_device_fault: failed to query fault info");
+    return;
+  }
+
+  XELOGE("VK_EXT_device_fault: \"{}\" - {} address(es), {} vendor code(s)",
+         info.description, counts.addressInfoCount, counts.vendorInfoCount);
+  for (uint32_t i = 0; i < counts.addressInfoCount; ++i) {
+    const VkDeviceFaultAddressInfoEXT& a = address_infos[i];
+    const char* type_name = "unknown";
+    switch (a.addressType) {
+      case VK_DEVICE_FAULT_ADDRESS_TYPE_NONE_EXT:
+        type_name = "none";
+        break;
+      case VK_DEVICE_FAULT_ADDRESS_TYPE_READ_INVALID_EXT:
+        type_name = "read-invalid";
+        break;
+      case VK_DEVICE_FAULT_ADDRESS_TYPE_WRITE_INVALID_EXT:
+        type_name = "write-invalid";
+        break;
+      case VK_DEVICE_FAULT_ADDRESS_TYPE_EXECUTE_INVALID_EXT:
+        type_name = "execute-invalid";
+        break;
+      case VK_DEVICE_FAULT_ADDRESS_TYPE_INSTRUCTION_POINTER_UNKNOWN_EXT:
+        type_name = "instruction-pointer-unknown";
+        break;
+      case VK_DEVICE_FAULT_ADDRESS_TYPE_INSTRUCTION_POINTER_INVALID_EXT:
+        type_name = "instruction-pointer-invalid";
+        break;
+      case VK_DEVICE_FAULT_ADDRESS_TYPE_INSTRUCTION_POINTER_FAULT_EXT:
+        type_name = "instruction-pointer-fault";
+        break;
+      default:
+        break;
+    }
+    XELOGE("  fault addr: 0x{:016X} (precision ±0x{:X}) type={}",
+           a.reportedAddress, a.addressPrecision, type_name);
+  }
+  for (uint32_t i = 0; i < counts.vendorInfoCount; ++i) {
+    const VkDeviceFaultVendorInfoEXT& v = vendor_infos[i];
+    XELOGE("  vendor code: {} fault=0x{:016X} \"{}\"", v.vendorFaultCode,
+           v.vendorFaultData, v.description);
+  }
 }
 
 }  // namespace vulkan

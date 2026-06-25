@@ -29,6 +29,7 @@
 #include "xenia/cpu/backend/x64/x64_function.h"
 #include "xenia/cpu/backend/x64/x64_sequences.h"
 #include "xenia/cpu/backend/x64/x64_stack_layout.h"
+#include "xenia/cpu/backend/x64/x64_tracers.h"
 #include "xenia/cpu/cpu_flags.h"
 #include "xenia/cpu/function.h"
 #include "xenia/cpu/function_debug_info.h"
@@ -92,12 +93,19 @@ X64Emitter::X64Emitter(X64Backend* backend, XbyakAllocator* allocator)
       backend_(backend),
       code_cache_(backend->code_cache()),
       allocator_(allocator) {
+#if XE_PLATFORM_MAC
   if (!cpu_.has(Xbyak::util::Cpu::tAVX)) {
-    xe::FatalError(
+    XELOGW(
+        "This CPU does not support AVX. Continuing anyway (performance and "
+        "compatibility may be reduced).");
+  }
+#else
+  if (!cpu_.has(Xbyak::util::Cpu::tAVX)) {
+    XELOGW(
         "Your CPU does not support AVX, which is required by Xenia. See the "
         "FAQ for system requirements at https://xenia.jp");
-    return;
   }
+#endif
 
   feature_flags_ = amd64::GetFeatureFlags();
 
@@ -264,6 +272,13 @@ bool X64Emitter::Emit(HIRBuilder* builder, EmitFunctionInfo& func_info) {
     bts(qword[low_address(&trace_header->function_thread_use)], rax);
   }
 
+  // FTrace: log guest function entry when the backend was built with
+  // function tracing available (gated at runtime by the trace_func flag).
+  if (IsTracingFunc()) {
+    mov(GetNativeParam(0), current_guest_function_);
+    CallNative(reinterpret_cast<void*>(TraceFunctionEntry));
+  }
+
   // Load membase.
   /*
   * chrispy: removed this, as long as we load it in HostToGuestThunk we can
@@ -313,6 +328,11 @@ bool X64Emitter::Emit(HIRBuilder* builder, EmitFunctionInfo& func_info) {
   // Function epilog.
   L(epilog_label);
   epilog_label_ = nullptr;
+  // FTrace: log the guest return value (r3) on normal return.
+  if (IsTracingFunc()) {
+    mov(GetNativeParam(0), current_guest_function_);
+    CallNative(reinterpret_cast<void*>(TraceFunctionReturn));
+  }
   EmitTraceUserCallReturn();
   /*
   * chrispy: removed this, it serves no purpose
@@ -707,11 +727,35 @@ void X64Emitter::Call(const hir::Instr* instr, GuestFunction* function) {
 
     return;
   } else if (code_cache_->has_indirection_table()) {
-    // Load the pointer to the indirection table maintained in X64CodeCache.
-    // The target dword will either contain the address of the generated code
-    // or a thunk to ResolveAddress.
-    mov(ebx, function->address());
-    mov(eax, dword[ebx]);
+    // Must leave the guest address in edx for the resolve thunk to read.
+    mov(edx, function->address());
+    if (!code_cache_->encoded_indirection()) {
+      // Fast path: table mapped at host VA == guest addr; slot holds raw
+      // 32-bit host target.
+      mov(eax, dword[rdx]);
+    } else {
+      // Encoded path: see X64CodeCache for the entry format.
+      Xbyak::Label external_target;
+      Xbyak::Label indirection_ready;
+
+      mov(r8, code_cache_->indirection_table_base_bias());
+      mov(eax, dword[r8 + rdx]);
+      test(eax, eax);
+      js(external_target);
+
+      // Internal: rel32 from code cache base.
+      mov(r8, code_cache_->execute_base_address());
+      add(rax, r8);
+      jmp(indirection_ready);
+
+      // External: tagged index into the side table.
+      L(external_target);
+      and_(eax, X64CodeCache::kIndirectionExternalIndexMask);
+      mov(r8, code_cache_->external_indirection_table_base_address());
+      mov(rax, qword[r8 + rax * 8]);
+
+      L(indirection_ready);
+    }
   } else {
     // Old-style resolve.
     // Not too important because indirection table is almost always available.
@@ -748,14 +792,38 @@ void X64Emitter::CallIndirect(const hir::Instr* instr,
     je(epilog_label(), CodeGenerator::T_NEAR);
   }
 
-  // Load the pointer to the indirection table maintained in X64CodeCache.
-  // The target dword will either contain the address of the generated code
-  // or a thunk to ResolveAddress.
   if (code_cache_->has_indirection_table()) {
-    if (reg.cvt32() != ebx) {
-      mov(ebx, reg.cvt32());
+    // Must leave the guest address in edx for the resolve thunk to read.
+    if (reg.cvt32() != edx) {
+      mov(edx, reg.cvt32());
     }
-    mov(eax, dword[ebx]);
+    if (!code_cache_->encoded_indirection()) {
+      // Fast path: table mapped at host VA == guest addr; slot holds raw
+      // 32-bit host target.
+      mov(eax, dword[rdx]);
+    } else {
+      // Encoded path: see X64CodeCache for the entry format.
+      Xbyak::Label external_target;
+      Xbyak::Label indirection_ready;
+
+      mov(r8, code_cache_->indirection_table_base_bias());
+      mov(eax, dword[r8 + rdx]);
+      test(eax, eax);
+      js(external_target);
+
+      // Internal: rel32 from code cache base.
+      mov(r8, code_cache_->execute_base_address());
+      add(rax, r8);
+      jmp(indirection_ready);
+
+      // External: tagged index into the side table.
+      L(external_target);
+      and_(eax, X64CodeCache::kIndirectionExternalIndexMask);
+      mov(r8, code_cache_->external_indirection_table_base_address());
+      mov(rax, qword[r8 + rax * 8]);
+
+      L(indirection_ready);
+    }
   } else {
     // Old-style resolve.
     // Not too important because indirection table is almost always available.
@@ -1163,10 +1231,7 @@ static const vec128_t xmm_consts[] = {
     v128_setr_bytes(3, 2, 1, 0, 7, 6, 5, 4, 11, 10, 9, 8, 15, 14, 13, 12),
     /*XMMLVRCmp16*/
     vec128b(16),
-    /*XMMSTVLShuffle*/
-    v128_setr_bytes(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15),
-    /* XMMSTVRSwapMask*/
-    vec128b((uint8_t)0x83), /*XMMVSRShlByteshuf*/
+    /*XMMVSRShlByteshuf*/
     v128_setr_bytes(13, 14, 15, 8, 9, 10, 11, 4, 5, 6, 7, 0, 1, 2, 3, 0x80),
     // XMMVSRMask
     vec128b(1),
@@ -1241,14 +1306,24 @@ static constexpr uintptr_t kConstDataIncrement = 0x00001000;
 // doing so requires RIP-relative addressing, which is difficult to support
 // given the current setup.
 uintptr_t X64Emitter::PlaceConstData() {
+  // Constants are accessed via [disp32] in GetXmmConstPtr, so the mapping
+  // must land in the bottom 31 bits. Bound the hint walk so we bail
+  // cleanly instead of looping past 2GB and tripping the assert below.
+  static constexpr uintptr_t kSub2GBLimit = 0x80000000ULL;
   uint8_t* ptr = reinterpret_cast<uint8_t*>(kConstDataLocation);
   void* mem = nullptr;
-  while (!mem) {
+  while (!mem && reinterpret_cast<uintptr_t>(ptr) < kSub2GBLimit) {
     mem = memory::AllocFixed(
         ptr, xe::round_up(kConstDataSize, memory::page_size()),
         memory::AllocationType::kReserveCommit, memory::PageAccess::kReadWrite);
 
     ptr += kConstDataIncrement;
+  }
+  if (!mem) {
+    XELOGE(
+        "PlaceConstData: no sub-2GB hole found for the constant table; "
+        "JIT cannot use [disp32] for constants and will not work.");
+    return 0;
   }
 
   // The pointer must not be greater than 31 bits.
@@ -1609,7 +1684,6 @@ SimdDomain X64Emitter::DeduceSimdDomain(const hir::Value* for_value) {
 
   return SimdDomain::DONTCARE;
 }
-
 Xbyak::Address X64Emitter::GetBackendCtxPtr(int offset_in_x64backendctx) const {
   /*
     index context ptr negatively to get to backend ctx field
@@ -1741,19 +1815,23 @@ void X64Emitter::PushStackpoint() {
   // push the current host and guest stack pointers
   // this is done before a stack frame is set up or any guest instructions are
   // executed this code is probably the most intrusive part of the stackpoint
-  mov(rbx, GetBackendCtxPtr(offsetof(X64BackendContext, stackpoints)));
+  //
+  // Scratch regs here must NOT be in gpr_reg_map_ — the callee's prolog
+  // runs them before the caller's live HIR values would be spilled, so
+  // clobbering an allocatable reg corrupts state across the call.
+  mov(rdx, GetBackendCtxPtr(offsetof(X64BackendContext, stackpoints)));
   mov(eax,
       GetBackendCtxPtr(offsetof(X64BackendContext, current_stackpoint_depth)));
 
   mov(r8, qword[GetContextReg() + offsetof(ppc::PPCContext, r[1])]);
 
   imul(r9d, eax, sizeof(X64BackendStackpoint));
-  add(rbx, r9);
+  add(rdx, r9);
 
-  mov(qword[rbx + offsetof(X64BackendStackpoint, host_stack_)], rsp);
-  mov(dword[rbx + offsetof(X64BackendStackpoint, guest_stack_)], r8d);
-  mov(r8d, qword[GetContextReg() + offsetof(ppc::PPCContext, lr)]);
-  mov(dword[rbx + offsetof(X64BackendStackpoint, guest_return_address_)], r8d);
+  mov(qword[rdx + offsetof(X64BackendStackpoint, host_stack_)], rsp);
+  mov(dword[rdx + offsetof(X64BackendStackpoint, guest_stack_)], r8d);
+  mov(r8d, dword[GetContextReg() + offsetof(ppc::PPCContext, lr)]);
+  mov(dword[rdx + offsetof(X64BackendStackpoint, guest_return_address_)], r8d);
 
   if (IsFeatureEnabled(kX64FlagsIndependentVars)) {
     inc(eax);

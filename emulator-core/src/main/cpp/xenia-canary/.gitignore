@@ -62,12 +62,6 @@ obj/
 *.o
 *.aps
 
-# Generated shader bytecode
-src/xenia/gpu/shaders/bytecode/d3d12_5_1/
-src/xenia/gpu/shaders/bytecode/vulkan_spirv/
-src/xenia/ui/shaders/bytecode/d3d12_5_1/
-src/xenia/ui/shaders/bytecode/vulkan_spirv/
-
 # ==============================================================================
 # Logs and dumps
 # ==============================================================================
@@ -85,15 +79,22 @@ imgui.ini
 # npm/node
 .lock-wscript
 node_modules/
-node_modules/**/build/
-node_modules/.bin/
 
 # coverage/etc
 /scratch/
 
+# CMake build trees
 /build/
+/build-vs/
 /build-arm64/
 /build-x64/
+
+# Downloaded Slang shader compiler (xenia-build.py ensure_slangc)
+/.slang/
+
+# CMake user-specific overrides + compile commands export
+CMakeUserPresets.json
+/compile_commands.json
 
 # ==============================================================================
 # Local-only paths

@@ -166,6 +166,7 @@ void PreciseSleep(std::chrono::nanoseconds duration) {
   NanoSleep(duration.count());
 }
 
+void NanoSleepPrecise(int64_t ns) { NanoSleep(ns); }
 void SyncMemory() { MemoryBarrier(); }
 
 void Sleep(std::chrono::microseconds duration) {

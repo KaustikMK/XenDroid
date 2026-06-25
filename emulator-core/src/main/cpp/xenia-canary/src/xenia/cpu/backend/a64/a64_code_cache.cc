@@ -9,6 +9,8 @@
 
 #include "xenia/cpu/backend/a64/a64_code_cache.h"
 
+#include <cstdint>
+
 #include "xenia/base/cvar.h"
 #include "xenia/base/platform.h"
 #include "xenia/cpu/function.h"
@@ -35,8 +37,6 @@ namespace xe {
 namespace cpu {
 namespace backend {
 namespace a64 {
-
-bool A64CodeCache::Initialize() { return CodeCacheBase::Initialize(); }
 
 A64CodeCache::~A64CodeCache() {
   if (perf_map_file_) {

@@ -10,6 +10,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -28,7 +29,11 @@ import xendroid.compose.settings.SettingsCategory
  * A title id is keyed PER GAME (not per file), so this applies to every copy of the game.
  */
 @Composable
-fun PerGameSettingsScreen(vm: GameSettingsViewModel, gameName: String, onBack: () -> Unit) {
+fun PerGameSettingsScreen(
+    vm: GameSettingsViewModel,
+    gameName: String,
+    onBack: () -> Unit,
+) {
     val overrides by vm.overrides.collectAsStateWithLifecycle()
 
     // Durable flush on pause; re-open on resume. Dispose flush = backstop. (Mirrors SettingsScreen.)
@@ -51,7 +56,7 @@ fun PerGameSettingsScreen(vm: GameSettingsViewModel, gameName: String, onBack: (
         PerGameIndex(
             gameName = gameName,
             categories = vm.categories,
-            overriddenCountOf = { cat -> cat.settings.count { overrides[it.key] == true } },
+            overriddenCountOf = { cat -> cat.settings.count { overrides.containsKey(it.key) } },
             onOpen = { selected = it },
             onBack = { vm.flush(); onBack() },
         )
@@ -123,7 +128,7 @@ private fun PerGameIndex(
 @Composable
 private fun PerGameCategoryDetail(
     category: SettingsCategory,
-    overrides: Map<String, Boolean>,
+    overrides: Map<String, String>,
     vm: GameSettingsViewModel,
     onBack: () -> Unit,
 ) {
@@ -144,7 +149,7 @@ private fun PerGameCategoryDetail(
                 OverrideRow(
                     host = vm,
                     s = setting,
-                    overridden = overrides[setting.key] == true,
+                    overrideValue = overrides[setting.key],
                     onOverrideToggle = { vm.setOverride(setting, it) },
                 )
                 HorizontalDivider()

@@ -9,6 +9,11 @@
 
 #include "xenia/gpu/gpu_flags.h"
 
+#include "xenia/base/logging.h"
+#include "xenia/ui/renderdoc_api.h"
+
+DEFINE_bool(use_50Hz_mode, false, "Enables usage of PAL-50 mode.", "Console");
+
 DEFINE_path(trace_gpu_prefix, "scratch/gpu/",
             "Prefix path for GPU trace files.", "GPU");
 DEFINE_bool(trace_gpu_stream, false, "Trace all GPU packets.", "GPU");
@@ -18,13 +23,28 @@ DEFINE_path(
     "For shader debugging, path to dump GPU shaders to as they are compiled.",
     "GPU");
 
-DEFINE_bool(vsync, true, "Enable VSYNC.", "GPU");
+DEFINE_bool(guest_display_refresh_cap, true,
+            "Control guest vblank timing.\n"
+            "  true: Fixed rate vblanks (50Hz PAL, 60Hz NTSC based on "
+            "use_50Hz_mode).\n"
+            "  false: Unlimited vblanks, allows the guest to run as fast as "
+            "possible.",
+            "GPU");
 
-DEFINE_uint64(framerate_limit, 0,
-              "Maximum frames per second. 0 = Unlimited frames.\n"
-              "Defaults to 60, when set to 0, and VSYNC is enabled.",
-              "GPU");
-UPDATE_from_uint64(framerate_limit, 2024, 8, 31, 20, 60);
+DEFINE_uint32(
+    framerate_limit, 0,
+    "Host frame rate limit in FPS. 0 = unlimited.\n"
+    "Throttles presentation without affecting guest vblank timing.\n"
+    "Guest vblanks are controlled by use_50Hz_mode (50Hz PAL, 60Hz NTSC).",
+    "GPU");
+
+void SetGuestDisplayRefreshCap(bool value) {
+  OVERRIDE_bool(guest_display_refresh_cap, value);
+}
+
+void SetFramerateLimit(uint32_t value) {
+  OVERRIDE_uint32(framerate_limit, value);
+}
 
 DEFINE_bool(
     gpu_allow_invalid_fetch_constants, true,
@@ -71,21 +91,110 @@ DEFINE_int32(occlusion_query_fake_upper_threshold, 100,
              "Keep this higher than occlusion_query_fake_lower_threshold.\n"
              "Ignored if occlusion_query_fake_lower_threshold is -1.",
              "GPU");
+DEFINE_bool(occlusion_query_log, false,
+            "Log occlusion query lifetime and summary stats.", "GPU");
 DEFINE_int32(occlusion_query_querybatch_range, 0,
-             "Range of fake sample count values to walk for titles using the "
-             "D3D QueryBatch standard before wrapping back to "
-             "occlusion_query_fake_lower_threshold.\n"
-             "This shouldn't be changed from the default value of 0 (disabled) "
-             "unless necessary for a specific title.",
+             "Range of fake sample count values to walk for titles using the\n"
+             "D3D QueryBatch standard before wrapping back to\n"
+             "occlusion_query_fake_lower_threshold. This shouldn't be changed\n"
+             "from the default value of 0 (disabled) unless necessary for a\n"
+             "specific title.",
              "GPU");
 DEFINE_double(
     occlusion_query_saturation, 1.0,
     "Compress higher occlusion query sample counts before guest writeback.\n"
-    "This can be useful if effects such as lens flares appear too strong.\n"
+    "This can be useful if effects such as lens flares appear too bright\n"
+    "or too strong.\n"
     "1.0 = default behavior\n"
     "0.0 = collapse all nonzero sample counts to 1\n"
     "Values around 0.90 are a good starting point for subtle tuning.",
     "GPU");
+
+uint32_t GetGuestVblankRateHz() { return cvars::use_50Hz_mode ? 50 : 60; }
+
+DEFINE_bool(
+    gpu_debug_markers, false,
+    "Insert debug markers into GPU command streams for tools like RenderDoc. "
+    "Annotates draw calls with Xbox 360 GPU context (primitive type, shader "
+    "hashes, vertex count, etc). Automatically enabled when RenderDoc is "
+    "detected. Has minimal overhead when disabled.",
+    "GPU");
+
+bool IsGpuDebugMarkersEnabled() {
+  // Cache the result - RenderDoc detection only needs to happen once.
+  static bool cached = false;
+  static bool result = false;
+  if (!cached) {
+    cached = true;
+    if (cvars::gpu_debug_markers) {
+      result = true;
+      XELOGI("GPU debug markers enabled via CVAR");
+    } else {
+      auto renderdoc_api = xe::ui::RenderDocAPI::CreateIfConnected();
+      if (renderdoc_api) {
+        result = true;
+        XELOGI("GPU debug markers auto-enabled (RenderDoc detected)");
+      }
+    }
+  }
+  return result;
+}
+
+// TODO(Triang3l): Make accuracy (ROV/FSI) the default when it's optimized
+// better (for instance, using static shader modifications to pass render
+// target parameters).
+DEFINE_string(
+    render_target_path, "performance",
+    "Render target emulation path to use across all GPU backends.\n"
+    "Use: [performance, accuracy]\n"
+    " performance:\n"
+    "  Host render targets and fixed-function blending and depth/stencil "
+    "testing, copying between render targets when needed.\n"
+    "  Lower accuracy (limited pixel format support).\n"
+    "  Performance limited primarily by render target layout changes requiring "
+    "copying, but generally higher.\n"
+    "  Maps to 'fbo' on Vulkan and 'rtv' on D3D12.\n"
+    " accuracy:\n"
+    "  Manual pixel packing, blending and depth/stencil testing, with free "
+    "render target layout changes.\n"
+    "  Requires GPU supporting fragment shader interlock (Vulkan) or "
+    "rasterizer-ordered views (D3D12).\n"
+    "  Highest accuracy (all pixel formats handled in software).\n"
+    "  Performance limited primarily by overdraw.\n"
+    "  Maps to 'fsi' on Vulkan and 'rov' on D3D12.",
+    "GPU");
+
+DEFINE_bool(submit_on_primary_buffer_end, true,
+            "Submit the command buffer when a PM4 primary buffer ends if it's "
+            "possible to submit immediately to try to reduce frame latency.",
+            "GPU");
+
+DEFINE_bool(no_discard_stencil_in_transfer_pipelines, false,
+            "Skip stencil bit discard in render target transfer pipelines. "
+            "May improve performance on some GPUs.",
+            "GPU");
+
+DEFINE_bool(
+    async_shader_compilation, true,
+    "Compile shaders and create pipelines asynchronously in background "
+    "threads. "
+    "Eliminates shader compilation stutter but may cause brief rendering "
+    "artifacts while pipelines are being created. When disabled, pipelines are "
+    "created synchronously which causes stutter but no visual artifacts.",
+    "GPU");
+
+DEFINE_bool(
+    readback_resolve_half_pixel_offset, false,
+    "When resolution scaling is active, sample from the center of each scaled "
+    "pixel block during readback resolve instead of the top-left corner. May "
+    "improve image quality in some cases but can break games that rely on "
+    "reading back specific pixel values (e.g., for gamma detection).",
+    "GPU");
+
+DEFINE_bool(gpu_3d_to_2d_texture, true,
+            "Handle shaders that sample 3D textures as 2D by creating a 2D "
+            "texture from slice 0 of the guest memory.",
+            "GPU");
 
 DEFINE_int32(anisotropic_override, -1,
              "Forces anisotropic filtering (AF) for eligible textures.\n"
@@ -101,27 +210,13 @@ DEFINE_int32(anisotropic_override, -1,
              "  5 = Force 16x anisotropic filtering",
              "GPU");
 
-DEFINE_bool(no_discard_stencil_in_transfer_pipelines, false,
-            "Skip stencil bit discard in render target transfer pipelines. "
-            "May improve performance on some GPUs.",
-            "GPU");
-
-DEFINE_bool(gpu_3d_to_2d_texture, true,
-            "Handle shaders that sample 3D textures as 2D by creating a 2D "
-            "texture from slice 0 of the guest memory.",
-            "GPU");
-
-DEFINE_bool(
-    async_shader_compilation, true,
-    "Compile shaders and create pipelines asynchronously in background "
-    "threads. "
-    "Eliminates shader compilation stutter but may cause brief rendering "
-    "artifacts while pipelines are being created. When disabled, pipelines are "
-    "created synchronously which causes stutter but no visual artifacts.",
-    "GPU");
-
 DEFINE_bool(
     ac6_ground_fix, false,
     "This fixes(hide) issues with black ground in AC6. Use only in AC6. "
     "Might cause issues in other titles.",
     "HACKS");
+
+DEFINE_bool(use_fuzzy_alpha_epsilon, false,
+            "Use approximate compare for alpha values to prevent flickering on "
+            "NVIDIA graphics cards",
+            "GPU");

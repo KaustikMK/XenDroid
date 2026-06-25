@@ -476,11 +476,14 @@ private fun DrawScope.drawLabel(
             isFakeBoldText = bold
             this.color = android.graphics.Color.argb(
                 (color.alpha * 255).toInt(), 255, 255, 255)
-            textAlign = Paint.Align.CENTER
+            textAlign = Paint.Align.LEFT
             textSize = radius * 0.7f
         }
+        val bounds = android.graphics.Rect()
+        paint.getTextBounds(label, 0, label.length, bounds)
+        val opticalDx = if (label == "◀") -bounds.width() / 6f else 0f
         val fm = paint.fontMetrics
         val baseline = center.y - (fm.ascent + fm.descent) / 2f
-        canvas.nativeCanvas.drawText(label, center.x, baseline, paint)
+        canvas.nativeCanvas.drawText(label, center.x - bounds.exactCenterX() + opticalDx, baseline, paint)
     }
 }

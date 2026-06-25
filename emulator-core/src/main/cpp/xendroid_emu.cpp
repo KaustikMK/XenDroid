@@ -16,6 +16,7 @@
 #include <android/log.h>
 #include <jni.h>
 #include <array>
+#include <filesystem>
 #include <memory>
 #include <sys/prctl.h>
 
@@ -39,7 +40,6 @@
 #include "xe_android_input_driver.h"
 #include "xe_opensles_audio_system.h"
 #include "xe_aaudio_audio_system.h"
-#include "document_file.h"
 
 #include "xendroid_emu.h"
 //#include "nlohmann/json.hpp"
@@ -174,8 +174,13 @@ void AndroidWindowedAppContext::main_loop(){
 
         if(ev & EVENT_PAINT){
             EmulatorApp* app=reinterpret_cast<EmulatorApp*>(ae::g_windowed_app.get());
-            AndroidWindow* win=reinterpret_cast<AndroidWindow*>(app->emu_window.get());
-            win->Paint();
+            // emu_window is an EmulatorWindow, NOT an AndroidWindow -- the real
+            // ui::Window (the AndroidWindow that SetPresenter() was called on) is
+            // emu_window->window(). A reinterpret_cast here would read presenter_ at
+            // the wrong offset (latent UB), so go through emu_window->window().
+            AndroidWindow* win = app->emu_window
+                ? static_cast<AndroidWindow*>(app->emu_window->window()) : nullptr;
+            if(win) win->Paint();
         }
 
         if(ev & EVENT_QUIT){
@@ -190,7 +195,7 @@ void AndroidWindowedAppContext::main_loop(){
     // NotifyUILoopOfPendingFunctions / PlatformQuitFromUIThread so a synchronous
     // surface_detach (or any CallInUIThread) can't hang forever during teardown --
     // their closures were already drained by QuitFromUIThread or a prior iteration.
-    // (SP0 adversarial-review fix: quit-vs-detach lost wakeup.)
+    // (Guards against a lost wakeup when quit races a synchronous detach.)
     pthread_mutex_lock(&mutex);
     ui_loop_exited = true;
     exec_completed = exec_requested;
@@ -295,6 +300,15 @@ bool EmulatorApp::OnInitialize() {
     XELOGI("Storage root: {}", storage_root.c_str());
 
     config::SetupConfig(storage_root);
+
+    // Apply the per-game config overlay (config/<TITLEID>.config.toml) onto the live cvars, like
+    // desktop's launch path (xenia_main.cc). Must run after the global load and before any cvar is
+    // read; the present-mode force below runs after, so it still wins.
+    if (!cvars::target.empty()) {
+        std::string game_path = cvars::target;
+        config::LoadGameConfigForFile(
+            std::filesystem::absolute(std::filesystem::u8path(game_path)));
+    }
 
     // Android has no UI-thread paint pump that the kUIThreadOnRequest present mode
     // needs, so this must be true regardless of what the (possibly stale/edited)
@@ -429,6 +443,16 @@ void EmulatorApp::emu_thr_main() {
         app_context().RequestDeferredQuit();
         return;
     }
+    // XenDroid: edge split subsystem creation (audio/graphics/input) out of
+    // Setup() into SetupSubsystems(), which the desktop app (xenia_main.cc) runs
+    // at first title launch. Bring the subsystems up here, before wiring the
+    // presenter and launching the title -- otherwise graphics_system_ stays null
+    // and the first Vd* kernel call (e.g. VdSetGraphicsInterruptCallback) crashes.
+    if (XFAILED(result = emu->SetupSubsystems())) {
+        XELOGE("Failed to setup subsystems: {:08X}", result);
+        app_context().RequestDeferredQuit();
+        return;
+    }
     app_context().CallInUIThread(
             [this]() { emu_window->SetupGraphicsSystemPresenterPainting(); });
     const auto fs = emu->file_system();
@@ -538,10 +562,27 @@ void EmulatorApp::emu_thr_main() {
                     return debug_window_.get();
                 });
     }*/
+    emu->on_before_shutdown.AddListener([this]() {
+        // Mirror desktop xenia_main.cc:753 — null the persistent window's
+        // presenter BEFORE the graphics system (and its Presenter) is freed in
+        // Shutdown() (emulator.cc:212), so the EVENT_PAINT pump cannot paint
+        // through a dangling pointer. Must be synchronous: it has to complete
+        // before Shutdown() proceeds past on_before_shutdown() (emulator.cc:192).
+        XELOGI("on_before_shutdown[android]: tearing down presenter painting");
+        app_context().CallInUIThreadSynchronous(
+                [this]() { emu_window->ShutdownGraphicsSystemPresenterPainting(); });
+    });
 #if 1
     emu->on_launch.AddListener([&](auto title_id, const auto& game_title) {
         XELOGI("on_launch {}",
                game_title.empty() ? "Unknown Title" : std::string(game_title));
+        // Mirror desktop xenia_main.cc:722-731 — re-bind the presenter to the
+        // persistent ANativeWindow after a new graphics system is built (first
+        // boot OR in-process relaunch). Async mirrors the boot path (:448-449);
+        // the synchronous on_before_shutdown teardown already left the window
+        // presenter-less, so paint ticks before the re-bind are safe no-ops.
+        app_context().CallInUIThread(
+                [this]() { emu_window->SetupGraphicsSystemPresenterPainting(); });
         app_context().CallInUIThread([this]() { emu_window->UpdateTitle(); });
         emu_thr_event->Set();
     });
@@ -595,42 +636,13 @@ void EmulatorApp::emu_thr_main() {
     }
 
     if (!path.empty()) {
-        jclass uri_class = env->FindClass("android/net/Uri");
-        jmethodID parse_method = env->GetStaticMethodID(uri_class, "parse", "(Ljava/lang/String;)Landroid/net/Uri;");
-        jstring uri_string = env->NewStringUTF(path.c_str());
-        jobject uri = env->CallStaticObjectMethod(uri_class, parse_method, uri_string);
-
-        std::unique_ptr<DocumentFile> file =
-                DocumentFile::find(g_jvm,uri);
-
-        std::string name = file->getName();
-
-
-        if(name.ends_with(".xex")){
-            result = app_context().CallInUIThread(
-                    [this, &file]() { return emu->LaunchXexFile(std::move(file)); });
-        }
-        else if(name.ends_with(".iso")){
-            result = app_context().CallInUIThread(
-                    [this, &file]() { return emu->LaunchDiscImage(std::move(file)); });
-        }
-        else if(name.ends_with(".zar")){
-            result = app_context().CallInUIThread(
-                    [this, &file]() { return emu->LaunchDiscArchive(std::move(file)); });
-        }
-        else{
-            std::string data_dir = path+".data";
-            jstring data_dir_str = env->NewStringUTF(data_dir.c_str());
-            jobject data_dir_uri = env->CallStaticObjectMethod(uri_class, parse_method, data_dir_str);
-
-            std::unique_ptr<DocumentFile> data_dir_file =
-                    DocumentFile::find(g_jvm,data_dir_uri);
-            result = app_context().CallInUIThread(
-                    [this, &file,&data_dir_file]() { return emu->LaunchStfsContainer(std::move(file), std::move(data_dir_file)); });
-        }
-
-        /*result = emu->LaunchPath(abs_path);*//*app_context().CallInUIThread(
-                [this, abs_path]() { return emu_window->RunTitle(abs_path); });*/
+        // Real-path mode (All Files Access): `path` is an absolute host path.
+        // LaunchPath does GetFileSignature + MountPath + the correct real-path
+        // Launch* overload by extension, and stashes last_launch_path_ for
+        // relaunch.
+        std::filesystem::path abs = std::filesystem::u8path(path);
+        result = app_context().CallInUIThread(
+                [this, abs]() { return emu->LaunchPath(abs); });
 
         if (XFAILED(result)) {
             xe::FatalError(fmt::format("Failed to launch target: {:08X}", result));
@@ -643,8 +655,8 @@ void EmulatorApp::emu_thr_main() {
             "xam.xex");
 
     if (xam) {
-        xam->LoadLoaderData();
-
+        // XenDroid: edge removed XamModule::LoadLoaderData(); loader_data_ is now populated
+        // directly by the xam content/launch handlers (see xam_content.cc).
         if (xam->loader_data().launch_data_present) {
             const std::filesystem::path host_path = xam->loader_data().host_path;
             app_context().CallInUIThread([this, host_path]() {
@@ -675,7 +687,6 @@ namespace ae{
 
     std::string boot_game_path;
     int boot_game_fd;
-    std::string boot_game_uri;
 
     ANativeWindow* window;
     int window_width;
@@ -741,7 +752,9 @@ namespace ae{
         for(auto& i:g_launch_args){
             args.push_back((char*)i.c_str());
         }
-        static std::string boot_target=std::string("--target=")+ae::boot_game_uri;
+        // Real-path mode (All Files Access) feeds an absolute host path to the
+        // target cvar parser.
+        static std::string boot_target=std::string("--target=")+ae::boot_game_path;
         args.push_back((char*)boot_target.c_str());
 
         int argc=args.size();
@@ -759,7 +772,7 @@ namespace ae{
     void key_event(int key_code,bool pressed,int value){
         static const bool is_android=cvars::hid=="android";
         if(is_android){
-            xe::hid::android::AndroidInputDriver* driver=reinterpret_cast<xe::hid::android::AndroidInputDriver*>(g_windowed_app_ref->emu->input_system()->drivers_[0].get());
+            xe::hid::android::AndroidInputDriver* driver=reinterpret_cast<xe::hid::android::AndroidInputDriver*>(g_windowed_app_ref->emu->input_system()->driver(0));
             driver->OnKey(key_code,pressed,value);
         }
     }
@@ -773,8 +786,8 @@ namespace ae{
         if(!e) return;
         xe::gpu::GraphicsSystem* gs = e->graphics_system();
         if(!gs) return;
-        // TODO(rebase): re-enable once the persistent VkPipelineCache opt is
-        // re-grafted onto the upstream baseline (FlushPipelineCache was deferred).
+        // TODO: re-enable once the persistent VkPipelineCache flush is available
+        // (GraphicsSystem::FlushPipelineCache is not present on this baseline).
         // gs->FlushPipelineCache(/*timeout_ms=*/1500);
         (void)gs;
     }
@@ -787,8 +800,8 @@ namespace ae{
         // idempotent and blocks internally on the audio pause_fence_ + the GPU-worker
         // fence; the only requirement is the caller is not the audio worker, the GPU
         // worker, or a guest XThread -- the main thread satisfies all three. Do NOT
-        // marshal via CallInUIThread (that is the SP0 surface path; redundant + would
-        // stall the paint pump). g_windowed_app_ref->emu is null until the detached
+        // marshal via CallInUIThread (that is the surface-marshaling path; redundant +
+        // would stall the paint pump). g_windowed_app_ref->emu is null until the detached
         // boot thread populates it, so guard exactly like is_paused()/is_running().
         if(g_windowed_app_ref && g_windowed_app_ref->emu)
             g_windowed_app_ref->emu->Pause();
@@ -813,8 +826,10 @@ namespace ae{
         // fork's CallInUIThread is synchronous via the pump). Only after the
         // GPU drain + vkDestroySurfaceKHR is it safe to release the window.
         if(g_app_context && g_windowed_app_ref){
-            AndroidWindow* win =
-                reinterpret_cast<AndroidWindow*>(g_windowed_app_ref->emu_window.get());
+            // The real AndroidWindow is emu_window->window() (emu_window is an
+            // EmulatorWindow, not an AndroidWindow). See the EVENT_PAINT note above.
+            AndroidWindow* win = g_windowed_app_ref->emu_window
+                ? static_cast<AndroidWindow*>(g_windowed_app_ref->emu_window->window()) : nullptr;
             if(win){
                 XELOGI("ae::surface_detach: marshalling DetachSurface to main_thr");
                 g_app_context->CallInUIThread([win]{ win->DetachSurface(); });
@@ -849,8 +864,10 @@ namespace ae{
         // SetupGraphicsSystemPresenterPainting. Post-boot: marshal a recreate
         // (async is fine -- the new swapchain comes up on the next paint tick).
         if(!g_app_context || !g_windowed_app_ref) return;
-        AndroidWindow* win =
-            reinterpret_cast<AndroidWindow*>(g_windowed_app_ref->emu_window.get());
+        // The real AndroidWindow is emu_window->window() (emu_window is an
+        // EmulatorWindow, not an AndroidWindow). See the EVENT_PAINT note above.
+        AndroidWindow* win = g_windowed_app_ref->emu_window
+            ? static_cast<AndroidWindow*>(g_windowed_app_ref->emu_window->window()) : nullptr;
         if(!win) return;
         XELOGI("ae::surface_attach: marshalling UpdateSurface to main_thr");
         g_app_context->CallInUIThread([win]{ win->UpdateSurface(); });
@@ -860,8 +877,8 @@ namespace ae{
         std::lock_guard<std::mutex> lk(window_mutex);
         window_width = width;
         window_height = height;
-        // SP0: size is re-queried from the live ANativeWindow on swapchain
-        // recreate, so no separate resize marshal is needed here (spec OQ3).
+        // Size is re-queried from the live ANativeWindow on swapchain recreate,
+        // so no separate resize marshal is needed here.
     }
 
 }

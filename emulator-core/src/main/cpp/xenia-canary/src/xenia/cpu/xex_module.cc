@@ -25,6 +25,7 @@
 #include "xenia/emulator.h"
 #include "xenia/kernel/kernel_state.h"
 #include "xenia/kernel/user_module.h"
+#include "xenia/kernel/util/xex2_util.h"
 #include "xenia/kernel/xmodule.h"
 
 #include "third_party/crypto/TinySHA1.hpp"
@@ -93,37 +94,7 @@ XexModule::~XexModule() {}
 
 bool XexModule::GetOptHeader(const xex2_header* header, xex2_header_keys key,
                              void** out_ptr) {
-  assert_not_null(header);
-  assert_not_null(out_ptr);
-
-  for (uint32_t i = 0; i < header->header_count; i++) {
-    const xex2_opt_header& opt_header = header->headers[i];
-    if (opt_header.key == key) {
-      // Match!
-      switch (key & 0xFF) {
-        case 0x00: {
-          // We just return the value of the optional header.
-          // Assume that the output pointer points to a uint32_t.
-          *reinterpret_cast<uint32_t*>(out_ptr) =
-              static_cast<uint32_t>(opt_header.value);
-        } break;
-        case 0x01: {
-          // Pointer to the value on the optional header.
-          *out_ptr = const_cast<void*>(
-              reinterpret_cast<const void*>(&opt_header.value));
-        } break;
-        default: {
-          // Pointer to the header.
-          *out_ptr =
-              reinterpret_cast<void*>(uintptr_t(header) + opt_header.offset);
-        } break;
-      }
-
-      return true;
-    }
-  }
-
-  return false;
+  return xe::GetXexOptHeader(header, key, out_ptr);
 }
 
 bool XexModule::GetOptHeader(xex2_header_keys key, void** out_ptr) const {
@@ -1087,10 +1058,9 @@ bool XexModule::LoadContinue() {
     }
   }
 
-  // Disable write protection if plugins are enabled
-  if (cvars::allow_plugins && !cvars::writable_code_segments) {
-    OVERRIDE_bool(writable_code_segments, true);
-  }
+  // Plugins need writable code segments to patch the game in place.
+  const bool writable_code_segments =
+      cvars::writable_code_segments || cvars::allow_plugins;
 
   // Setup memory protection.
   for (uint32_t i = 0, page = 0; i < sec_header->page_descriptor_count; i++) {
@@ -1104,7 +1074,7 @@ bool XexModule::LoadContinue() {
       case XEX_SECTION_CODE:
       case XEX_SECTION_READONLY_DATA:
         heap->Protect(address, size,
-                      cvars::writable_code_segments
+                      writable_code_segments
                           ? kMemoryProtectRead | kMemoryProtectWrite
                           : kMemoryProtectRead);
         break;

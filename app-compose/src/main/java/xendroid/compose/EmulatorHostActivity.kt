@@ -1,18 +1,24 @@
 package xendroid.compose
 
+import android.os.Build
 import android.os.Bundle
+import android.os.Environment
+import android.os.Handler
+import android.os.Looper
+import android.os.Process
 import android.util.Log
 import android.view.InputDevice
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.SurfaceHolder
 import android.view.SurfaceView
-import android.view.WindowManager
 import androidx.activity.ComponentActivity
-import androidx.documentfile.provider.DocumentFile
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
+import xendroid.compose.core.EmuProcessLink
 import xendroid.compose.core.EmulatorRuntime
 import xendroid.compose.core.EmulatorSession
-import xendroid.compose.data.PreferencesStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.firstOrNull
@@ -20,8 +26,6 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import androidx.lifecycle.lifecycleScope
-import android.net.Uri
-import android.content.Intent
 import android.content.res.Configuration
 import android.widget.Toast
 import android.os.VibrationEffect
@@ -80,11 +84,15 @@ class EmulatorHostActivity : ComponentActivity(), SurfaceHolder.Callback {
         private const val KC_RTHUMB_LEFT = 20; private const val KC_RTHUMB_UP = 21
         private const val KC_RTHUMB_RIGHT = 22; private const val KC_RTHUMB_DOWN = 23
         private const val KEY_VALUE_UNUSED = -1
+        private const val FOCUS_PAUSE_DEBOUNCE_MS = 250L
     }
 
     private val session = EmulatorSession()
     private var surfaceView: SurfaceView? = null
     private var started = false          // surface-callback boot guard (mirrors legacy)
+
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private val pauseOnFocusLost = Runnable { if (session.booted) session.pause() }
 
     // SP4 on-screen touch gamepad.
     private val gamepad by lazy { GamepadController(applicationContext) }
@@ -103,12 +111,13 @@ class EmulatorHostActivity : ComponentActivity(), SurfaceHolder.Callback {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // Fullscreen: legacy uses NoTitleBar.Fullscreen; keep the swapchain owning the
-        // whole window. (Theme is also fullscreen; this is belt-and-braces immersive.)
-        window.setFlags(
-            WindowManager.LayoutParams.FLAG_FULLSCREEN,
-            WindowManager.LayoutParams.FLAG_FULLSCREEN,
-        )
+        // Immersive fullscreen: hide BOTH system bars. The legacy FLAG_FULLSCREEN
+        // only hid the status bar, leaving the nav buttons overlaid on the game.
+        enterImmersiveMode()
+
+        // Tie this :emu process to the main process: self-kill if the launcher dies
+        // (crash / OOM / swipe). Android does not kill this sibling process for us.
+        intent?.let { EmuProcessLink.bindToMainProcessDeath(it) }
 
         val gameUri = intent?.getStringExtra(EXTRA_GAME_URI)
         if (gameUri.isNullOrEmpty()) {
@@ -120,50 +129,57 @@ class EmulatorHostActivity : ComponentActivity(), SurfaceHolder.Callback {
             finish(); return
         }
 
-        // PRE-surface native setup is async ONLY to (a) ensureLoaded() off-main on
-        // delay-load devices and (b) read the persisted tree uri from DataStore. The
-        // actual native setup_* calls are marshaled back to the main thread.
+        // Real-path (All Files Access) launch: the launch Intent carries an ABSOLUTE host
+        // path in the EXTRA_GAME_URI extra (real-path is the only library mode).
+
+        // PRE-surface native setup is async ONLY to ensureLoaded() off-main on delay-load
+        // devices; the actual native setup_* calls are marshaled back to the main thread.
         lifecycleScope.launch {
             val store = KeymapStore(applicationContext)
-            val (loadedMap, treeUri) = withContext(Dispatchers.IO) {
+            keyMap = withContext(Dispatchers.IO) {
                 EmulatorRuntime.ensureLoaded()            // idempotent; lazy on Adreno 5xx/6xx
-                Pair(
-                    store.androidToGameKey.firstOrNull()
-                        ?: GameButtons.DEFAULT_LOOKUP,
-                    readGameDirTreeUri(),
-                )
+                store.androidToGameKey.firstOrNull() ?: GameButtons.DEFAULT_LOOKUP
             }
-            keyMap = loadedMap
             // FPS overlay gate: SP2 settings live in the native TOML Config (NOT
             // SharedPreferences). Read the Display|show_debug_overlay boolean off-main
             // via ConfigStore so the existing settings toggle drives overlay visibility.
             showFpsOverlay.value = withContext(Dispatchers.IO) { readShowDebugOverlay() }
-            if (treeUri == null) {
+
+            // Guard on the LIVE All Files Access grant (revoked-in-Settings while away =>
+            // fail cleanly instead of booting against a path we can no longer read).
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R ||
+                !Environment.isExternalStorageManager()) {
                 Toast.makeText(this@EmulatorHostActivity,
-                    "Game folder not set; open the library first", Toast.LENGTH_LONG).show()
+                    "All Files Access not granted; open the library first",
+                    Toast.LENGTH_LONG).show()
                 finish(); return@launch
             }
-            // Re-take the persistable read grant on the tree uri (the core opens game
-            // files through this Context's ContentResolver).
-            runCatching {
-                contentResolver.takePersistableUriPermission(
-                    treeUri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            }
-            val tree = DocumentFile.fromTreeUri(this@EmulatorHostActivity, treeUri)
-            if (tree == null) {
-                Toast.makeText(this@EmulatorHostActivity,
-                    "Game folder access lost", Toast.LENGTH_LONG).show()
-                finish(); return@launch
-            }
-            prepareNative(gameUri, tree)                  // back on main (lifecycleScope = Main)
+            prepareNativeRealPath(gameUri)                // back on main (lifecycleScope = Main)
             installSurfaceView()
         }
     }
 
-    /** Reads the SP1-B persisted tree uri (DataStore "xendroid_prefs", key "game_dir"). */
-    private suspend fun readGameDirTreeUri(): Uri? {
-        val s = PreferencesStore(applicationContext).gameDirUri.firstOrNull() ?: return null
-        return Uri.parse(s)
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) {
+            mainHandler.removeCallbacks(pauseOnFocusLost)
+            enterImmersiveMode()
+            if (session.booted && !menuOpenState.value) session.resumeIfPaused()
+        } else {
+            mainHandler.removeCallbacks(pauseOnFocusLost)
+            mainHandler.postDelayed(pauseOnFocusLost, FOCUS_PAUSE_DEBOUNCE_MS)
+        }
+    }
+
+    /** Edge-to-edge immersive: hides the status AND navigation bars, with the
+     *  bars swipe-to-reveal transiently. */
+    private fun enterImmersiveMode() {
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        WindowInsetsControllerCompat(window, window.decorView).apply {
+            systemBarsBehavior =
+                WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            hide(WindowInsetsCompat.Type.systemBars())
+        }
     }
 
     /** Reads Display|show_debug_overlay from the live native TOML config (SP2 store, not
@@ -179,11 +195,13 @@ class EmulatorHostActivity : ComponentActivity(), SurfaceHolder.Callback {
         }
     }.getOrDefault(false)
 
-    /** The exact legacy PRE-surface order (EmulatorActivity.on_create:83-93). */
-    private fun prepareNative(gameUri: String, tree: DocumentFile) {
+    /** Real-path (All Files Access) PRE-surface setup: setupContext -> setupGamePathReal
+     *  (String setup_game_path overload => native BOOT_TYPE_WITH_PATH / Emulator::LaunchPath,
+     *  mounting the right real-path device by extension) -> launch args -> uri info list.
+     *  [absPath] is an absolute host path. */
+    private fun prepareNativeRealPath(absPath: String) {
         session.setupContext(this)
-        session.setupDocumentFileTree(tree)
-        session.setupGamePath(gameUri)
+        session.setupGamePathReal(absPath)
         session.setupLaunchArgs(arrayOf(
             "--storage_root=" + Utils.get_storage_root_path(),
             "--config=" + Application.get_global_config_file().absolutePath,
@@ -336,6 +354,7 @@ class EmulatorHostActivity : ComponentActivity(), SurfaceHolder.Callback {
         // stop during the boot splash is a no-op, matching the keyEvent !booted guard.
         // Ordering: onPause(flushGpuCaches) -> onStop(pause) -> surfaceDestroyed(detach);
         // pausing BEFORE the swapchain teardown means no guest/GPU frames race the drain.
+        mainHandler.removeCallbacks(pauseOnFocusLost)
         if (session.booted) session.pause()
     }
 
@@ -351,7 +370,10 @@ class EmulatorHostActivity : ComponentActivity(), SurfaceHolder.Callback {
 
     override fun onDestroy() {
         super.onDestroy()
-        System.exit(0)                                    // hard-kill :emu (single-shot core)
+        // Hard-kill via SIGKILL (single-shot core). killProcess skips the C++ atexit
+        // static-destructor path that System.exit(0) ran, which can deadlock joining a
+        // paused audio worker and wedge :emu instead of closing it.
+        Process.killProcess(Process.myPid())
     }
 
     // ---- Hardware input -> session.keyEvent ----

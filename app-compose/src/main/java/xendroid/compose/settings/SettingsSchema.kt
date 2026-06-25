@@ -14,12 +14,12 @@ object SettingsSchema {
 
         SettingsCategory("Vulkan", listOf(
             b("Vulkan", "vulkan_sparse_shared_memory", "Sparse shared memory", true),
-            b("Vulkan", "vulkan_log_debug_messages", "Log debug messages", true),
+            b("Vulkan", "vulkan_log_debug_messages", "Log debug messages", false),
             b("Vulkan", "vulkan_validation", "Validation layers", false),
             b("Vulkan", "vulkan_allow_present_mode_immediate", "Allow present mode: immediate", true),
             b("Vulkan", "vulkan_allow_present_mode_mailbox", "Allow present mode: mailbox", true),
             b("Vulkan", "vulkan_allow_present_mode_fifo_relaxed", "Allow present mode: FIFO relaxed", true),
-            b("Vulkan", "vulkan_async_skip_draws", "Async skip draws", false),
+            b("Vulkan", "vulkan_async_skip_draws", "Async skip draws", true),
             b("Vulkan", "vulkan_extended_dynamic_state3_blend", "EDS3: blend", true),
             b("Vulkan", "vulkan_extended_dynamic_state3_topology", "EDS3: topology", true),
             // Numeric thread count (0 = synchronous, 1..5 = explicit) -> a slider, not a
@@ -28,6 +28,17 @@ object SettingsSchema {
             i("Vulkan", "vulkan_pipeline_creation_threads", "Pipeline creation threads", 4, 0, 5),
             Action("Vulkan", "vulkan_lib_path", "Custom Vulkan driver", ""),
             b("Vulkan", "adrenotools_force_max_clocks", "Force max GPU clocks (adrenotools)", false),
+            // TU_DEBUG flags for the Turnip (Mesa freedreno) driver. Empty = driver default
+            // (GMEM/tiled, fast); 'sysmem' forces untiled rendering (much slower) but avoids a
+            // class of Adreno GPU hangs. Applied at vkCreateInstance, so it takes effect on the
+            // next game launch.
+            l("Vulkan", "turnip_debug", "Turnip debug mode", "",
+                "" to "None (no TU_DEBUG flags, GMEM)", "sysmem" to "sysmem (untiled, slower)"),
+            // Cross-draw texture/sampler descriptor-set reuse (perf). Master toggle gates reuse
+            // on/off; the edge toggle (only when reuse is on) picks edge's bitmask gate vs
+            // XenDroid's content-hash gate for A/B. Three-way: off / on+hash / on+edge.
+            b("Vulkan", "vulkan_cache_texture_descriptors", "Cache texture descriptors", true),
+            b("Vulkan", "vulkan_texture_descriptor_reuse_edge", "Texture descriptor gate: edge (off = hash)", false),
         )),
 
         SettingsCategory("Video", listOf(
@@ -51,7 +62,7 @@ object SettingsSchema {
 
         SettingsCategory("UI", listOf(
             b("UI", "show_profiler", "Show profiler", false),
-            b("UI", "show_achievement_notification", "Show achievement notification", false),
+            b("UI", "show_achievement_notification", "Show achievement notification", true),
             b("UI", "profiler_dpi_scaling", "Profiler DPI scaling", false),
             b("UI", "storage_selection_dialog", "Storage selection dialog", false),
             b("UI", "headless", "Headless", true),
@@ -116,16 +127,35 @@ object SettingsSchema {
         )),
 
         SettingsCategory("GPU", listOf(
-            b("GPU", "vsync", "VSync", true),
+            b("GPU", "guest_display_refresh_cap", "Cap guest display refresh (VSync)", true),
             b("GPU", "store_shaders", "Store shaders", true),
             b("GPU", "resolve_resolution_scale_fill_half_pixel_offset", "Resolve scale: fill half-pixel offset", true),
-            b("GPU", "readback_resolve", "Readback resolve", false),
+            // readback_resolve is a STRING cvar (NOT a bool): CPU readback of render-to-texture
+            // resolve results. fast=copy every frame (cvar default); some=skip copy on cache hit;
+            // full=wait for GPU (accurate but a GPU-CPU sync stall); none=disable readback (some
+            // games render better without it, and it avoids the stall).
+            l("GPU", "readback_resolve", "Readback resolve", "fast",
+                "fast" to "Fast (copy every frame)", "some" to "Some (skip copy on cache hit)",
+                "full" to "Full (wait for GPU, slow)", "none" to "None (disabled)"),
+            // How guest occlusion queries (PM4 EVENT_WRITE_ZPD) are serviced. 'fake' fabricates a
+            // result with zero GPU-query overhead (fastest; some effects e.g. lens flares may look
+            // slightly wrong); 'fast'/'fast-alt' issue real async Vulkan queries without stalling;
+            // 'strict' issues a real query and stalls the command thread until the GPU answers (most
+            // accurate, slowest). Live (SetZPDMode) -- takes effect without relaunch.
+            l("GPU", "occlusion_query", "Occlusion query mode", "fast",
+                "fake" to "Fake (no GPU query, fastest)", "fast" to "Fast (async query, no stall)",
+                "fast-alt" to "Fast-alt (async, precise zeros)", "strict" to "Strict (real query, stalls)"),
+            // Mid-frame command-buffer split: if >0, end+submit every N real draws so the GPU
+            // overlaps rendering with CPU command-building instead of idling until swap. 0 = one
+            // submission per frame (off). ~half the per-frame draw count is a good start; too-small
+            // values hurt tiled GPUs.
+            i("GPU", "vulkan_mid_frame_submission_draws", "Mid-frame submission (draws, 0=off)", 0, 0, 4096),
             b("GPU", "snorm16_render_target_full_range", "snorm16 render target full range", true),
             // min == the real TOML default (384); a higher floor would silently coerce the default up.
             i("GPU", "texture_cache_memory_limit_soft", "Texture cache soft limit (MB)", 384, 384, 4096),
             b("GPU", "native_2x_msaa", "Native 2x MSAA", true),
-            l("GPU", "render_target_path_vulkan", "Render target path (Vulkan)", "",
-                "any" to "any", "fbo" to "fbo", "fsi" to "fsi"),  // "" => any/FB
+            l("GPU", "render_target_path", "Render target path", "performance",
+                "performance" to "performance", "accuracy" to "accuracy"),
             b("GPU", "half_pixel_offset", "Half-pixel offset", true),
             b("GPU", "log_ringbuffer_kickoff_initiator_bts", "Log ringbuffer kickoff initiator BTs", false),
             i("GPU", "texture_cache_memory_limit_hard", "Texture cache hard limit (MB)", 768, 512, 4096),
@@ -203,7 +233,8 @@ object SettingsSchema {
             b("APU", "mute", "Mute", false),
             i("APU", "apu_max_queued_frames", "Max queued frames", 8, 4, 64),
             b("APU", "enable_xmp", "Enable XMP", true),
-            b("APU", "use_new_decoder", "Use new decoder", false),
+            l("APU", "xma_decoder", "XMA decoder", "new",
+                "new" to "new", "old" to "old", "master" to "master", "fake" to "fake"),
             b("APU", "use_dedicated_xma_thread", "Use dedicated XMA thread", true),
             l("APU", "apu", "APU backend", "aaudio",
                 "nop" to "nop", "aaudio" to "aaudio", "opensles" to "opensles"),

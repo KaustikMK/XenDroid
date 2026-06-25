@@ -11,6 +11,15 @@
 
 #include "xenia/base/logging.h"
 
+#include <asio.hpp>
+
+struct XONLINE_SERVICE_INFO {
+  xe::be<uint32_t> id;
+  in_addr ip;
+  xe::be<uint16_t> port;
+  xe::be<uint16_t> reserved;
+};
+
 namespace xe {
 namespace kernel {
 namespace xam {
@@ -96,6 +105,28 @@ X_HRESULT XLiveBaseApp::DispatchMessageSync(uint32_t message,
       // Doesn't seem to set anything in the given buffer, probably only takes
       // input
       XELOGD("XLiveBaseUnk58046({:08X}, {:08X}) unimplemented", buffer_ptr,
+             buffer_length);
+      return X_E_SUCCESS;
+    }
+    case 0x00058017: {
+      XELOGD("UserFindUsers({:08X}, {:08X})", buffer_ptr, buffer_length);
+      return X_E_SUCCESS;
+    }
+    case 0x00058035: {
+      // Fixes Xbox Live error for 513107D9
+      // Required for 534507D4
+      XELOGD("XLiveBaseUnk58035({:08X}, {:08X}) unimplemented", buffer_ptr,
+             buffer_length);
+      return X_E_SUCCESS;
+    }
+    case 0x00050036: {
+      XELOGD("XOnlineQuerySearch({:08X}, {:08X}) unimplemented", buffer_ptr,
+             buffer_length);
+      return X_E_SUCCESS;
+    }
+    case 0x00050009: {
+      // Fixes Xbox Live error for 513107D9
+      XELOGD("XLiveBaseUnk50009({:08X}, {:08X}) unimplemented", buffer_ptr,
              buffer_length);
       return X_E_SUCCESS;
     }

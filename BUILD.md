@@ -61,6 +61,17 @@ sdkmanager "platform-tools" "platforms;android-35" "ndk;27.2.12479018" "cmake;3.
 
 ## First-time setup
 
+0. **Initialize the xenia third_party submodules.** As of the xenia-edge rebase,
+   `emulator-core/src/main/cpp/xenia-canary/third_party/` is a set of **git
+   submodules** (matching upstream edge) rather than vendored files. Populate them
+   before building:
+   ```bash
+   git submodule update --init --recursive
+   ```
+   A fresh clone needs `git clone --recurse-submodules`, or this command afterwards.
+   (Submodule paths are declared in the repo-root `.gitmodules`, prefixed with
+   `emulator-core/src/main/cpp/xenia-canary/`.)
+
 1. Copy the example config and edit the paths:
 
    ```bash

@@ -15,11 +15,12 @@ enum class GameFormat {
     }
 
     /** Native title-id format code (MUST match the enum in emulator_xendroid.cpp).
-     *  null for formats with no boot-free reader via title_id_from_uri. */
+     *  null for formats with no boot-free reader via title_id_from_path. */
     val titleIdCode: Int? get() = when (this) {
         ISO -> 0
         XEX_FOLDER -> 1
-        GOD, ZAR -> null   // GOD uses its own GameInfo reader; ZAR unsupported
+        ZAR -> 2           // mounts the .zar disc + reads default.xex's XDBF
+        GOD -> null        // GOD uses its own GameInfo reader
     }
 
     companion object {

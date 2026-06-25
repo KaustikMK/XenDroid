@@ -151,6 +151,13 @@ AudioMediaPlayer::AudioMediaPlayer(apu::AudioSystem* audio_system,
 
 AudioMediaPlayer::~AudioMediaPlayer() {
   Stop();
+  // Thread::reset() only closes the handle; must wait for the worker to exit.
+  worker_running_ = false;
+  resume_fence_.Signal();
+  if (worker_thread_) {
+    xe::threading::Wait(worker_thread_.get(), false);
+    worker_thread_.reset();
+  }
   DeleteDriver();
 };
 
@@ -539,6 +546,7 @@ bool AudioMediaPlayer::SetupDriver(uint32_t sample_rate, uint32_t channels) {
 
   driver_ = std::unique_ptr<AudioDriver>(audio_system_->CreateDriver(
       driver_semaphore_.get(), sample_rate, channels, false));
+
   if (!driver_) {
     driver_semaphore_.reset();
     return false;

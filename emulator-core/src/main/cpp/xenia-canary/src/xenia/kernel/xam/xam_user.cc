@@ -21,8 +21,9 @@
 
 #include "third_party/stb/stb_image.h"
 
-DECLARE_int32(user_language);
-DECLARE_int32(user_country);
+#include "xenia/kernel/xconfig.h"
+
+enum X_USER_AGE_GROUP : uint32_t { CHILD, TEEN, ADULT };
 
 namespace xe {
 namespace kernel {
@@ -578,6 +579,39 @@ dword_result_t XamUserAreUsersFriends_entry(
 }
 DECLARE_XAM_EXPORT1(XamUserAreUsersFriends, kUserProfiles, kSketchy);
 
+dword_result_t XamUserGetAgeGroup_entry(
+    dword_t user_index, lpdword_t age_ptr,
+    pointer_t<XAM_OVERLAPPED> overlapped_ptr) {
+  if (!age_ptr) {
+    return X_ERROR_INVALID_PARAMETER;
+  }
+
+  if (!kernel_state()->xam_state()->IsUserSignedIn(user_index)) {
+    return X_ERROR_NO_SUCH_USER;
+  }
+
+  auto run = [user_index, age_ptr, overlapped_ptr](
+                 uint32_t& extended_error, uint32_t& length) -> X_RESULT {
+    X_RESULT result = X_ERROR_SUCCESS;
+
+    *age_ptr = X_USER_AGE_GROUP::ADULT;
+
+    extended_error = X_HRESULT_FROM_WIN32(result);
+    length = 0;
+
+    return result;
+  };
+
+  if (!overlapped_ptr) {
+    uint32_t extended_error, length;
+    return run(extended_error, length);
+  } else {
+    kernel_state()->CompleteOverlappedDeferredEx(run, overlapped_ptr);
+    return X_ERROR_IO_PENDING;
+  }
+}
+DECLARE_XAM_EXPORT1(XamUserGetAgeGroup, kUserProfiles, kImplemented);
+
 dword_result_t XamUserCreateAchievementEnumerator_entry(
     dword_t title_id, dword_t user_index, qword_t xuid, dword_t flags,
     dword_t offset, dword_t count, lpdword_t buffer_size_ptr,
@@ -698,7 +732,7 @@ dword_result_t XamReadTile_entry(dword_t tile_type, dword_t title_id,
                                  qword_t item_id, dword_t user_index,
                                  lpdword_t output_ptr,
                                  lpdword_t buffer_size_ptr,
-                                 lpvoid_t overlapped_ptr) {
+                                 pointer_t<XAM_OVERLAPPED> overlapped_ptr) {
   auto user = kernel_state()->xam_state()->GetUserProfile(user_index);
   if (!user) {
     user = kernel_state()->xam_state()->GetUserProfile(item_id);
@@ -750,9 +784,10 @@ dword_result_t XamReadTileEx_entry(dword_t tile_type, dword_t game_id,
                                    qword_t item_id, dword_t offset,
                                    dword_t unk1, dword_t unk2,
                                    lpdword_t output_ptr,
-                                   lpdword_t buffer_size_ptr) {
+                                   lpdword_t buffer_size_ptr,
+                                   pointer_t<XAM_OVERLAPPED> overlapped_ptr) {
   return XamReadTile_entry(tile_type, game_id, item_id, offset, output_ptr,
-                           buffer_size_ptr, 0);
+                           buffer_size_ptr, overlapped_ptr);
 }
 DECLARE_XAM_EXPORT1(XamReadTileEx, kUserProfiles, kSketchy);
 

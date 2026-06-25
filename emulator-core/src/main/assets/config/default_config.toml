@@ -5,7 +5,6 @@ enable_xmp = true                                 	# Enables Music Player playba
 ffmpeg_verbose = false                            	# Verbose FFmpeg output (debug and above)
 mute = false                                      	# Mutes all audio output.
 use_dedicated_xma_thread = true                   	# Enables XMA decoding on separate thread. Disabled should produce better results, but decrease performance a bit.
-use_new_decoder = false                           	# Enables usage of new experimental XMA audio decoder.
 xma_decoder = "new"                               	# Decoder version used to process XMA audio. Use: [fake, master, old, new]. 'old' has an edge-case stall on some streams; 'new' is the maintained default.
 xmp_default_volume = 70                           	# Default music volume if game doesn't set it [0-100].
 
@@ -100,7 +99,7 @@ present_safe_area_y = 90                          	# Percentage of the image hei
 
 
 [GPU]
-clear_memory_page_state = false                   	# Refresh state of memory pages to enable gpu written data. (Use for 'Team Ninja' Games to fix missing character models)
+clear_memory_page_state = true                    	# Refresh state of memory pages to enable gpu written data. (Use for 'Team Ninja' Games to fix missing character models)
 depth_float24_convert_in_pixel_shader = false     	# Whether to convert the depth values to 24-bit floating-point (20e4) from the host precision (32-bit floating point) directly in the pixel shaders of guest draws when using a host depth buffer.
                                                   	# This prevents visual artifacts (interleaved stripes of parts of surfaces rendered and parts not rendered, having either the same width in case of the "greater or equal" depth test function, or the former being much thinner than the latter with the "equal" function) if the full host precision depth data is lost.
                                                   	# This issue may happen if the game reloads the depth data previously evicted from the EDRAM to the RAM back to the EDRAM, but the EDRAM region that previously contained that depth buffer was overwritten by another depth buffer, or the game loads it to a different location in the EDRAM than it was previously placed at, thus Xenia is unable to restore the depth data with the original precision, and instead falls back to converting the lower-precision values, so in subsequent rendering passes for the same geometry, the actual depth values of the surfaces don't match those stored in the depth buffer anymore.
@@ -178,23 +177,25 @@ primitive_processor_cache_min_indices = 4096      	# Smallest number of guest in
                                                   	# Setting this to a very high value may result in excessive CPU processing, while a very low value may result in excessive locking and lookups.
                                                   	# Negative values disable caching.
 
+occlusion_query = 'fast'  # Guest occlusion-query (EVENT_WRITE_ZPD) mode: fake|fast|fast-alt|strict. 'fake' fabricates the result with zero GPU-query overhead (fastest; some effects e.g. lens flares may look slightly off); 'fast' issues real async queries without stalling. Seeded here so the value persists in the live config (it was absent, so SaveConfig kept reseeding it to the cvar default 'fast').
+vulkan_mid_frame_submission_draws = 0  # If >0, end+submit the command buffer every N real draws (mid-frame split) so the GPU overlaps rendering with CPU command-building instead of idling until swap. 0 = one submission per frame (off). Try ~half the title's per-frame draw count; too-small values hurt tiled GPUs. (Feature was lost in the xenia-edge rebase and re-ported.)
 query_occlusion_sample_lower_threshold = 80       	# If set to -1 no sample counts are written, games may hang. Else, the sample count of every tile will be incremented on every EVENT_WRITE_ZPD by this number. Setting this to 0 means everything is reported as occluded.
 query_occlusion_sample_upper_threshold = 100      	# Set to higher number than query_occlusion_sample_lower_threshold. This value is ignored if query_occlusion_sample_lower_threshold is set to -1.
 readback_memexport = false                        	# [D3D12 Only] Read data written by memory export in shaders on the CPU. This may be needed in some games (but many only access exported data on the GPU, and this flag isn't needed to handle such behavior), but causes mid-frame synchronization, so it has a huge performance impact.
-readback_resolve = false                          	# [D3D12 Only] Read render-to-texture results on the CPU. This may be needed in some games, for instance, for screenshots in saved games, but causes mid-frame synchronization, so it has a huge performance impact.
-render_target_path_vulkan = ""                    	# Render target emulation path to use on Vulkan.
-                                                  	# Use: [any, fbo, fsi]
-                                                  	#  fbo:
-                                                  	#   Host framebuffers and fixed-function blending and depth / stencil testing, copying between render targets when needed.
+readback_resolve = "fast"                         	# CPU readback of render-to-texture resolve results. Use: [fast, some, full, none]. Causes mid-frame synchronization, so it has a huge performance impact.
+render_target_path = "performance"                	# Render target emulation path to use across all GPU backends.
+                                                  	# Use: [performance, accuracy]
+                                                  	#  performance:
+                                                  	#   Host render targets and fixed-function blending and depth / stencil testing, copying between render targets when needed.
                                                   	#   Lower accuracy (limited pixel format support).
                                                   	#   Performance limited primarily by render target layout changes requiring copying, but generally higher.
-                                                  	#  fsi:
+                                                  	#   Maps to 'fbo' on Vulkan and 'rtv' on D3D12.
+                                                  	#  accuracy:
                                                   	#   Manual pixel packing, blending and depth / stencil testing, with free render target layout changes.
-                                                  	#   Requires a GPU supporting fragment shader interlock.
+                                                  	#   Requires a GPU supporting fragment shader interlock (Vulkan) or rasterizer-ordered views (D3D12).
                                                   	#   Highest accuracy (all pixel formats handled in software).
                                                   	#   Performance limited primarily by overdraw.
-                                                  	#  Any other value:
-                                                  	#   Choose what is considered the most optimal for the system (currently always FB because the FSI path is much slower now).
+                                                  	#   Maps to 'fsi' on Vulkan and 'rov' on D3D12.
 
 resolve_resolution_scale_fill_half_pixel_offset = true	# When using resolution scaling, apply the hack that stretches the first surely covered host pixel in the left and top sides of render target resolve areas to eliminate the gap caused by the half-pixel offset (this is necessary for certain games to display the scene graphics).
 snorm16_render_target_full_range = true           	# When the host can only support 16_16 and 16_16_16_16 render targets as -1...1, remap -32...32 to -1...1 to use the full possible range of values, at the expense of multiplicative blending correctness.
@@ -207,7 +208,7 @@ texture_cache_memory_limit_soft = 384             	# Maximum host texture memory
 texture_cache_memory_limit_soft_lifetime = 30     	# Seconds a texture should be unused to be considered old enough to be deleted if texture memory usage exceeds texture_cache_memory_limit_soft.
 trace_gpu_prefix = "scratch/gpu/"                 	# Prefix path for GPU trace files.
 trace_gpu_stream = false                          	# Trace all GPU packets.
-vsync = true                                      	# Enable VSYNC.
+guest_display_refresh_cap = true                  	# Cap guest display refresh (VSYNC): fixed-rate vblanks (50Hz PAL / 60Hz NTSC).
 
 
 [General]
@@ -285,7 +286,7 @@ storage_root = ""                                 	# Root path for persistent in
 [UI]
 headless = true                                  	# Don't display any UI, using defaults for prompts as needed.
 profiler_dpi_scaling = false                      	# Apply window DPI scaling to the profiler.
-show_achievement_notification = false             	# Show achievement notification on screen.
+show_achievement_notification = true              	# Show achievement notification on screen.
 show_profiler = false                             	# Show profiling UI by default.
 storage_selection_dialog = false                  	# Show storage device selection dialog when the game requests it.
 
@@ -339,18 +340,18 @@ widescreen = true                                 	# Toggles between 16:9 and 4:
 
 [Vulkan]
 adrenotools_force_max_clocks = false              	# Custom Driver Force Max Clocks
-turnip_debug = "sysmem"                           	# TU_DEBUG flags for the Turnip (Mesa freedreno) Vulkan driver. 'sysmem' forces untiled rendering, avoiding a class of Adreno GPU hangs (device-loss). Empty leaves TU_DEBUG unset.
+turnip_debug = ""                           	# TU_DEBUG flags for the Turnip (Mesa freedreno) Vulkan driver. 'sysmem' forces untiled rendering, avoiding a class of Adreno GPU hangs (device-loss). Empty leaves TU_DEBUG unset.
 vulkan_allow_present_mode_fifo_relaxed = true     	# When available, allow the relaxed first-in-first-out presentation mode (3rd priority), which causes waiting for host display vertical sync, but may present with tearing if frames don't meet the host display refresh rate.
 vulkan_allow_present_mode_immediate = true        	# When available, allow the immediate presentation mode (1st priority), offering the lowest latency with the possibility of tearing in certain cases, and, depending on the configuration, variable refresh rate.
 vulkan_allow_present_mode_mailbox = true          	# When available, allow the mailbox presentation mode (2nd priority), offering low latency without the possibility of tearing.
-vulkan_async_skip_draws = false                   	# Fully asynchronous shader compilation: never wait for pipeline creation at the submission boundary - draws whose pipeline hasn't finished compiling are dropped for that submission (brief pop-in of new objects instead of any wait). When false, the GPU thread waits at the end of each submission so no draw is ever lost. Requires vulkan_pipeline_creation_threads != 0.
+vulkan_async_skip_draws = true                   	# Fully asynchronous shader compilation: never wait for pipeline creation at the submission boundary - draws whose pipeline hasn't finished compiling are dropped for that submission (brief pop-in of new objects instead of any wait). When false, the GPU thread waits at the end of each submission so no draw is ever lost. Requires vulkan_pipeline_creation_threads != 0.
 vulkan_avoid_geometry_shaders = true              	# Route guest primitives that would otherwise need a geometry shader through cheaper host paths on tile-based GPUs (Adreno/Turnip), where the GS stage serializes the binning pass. Applies to point sprites (expanded in the vertex shader) and quad lists (expanded on the CPU to a triangle list). Rectangle lists always stay on the geometry shader. Takes effect on emulator restart. Disable for byte-identical pre-optimization (geometry-shader) behavior.
 vulkan_device = -1                                	# Index of the preferred Vulkan physical device, or -1 to use any compatible device.
 vulkan_extended_dynamic_state = true              	# Use VK_EXT_extended_dynamic_state (EDS1) to move cull/front-face/depth/stencil out of the baked graphics pipeline into dynamic state, shrinking pipeline-permutation churn. Disable to force the static-pipeline path if a Turnip build mishandles it.
 vulkan_extended_dynamic_state3_blend = true       	# Use VK_EXT_extended_dynamic_state3 (EDS3) to move per-render-target blend (enable/factors/ops/color write mask) out of the baked graphics pipeline into dynamic state. Blend is a major permutation driver, so this greatly reduces shader-compile hitching. Used only when the driver advertises the EDS3 blend bits. Disable to force blend baked if a Turnip/Adreno build mishandles it.
 vulkan_extended_dynamic_state3_topology = true    	# Use VK_EXT_extended_dynamic_state3 (EDS3) to move primitive topology+restart out of the baked graphics pipeline into dynamic state. Used only when the driver advertises Vulkan 1.3 and the dynamicPrimitiveTopologyUnrestricted property. Disable to keep topology baked if a Turnip/Adreno build mishandles it.
 vulkan_lib_path = ""                              	# Custom Driver Library Path
-vulkan_log_debug_messages = true                  	# Write Vulkan VK_EXT_debug_utils messages to the Xenia log, as opposed to the OS debug output.
+vulkan_log_debug_messages = false                  	# Write Vulkan VK_EXT_debug_utils messages to the Xenia log, as opposed to the OS debug output.
 vulkan_pipeline_creation_threads = 4              	# Threads for asynchronous graphics pipeline creation. 0 = synchronous; -1 = auto (75% of cores); positive N = explicit count. Async moves compilation off the draw thread entirely (no inline compiles); by default the submission boundary waits for completion so no draw is dropped (see vulkan_async_skip_draws).
 vulkan_sparse_shared_memory = true                	# Enable sparse binding for shared memory emulation. Disabling it increases video memory usage - a 512 MB buffer is created - but allows graphics debuggers that don't support sparse binding to work.
 vulkan_validation = false                         	# Enable the Vulkan validation layer (VK_LAYER_KHRONOS_validation). Messages will be written to the Xenia log if 'vulkan_log_debug_messages' is enabled, or to the OS debug output otherwise.
