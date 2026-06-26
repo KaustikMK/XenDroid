@@ -35,6 +35,6 @@ fun defaultLayout(landscape: Boolean): List<OnScreenControl> {
         OnScreenControl.Button(ControlId.A, Kc.A, "A", fx, y(0.96f)),
         // Back / Start center.
         OnScreenControl.Button(ControlId.BACK, Kc.BACK, "◀", 0.44f, y(1f), baseSizeDp = 48f),
-        OnScreenControl.Button(ControlId.START, Kc.START, "☰", 0.56f, y(1f), baseSizeDp = 48f),
+        OnScreenControl.Button(ControlId.START, Kc.START, "▶", 0.56f, y(1f), baseSizeDp = 48f),
     ).map { it.withLayout(s = 0.75f) }
 }

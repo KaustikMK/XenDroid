@@ -385,7 +385,7 @@ private fun DrawScope.drawButton(
             drawCircle(face.copy(alpha = (if (pressed) 1f else 0.82f) * opacity), radius, center)
             drawCircle(white(0.55f), radius, center, style = Stroke(strokeW))
             if (pressed) drawCircle(white(0.9f), radius + strokeW, center, style = Stroke(strokeW))
-            drawLabel(c.label, center, radius, white(0.95f), bold = true)
+            drawLabel(c.label, center, radius, white(0.95f), bold = true, fill = 0.68f)
         }
         c.id in PILL_IDS -> {                               // bumper/trigger: rounded pill
             val w = radius * 2.1f; val h = radius * 1.15f
@@ -464,9 +464,16 @@ private fun DrawScope.drawStick(
         Offset(center.x + dx, center.y + dy)
     } ?: center
     val active = activePos != null
-    val knobR = radius * 0.52f
+    val knobR = radius * 0.58f
     drawCircle(Color.White.copy(alpha = (if (active) 0.5f else 0.32f) * opacity), knobR, knob)
     drawCircle(Color.White.copy(alpha = 0.7f * opacity), knobR, knob, style = Stroke(strokeW))
+    // Cardinal cap markers (Xbox 360 stick).
+    val dotD = knobR * 0.6f; val dotR = radius * 0.018f
+    val dot = Color.White.copy(alpha = 0.6f * opacity)
+    for (p in listOf(
+        Offset(knob.x, knob.y - dotD), Offset(knob.x, knob.y + dotD),
+        Offset(knob.x - dotD, knob.y), Offset(knob.x + dotD, knob.y),
+    )) drawCircle(dot, dotR, p)
 }
 
 private fun DrawScope.drawSelection(c: OnScreenControl, size: IntSize, density: Density) {
@@ -477,7 +484,8 @@ private fun DrawScope.drawSelection(c: OnScreenControl, size: IntSize, density: 
 }
 
 private fun DrawScope.drawLabel(
-    label: String, center: Offset, radius: Float, color: Color, bold: Boolean = false,
+    label: String, center: Offset, radius: Float, color: Color,
+    bold: Boolean = false, fill: Float? = null,
 ) {
     if (label.isEmpty()) return
     drawIntoCanvas { canvas ->
@@ -486,14 +494,29 @@ private fun DrawScope.drawLabel(
             isFakeBoldText = bold
             this.color = android.graphics.Color.argb(
                 (color.alpha * 255).toInt(), 255, 255, 255)
-            textAlign = Paint.Align.LEFT
+            textAlign = if (fill != null) Paint.Align.CENTER else Paint.Align.LEFT
             textSize = radius * 0.7f
         }
         val bounds = android.graphics.Rect()
         paint.getTextBounds(label, 0, label.length, bounds)
-        val opticalDx = if (label == "◀") -bounds.width() / 6f else 0f
-        val fm = paint.fontMetrics
-        val baseline = center.y - (fm.ascent + fm.descent) / 2f
-        canvas.nativeCanvas.drawText(label, center.x - bounds.exactCenterX() + opticalDx, baseline, paint)
+        if (fill != null) {                                  // size the glyph's extent to fill * button
+            val diag = hypot(bounds.width().toFloat(), bounds.height().toFloat())
+            if (diag > 0) {
+                paint.textSize = paint.textSize * (fill * 2f * radius) / diag
+                paint.getTextBounds(label, 0, label.length, bounds)
+            }
+        }
+        if (bold) {                                          // extra weight for the face-button letters
+            paint.style = Paint.Style.FILL_AND_STROKE
+            paint.strokeWidth = paint.textSize * 0.05f
+        }
+        val opticalDx = when (label) {
+            "◀" -> -bounds.width() / 6f
+            "▶" -> bounds.width() / 6f
+            else -> 0f
+        }
+        val baseline = center.y - bounds.exactCenterY()      // center the glyph itself, not the font line
+        val x = if (fill != null) center.x else center.x - bounds.exactCenterX() + opticalDx
+        canvas.nativeCanvas.drawText(label, x, baseline, paint)
     }
 }
