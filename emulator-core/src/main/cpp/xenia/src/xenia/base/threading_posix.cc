@@ -1763,7 +1763,7 @@ void* PosixCondition<Thread>::ThreadStartRoutine(void* parameter) {
   std::unique_lock lock(thread->handle_.mutex_);
   thread->handle_.exit_code_ = 0;
   thread->handle_.signaled_ = true;
-  thread->handle_.cond_.notify_all();
+  thread->handle_.NotifyAll();
 
   current_thread_ = nullptr;
   return nullptr;
