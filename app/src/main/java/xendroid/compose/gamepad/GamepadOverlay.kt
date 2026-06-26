@@ -15,12 +15,14 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.input.pointer.PointerInputScope
@@ -402,42 +404,50 @@ private fun DrawScope.drawButton(
     }
 }
 
-/** Original compose d-pad look: four OUTLINED "pennant" arrows (rounded base at the outer
- *  edge, tapering to a point toward the center), idle white, pressed arm lights up gold. */
+/** Xbox 360-style d-pad: a round disc with a raised plus/cross; the pressed arm lights up. */
 private fun DrawScope.drawDpad(
     center: Offset, radius: Float, strokeW: Float, opacity: Float, dirs: Set<Int>,
 ) {
-    val arm = dpadArmPath(center, radius)           // the LEFT arm; rotate for the others
-    val idle = Color.White.copy(alpha = 0.5f * opacity)
-    // Pressed/active highlight: white, matching every other button (was gold/yellow).
-    val lit = Color.White
-    // (code, rotation): LEFT base at left/tip toward center; +90 each step -> UP/RIGHT/DOWN.
-    val arms = listOf(Kc.DPAD_LEFT to 0f, Kc.DPAD_UP to 90f, Kc.DPAD_RIGHT to 180f, Kc.DPAD_DOWN to 270f)
-    for ((_, angle) in arms) rotate(angle, center) { drawPath(arm, idle, style = Stroke(strokeW)) }
-    for ((code, angle) in arms) if (code in dirs) rotate(angle, center) {
-        drawPath(arm, lit.copy(alpha = 0.22f * opacity))                        // faint fill
-        drawPath(arm, lit.copy(alpha = 0.95f * opacity), style = Stroke(strokeW * 1.4f))
+    drawCircle(Color.White.copy(alpha = 0.08f * opacity), radius, center)                 // disc
+    val reach = radius * 1.2f           // overshoot the disc; the clip below truncates the tips
+    val hw = radius * 0.324f            // arm half-width
+    val cross = dpadCrossPath(center, reach, hw)
+    clipPath(Path().apply { addOval(Rect(center, radius)) }) {                             // cut by the disc
+        drawPath(cross, Color.White.copy(alpha = 0.16f * opacity))                        // cross fill
+        drawPath(cross, Color.White.copy(alpha = 0.5f * opacity), style = Stroke(strokeW))// cross outline
+        // Pressed-arm highlight: the cross clipped to that arm's diagonal wedge.
+        val b = radius * 2f
+        val tl = Offset(center.x - b, center.y - b); val tr = Offset(center.x + b, center.y - b)
+        val bl = Offset(center.x - b, center.y + b); val br = Offset(center.x + b, center.y + b)
+        val hi = Color.White.copy(alpha = 0.85f * opacity)
+        fun litArm(code: Int, p1: Offset, p2: Offset) {
+            if (code !in dirs) return
+            clipPath(Path().apply {
+                moveTo(center.x, center.y); lineTo(p1.x, p1.y); lineTo(p2.x, p2.y); close()
+            }) { drawPath(cross, hi) }
+        }
+        litArm(Kc.DPAD_UP, tl, tr); litArm(Kc.DPAD_DOWN, bl, br)
+        litArm(Kc.DPAD_LEFT, tl, bl); litArm(Kc.DPAD_RIGHT, tr, br)
     }
+    drawCircle(Color.White.copy(alpha = 0.40f * opacity), radius, center, style = Stroke(strokeW)) // ring on top
 }
 
-/** The LEFT arm: a pennant from the outer-left edge tapering to a point near the center.
- *  Rotated 90/180/270 about the center to make UP/RIGHT/DOWN. */
-private fun dpadArmPath(center: Offset, radius: Float): Path {
-    val hw = radius * 0.30f
-    val baseX = center.x - radius
-    val midX = center.x - radius * 0.42f      // where the rectangle starts tapering
-    val tipX = center.x - radius * 0.06f      // the point, near center
-    val corner = radius * 0.10f
-    val top = center.y - hw; val bot = center.y + hw
+/** A plus/cross outline with concave armpits (Xbox 360 look): arms extend |reach|
+ *  from |center| with half-width |hw| at the base, tapering to |t| at the tip so the
+ *  armpits open ~100deg (not a square 90deg plus); |f| is the inner-corner curve radius. */
+private fun dpadCrossPath(center: Offset, reach: Float, hw: Float): Path {
+    val cx = center.x; val cy = center.y
+    val f = hw * 1.1f
+    val t = hw * 0.8f
     return Path().apply {
-        moveTo(baseX + corner, top)
-        lineTo(midX, top)
-        lineTo(tipX, center.y)
-        lineTo(midX, bot)
-        lineTo(baseX + corner, bot)
-        quadraticBezierTo(baseX, bot, baseX, bot - corner)
-        lineTo(baseX, top + corner)
-        quadraticBezierTo(baseX, top, baseX + corner, top)
+        moveTo(cx - t, cy - reach); lineTo(cx + t, cy - reach)        // up arm
+        lineTo(cx + hw, cy - hw - f); quadraticBezierTo(cx + hw, cy - hw, cx + hw + f, cy - hw)
+        lineTo(cx + reach, cy - t); lineTo(cx + reach, cy + t)        // right arm
+        lineTo(cx + hw + f, cy + hw); quadraticBezierTo(cx + hw, cy + hw, cx + hw, cy + hw + f)
+        lineTo(cx + t, cy + reach); lineTo(cx - t, cy + reach)        // down arm
+        lineTo(cx - hw, cy + hw + f); quadraticBezierTo(cx - hw, cy + hw, cx - hw - f, cy + hw)
+        lineTo(cx - reach, cy + t); lineTo(cx - reach, cy - t)        // left arm
+        lineTo(cx - hw - f, cy - hw); quadraticBezierTo(cx - hw, cy - hw, cx - hw, cy - hw - f)
         close()
     }
 }
