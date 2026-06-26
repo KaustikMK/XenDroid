@@ -10,6 +10,8 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import xendroid.compose.core.ContentPaths
+import java.io.File
 
 /** Shared install flow state for both the per-game ContentManager and the global
  *  install-only entrypoint. Delete stays per-game (see ContentManagerViewModel). */
@@ -29,6 +31,31 @@ fun installReasonFor(status: Int): String = when (status) {
     0xC0000022.toInt() -> "Couldn't write to the content folder."    // X_STATUS_ACCESS_DENIED
     0xC000007F.toInt() -> "Not enough free space to install."        // X_STATUS_DISK_FULL
     else -> "Install failed (0x${status.toUInt().toString(16)})."
+}
+
+/** Free-space pre-flight against the volume [target] lives on; 1.1x mirrors the native
+ *  guard. Null when it fits or the size/free space is unknown (defer to the native guard). */
+fun storageShortfallOn(target: File, requiredBytes: Long): String? {
+    if (requiredBytes <= 0L) return null
+    val probe = if (target.exists()) target else (target.parentFile ?: target)
+    val free = probe.usableSpace.takeIf { it > 0L } ?: return null
+    val needed = (requiredBytes * 11) / 10
+    if (free >= needed) return null
+    return "Not enough free space: this needs about ${formatBytes(needed)} " +
+        "but only ${formatBytes(free)} is free. Free up space and try again."
+}
+
+/** Free-space check for the content root (the native install volume), shared by both VMs. */
+fun storageShortfall(requiredBytes: Long): String? =
+    storageShortfallOn(ContentPaths.contentRoot(), requiredBytes)
+
+private fun formatBytes(b: Long): String {
+    if (b < 1024) return "$b B"
+    val u = arrayOf("KB", "MB", "GB", "TB")
+    var v = b.toDouble()
+    var i = -1
+    do { v /= 1024.0; i++ } while (v >= 1024.0 && i < u.lastIndex)
+    return "%.1f %s".format(v, u[i])
 }
 
 /** Busy / ConfirmOverwrite / Done / Failed dialogs for the shared install flow. */

@@ -141,6 +141,7 @@ class ContentManagerViewModel(
                 "This package is for title ${meta.titleId ?: "unknown"}, " +
                     "not this game ($titleId).")
         val name = meta.displayName.ifBlank { File(srcPath).name }
+        storageShortfall(meta.contentSize)?.let { return PreCheck.Reject(it) }
         val pkgDir = File(ContentPaths.contentDir(titleId, meta.contentType), File(srcPath).name)
         return if (pkgDir.exists()) PreCheck.Overwrite(name) else PreCheck.Ok(name)
     }

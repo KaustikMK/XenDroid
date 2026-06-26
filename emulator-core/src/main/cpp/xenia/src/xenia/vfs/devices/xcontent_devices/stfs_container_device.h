@@ -82,6 +82,10 @@ class StfsContainerDevice : public XContentContainerDevice {
   uint8_t blocks_per_hash_table_;
   uint32_t block_step_[2];
 
+  // Set when a hash-table read would fall past the mapped file (corrupt /
+  // truncated package); Read() converts it into Result::kReadError.
+  bool hash_table_out_of_bounds_ = false;
+
   std::unordered_map<size_t, StfsHashTable> cached_hash_tables_;
   std::unique_ptr<MappedMemory> data_;
 };

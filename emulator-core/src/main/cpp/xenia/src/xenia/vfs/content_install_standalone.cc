@@ -105,6 +105,11 @@ X_STATUS InstallContentPackageStandalone(
       device.get(), data_path, progress.current);
   if (status == X_STATUS_SUCCESS) {
     progress.current.store(progress.total.load());
+  } else {
+    XELOGE("InstallContentPackageStandalone: extract failed 0x{:08X} for {}",
+           status, src_path.string());
+    std::error_code cleanup_ec;
+    std::filesystem::remove_all(data_path, cleanup_ec);
   }
   return status;
 }

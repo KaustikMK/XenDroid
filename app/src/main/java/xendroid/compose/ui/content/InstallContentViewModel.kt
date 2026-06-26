@@ -58,12 +58,19 @@ class InstallContentViewModel(
             return@launch
         }
         // A full game overwrites the container in the games folder; add-on content
-        // overwrites its native content-tree placement.
+        // overwrites its native content-tree placement. This path skips validate(), so
+        // each branch re-checks free space against the volume it writes to.
         if (ContentPaths.isLaunchableGameType(header.contentType)) {
             val gamesDir = gamesDirOrNull()
                 ?: run { _state.value = ContentInstallState.Failed(NO_GAMES_FOLDER); return@launch }
+            storageShortfallOn(gamesDir, File(srcPath).length())?.let {
+                _state.value = ContentInstallState.Failed(it); return@launch
+            }
             runCopy(srcPath, name, gamesDir)
         } else {
+            storageShortfall(header.contentSize)?.let {
+                _state.value = ContentInstallState.Failed(it); return@launch
+            }
             runInstall(srcPath, name, ContentPaths.contentTypeLabel(header.contentType))
         }
     }
@@ -88,6 +95,7 @@ class InstallContentViewModel(
         // A full game (XBLA/arcade, GoD, ...) is COPIED into the games folder as a
         // container so the library boots it; add-on content is installed natively below.
         if (ContentPaths.isLaunchableGameType(meta.contentType)) return validateGameCopy(src, name)
+        storageShortfall(meta.contentSize)?.let { return PreCheck.Reject(it) }
         val label = ContentPaths.contentTypeLabel(meta.contentType)
         // Profiles aren't placed under the machine XUID/title tree, so skip the
         // overwrite pre-check and install directly. Everything else is checked.
@@ -108,6 +116,7 @@ class InstallContentViewModel(
             return PreCheck.Done(
                 "“$name” is already in your games folder. Pull down to refresh the library.")
         }
+        storageShortfallOn(gamesDir, src.length())?.let { return PreCheck.Reject(it) }
         return if (dest.exists()) PreCheck.Overwrite(name) else PreCheck.Copy(name, gamesDir)
     }
 
