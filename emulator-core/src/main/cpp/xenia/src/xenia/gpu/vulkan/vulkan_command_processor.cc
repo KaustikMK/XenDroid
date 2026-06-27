@@ -452,6 +452,19 @@ bool VulkanCommandProcessor::SetupContext() {
         "bound to the compute shader");
     return false;
   }
+  descriptor_set_layout_binding_transient.binding = 1;
+  descriptor_set_layout_binding_transient.descriptorType =
+      VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+  if (dfn.vkCreateDescriptorSetLayout(
+          device, &descriptor_set_layout_create_info, nullptr,
+          &descriptor_set_layouts_single_transient_[size_t(
+              SingleTransientDescriptorLayout::kUniformBufferComputeB1)]) !=
+      VK_SUCCESS) {
+    XELOGE(
+        "Failed to create a Vulkan descriptor set layout for a uniform buffer "
+        "bound to binding 1 in the compute shader");
+    return false;
+  }
 
   shared_memory_ = std::make_unique<VulkanSharedMemory>(
       *this, *memory_, trace_writer_, guest_shader_pipeline_stages_);
@@ -3436,6 +3449,25 @@ void VulkanCommandProcessor::BindExternalGraphicsPipeline(
     dynamic_stencil_reference_front_update_needed_ = true;
     dynamic_stencil_reference_back_update_needed_ = true;
   }
+  // External (transfer/resolve) pipelines bake all extended dynamic state
+  // statically, invalidating the guest draw's dynamic EDS state. Re-dirty every
+  // EDS flag so the next guest draw re-emits it (UpdateDynamicState only emits
+  // when the matching capability is active, so this is inert when EDS is off).
+  dynamic_cull_mode_update_needed_ = true;
+  dynamic_front_face_update_needed_ = true;
+  dynamic_primitive_topology_update_needed_ = true;
+  dynamic_primitive_restart_enable_update_needed_ = true;
+  dynamic_depth_test_enable_update_needed_ = true;
+  dynamic_depth_write_enable_update_needed_ = true;
+  dynamic_depth_compare_op_update_needed_ = true;
+  dynamic_stencil_test_enable_update_needed_ = true;
+  dynamic_stencil_op_front_update_needed_ = true;
+  dynamic_stencil_op_back_update_needed_ = true;
+  dynamic_depth_clamp_enable_update_needed_ = true;
+  dynamic_polygon_mode_update_needed_ = true;
+  dynamic_color_blend_enable_update_needed_ = true;
+  dynamic_color_blend_equation_update_needed_ = true;
+  dynamic_color_write_mask_update_needed_ = true;
   if (current_external_graphics_pipeline_ == pipeline) {
     return;
   }
@@ -3894,6 +3926,8 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
            : 0);
   texture_cache_->RequestTextures(used_texture_mask);
 
+  auto pipeline_layout =
+      static_cast<const PipelineLayout*>(pipeline->pipeline_layout);
   // Update the graphics pipeline, and if the new graphics pipeline has a
   // different layout, invalidate incompatible descriptor sets before updating
   // current_guest_graphics_pipeline_layout_.
@@ -3903,14 +3937,16 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
   // either waits for creation to complete (default) or lets the replay drop
   // the draws of still-unready pipelines (vulkan_async_skip_draws). The
   // de-dup compares slot POINTERS, not handle values.
+  // Wrapped in a lambda so the same (EDS-aware) bind and descriptor-set
+  // invalidation can be re-run after in-pass transfers replace the bound
+  // pipeline (see below, after entering the render pass).
+  auto bind_guest_graphics_pipeline = [&]() {
   if (current_guest_graphics_pipeline_ != &pipeline->pipeline) {
     deferred_command_buffer_.CmdVkBindPipelineDeferred(
         VK_PIPELINE_BIND_POINT_GRAPHICS, &pipeline->pipeline);
     current_guest_graphics_pipeline_ = &pipeline->pipeline;
     current_external_graphics_pipeline_ = VK_NULL_HANDLE;
   }
-  auto pipeline_layout =
-      static_cast<const PipelineLayout*>(pipeline->pipeline_layout);
   if (current_guest_graphics_pipeline_layout_ != pipeline_layout) {
     if (current_guest_graphics_pipeline_layout_) {
       // Keep descriptor set layouts for which the new pipeline layout is
@@ -3977,6 +4013,8 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
     }
     current_guest_graphics_pipeline_layout_ = pipeline_layout;
   }
+  };
+  bind_guest_graphics_pipeline();
 
   bool host_render_targets_used = render_target_cache_->GetPath() ==
                                   RenderTargetCache::Path::kHostRenderTargets;
@@ -4175,6 +4213,34 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
   SubmitBarriersAndEnterRenderTargetCacheRenderPass(
       render_target_cache_->last_update_render_pass(),
       render_target_cache_->last_update_framebuffer());
+
+  // Encode render-target transfers that the render target cache queued for
+  // execution inside this draw's render pass (avoids breaking the pass on
+  // tile-based GPUs). If they can't be merged into the active pass, fall back
+  // to performing them in a separate pass and re-enter the guest pass. Either
+  // way the transfers change pipeline / dynamic / binding state, so re-emit it
+  // before the actual guest draw below.
+  if (render_target_cache_->HasPendingDrawPassTransfers()) {
+    if (!render_target_cache_->EncodePendingDrawPassTransfers()) {
+      if (!render_target_cache_->FlushPendingDrawPassTransfers()) {
+        return false;
+      }
+      SubmitBarriersAndEnterRenderTargetCacheRenderPass(
+          render_target_cache_->last_update_render_pass(),
+          render_target_cache_->last_update_framebuffer());
+    }
+    // Re-bind the guest pipeline (deferred, EDS-aware, with descriptor-set
+    // invalidation) - the transfer draws bound their own external pipelines and
+    // cleared the guest pipeline/layout state.
+    bind_guest_graphics_pipeline();
+    UpdateDynamicState(viewport_info, primitive_polygonal,
+                       normalized_depth_control, draw_resolution_scale_x,
+                       draw_resolution_scale_y, apply_host_depth_polygon_offset,
+                       pipeline->dynamic_state);
+    if (!UpdateBindings(vertex_shader, pixel_shader)) {
+      return false;
+    }
+  }
 
   // Track for device-lost diagnostics.
   ++submission_in_progress_.draw_count;

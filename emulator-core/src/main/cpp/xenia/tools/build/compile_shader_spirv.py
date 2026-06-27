@@ -2,7 +2,12 @@
 
 """Compiles a single shader to SPIR-V and generates a C header.
 
-Usage: compile_shader_spirv.py <input_path> <output_path>
+Usage: compile_shader_spirv.py <input_path> <output_path> [-Dname[=value] ...]
+
+Extra -D flags (after the two positional paths) are forwarded verbatim to
+glslangValidator, in addition to the always-on -DSHADING_LANGUAGE_GLSL_XE=1.
+This is how the direct-host-resolve variant generator selects a single shader
+permutation (bpp / MSAA / source-uint / scaled) from a shared .xesli body.
 
 Pipeline:
   1. glslangValidator -> unoptimized .spv
@@ -64,12 +69,22 @@ def parse_stage(filename):
 
 
 def main():
-    if len(sys.argv) != 3:
-        print(f"Usage: {sys.argv[0]} <input_path> <output_path>", file=sys.stderr)
+    if len(sys.argv) < 3:
+        print(f"Usage: {sys.argv[0]} <input_path> <output_path> [-Dname[=value] ...]",
+              file=sys.stderr)
         return 1
 
     input_path = sys.argv[1]
     output_path = sys.argv[2]
+    # Any remaining -D / -I args are forwarded to glslangValidator (defines and
+    # additional include directories for the variant generator).
+    extra_glslang_args = []
+    for arg in sys.argv[3:]:
+        if arg.startswith("-D") or arg.startswith("-I"):
+            extra_glslang_args.append(arg)
+        else:
+            print(f"ERROR: unexpected argument: {arg}", file=sys.stderr)
+            return 1
 
     src_name = os.path.basename(input_path)
     src_dir = os.path.dirname(input_path)
@@ -104,6 +119,7 @@ def main():
             "-o", glslang_spv,
             "-V",
         ]
+        glslang_args.extend(extra_glslang_args)
         if src_is_xesl:
             glslang_args.append(f"-I{src_dir}")
 
