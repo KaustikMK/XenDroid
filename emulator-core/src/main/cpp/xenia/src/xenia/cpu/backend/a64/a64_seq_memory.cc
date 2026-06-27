@@ -26,6 +26,15 @@
 DECLARE_bool(emit_mmio_aware_stores_for_recorded_exception_addresses);
 DECLARE_bool(emit_inline_mmio_checks);
 
+DEFINE_bool(a64_native_reserved_ops, true,
+            "Compile guest lwarx/stwcx. (RESERVED_LOAD/STORE) to native "
+            "ldaxr/stlxr instead of calling the software reservation helpers. "
+            "ABA-immune and avoids the per-atomic thunk. A failed stlxr "
+            "(contention or a monitor lost to preemption/migration) retries "
+            "via the guest's own lwarx/stwcx. loop. Behaviorally neutral when "
+            "disabled.",
+            "CPU");
+
 namespace xe {
 namespace cpu {
 namespace backend {
@@ -1188,9 +1197,21 @@ static const Xbyak_aarch64::XReg& LoadBackendCtxPtr(A64Emitter& e) {
 // concurrent lwarx reservations on others (PPC semantics). Doing this purely
 // inline with ldaxr/stlxr would only protect against contention on the same
 // host cache line; ABA on the cached value would silently succeed.
+// Native LL: ldaxr the host word to arm the per-PE exclusive monitor. The
+// guest byte-swap is a separate HIR op, exactly as on the plain ldr software
+// path, so nothing is reversed here. The hardware monitor is the sole
+// reservation state on this path; the matching bare stlxr in RESERVED_STORE
+// succeeds iff no store touched the line since (ABA-immune), so no
+// cached_reserve_value_ bookkeeping is needed.
 struct RESERVED_LOAD_I32
     : Sequence<RESERVED_LOAD_I32, I<OPCODE_RESERVED_LOAD, I32Op, I64Op>> {
   static void Emit(A64Emitter& e, const EmitArgType& i) {
+    if (cvars::a64_native_reserved_ops && !IsPossibleMMIOInstruction(e, i.instr)) {
+      auto addr = ComputeMemoryAddress(e, i.src1);
+      e.add(e.x16, e.GetMembaseReg(), addr);
+      e.ldaxr(i.dest, ptr(e.x16));
+      return;
+    }
     if (i.src1.is_constant) {
       e.mov(e.w1, static_cast<uint32_t>(i.src1.constant()));
     } else {
@@ -1208,6 +1229,12 @@ struct RESERVED_LOAD_I32
 struct RESERVED_LOAD_I64
     : Sequence<RESERVED_LOAD_I64, I<OPCODE_RESERVED_LOAD, I64Op, I64Op>> {
   static void Emit(A64Emitter& e, const EmitArgType& i) {
+    if (cvars::a64_native_reserved_ops && !IsPossibleMMIOInstruction(e, i.instr)) {
+      auto addr = ComputeMemoryAddress(e, i.src1);
+      e.add(e.x16, e.GetMembaseReg(), addr);
+      e.ldaxr(i.dest, ptr(e.x16));
+      return;
+    }
     if (i.src1.is_constant) {
       e.mov(e.w1, static_cast<uint32_t>(i.src1.constant()));
     } else {
@@ -1224,10 +1251,43 @@ struct RESERVED_LOAD_I64
 EMITTER_OPCODE_TABLE(OPCODE_RESERVED_LOAD, RESERVED_LOAD_I32,
                      RESERVED_LOAD_I64);
 
+// Native SC: a bare stlxr to the line armed by the matching RESERVED_LOAD's
+// ldaxr. No re-arming ldaxr and no value compare (PPC stwcx. performs none) —
+// the monitor armed at lwarx is the sole source of truth, so this is
+// ABA-immune. The value is already byte-swapped by the HIR, matching the plain
+// str software path. stlxr returns 0 on success; CR0.eq (i.dest) is set from
+// that. Any failure -- a competing store broke the line (contention) or the
+// per-PE monitor was lost to preemption/migration -- sets CR0.eq=0 and the
+// guest's own lwarx/stwcx. loop retries, identical to real PPC. No software
+// fallback is used: an unconditional-success one would corrupt stwcx.
+// semantics under contention (a losing store reported as a win).
 struct RESERVED_STORE_I32
     : Sequence<RESERVED_STORE_I32,
                I<OPCODE_RESERVED_STORE, I8Op, I64Op, I32Op>> {
   static void Emit(A64Emitter& e, const EmitArgType& i) {
+    if (cvars::a64_native_reserved_ops && !IsPossibleMMIOInstruction(e, i.instr)) {
+      // Stage the value before clobbering w0/w17 via ComputeMemoryAddress.
+      if (i.src2.is_constant) {
+        e.mov(e.w3, static_cast<uint32_t>(i.src2.constant()));
+      } else {
+        e.mov(e.w3, WReg(i.src2.reg().getIdx()));
+      }
+      auto addr = ComputeMemoryAddress(e, i.src1);
+      e.add(e.x16, e.GetMembaseReg(), addr);
+      e.stlxr(e.w17, e.w3, ptr(e.x16));
+      // CR0.eq = stlxr success (status 0). Any failure (contention or a
+      // monitor lost to preemption/migration) yields CR0.eq=0; the guest's
+      // own lwarx/stwcx. loop retries, exactly as on real PPC.
+      auto& sc_fail = e.NewCachedLabel();
+      auto& sc_done = e.NewCachedLabel();
+      e.cbnz(e.w17, sc_fail);
+      e.mov(i.dest, 1);
+      e.b(sc_done);
+      e.L(sc_fail);
+      e.mov(i.dest, 0);
+      e.L(sc_done);
+      return;
+    }
     // Compute host address into x2 first; ComputeMemoryAddress writes w0
     // and CallNativeSafe will clobber x0-x18 anyway, so x2 must be set up
     // before populating other arg regs (and before the call).
@@ -1251,6 +1311,26 @@ struct RESERVED_STORE_I64
     : Sequence<RESERVED_STORE_I64,
                I<OPCODE_RESERVED_STORE, I8Op, I64Op, I64Op>> {
   static void Emit(A64Emitter& e, const EmitArgType& i) {
+    if (cvars::a64_native_reserved_ops && !IsPossibleMMIOInstruction(e, i.instr)) {
+      if (i.src2.is_constant) {
+        e.mov(e.x3, static_cast<uint64_t>(i.src2.constant()));
+      } else {
+        e.mov(e.x3, XReg(i.src2.reg().getIdx()));
+      }
+      auto addr = ComputeMemoryAddress(e, i.src1);
+      e.add(e.x16, e.GetMembaseReg(), addr);
+      e.stlxr(e.w17, e.x3, ptr(e.x16));
+      // CR0.eq = stlxr success; any failure retries via the guest loop (see I32).
+      auto& sc_fail = e.NewCachedLabel();
+      auto& sc_done = e.NewCachedLabel();
+      e.cbnz(e.w17, sc_fail);
+      e.mov(i.dest, 1);
+      e.b(sc_done);
+      e.L(sc_fail);
+      e.mov(i.dest, 0);
+      e.L(sc_done);
+      return;
+    }
     auto addr = ComputeMemoryAddress(e, i.src1);
     e.add(e.x2, e.GetMembaseReg(), addr);
     if (i.src2.is_constant) {

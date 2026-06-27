@@ -38,7 +38,10 @@ static constexpr uint32_t GUEST_TRAMPOLINE_MIN_LEN = 8;
 static constexpr uint32_t MAX_GUEST_TRAMPOLINES =
     (GUEST_TRAMPOLINE_END - GUEST_TRAMPOLINE_BASE) / GUEST_TRAMPOLINE_MIN_LEN;
 
-#define A64_RESERVE_BLOCK_SHIFT 16
+// 128-byte granule (>= the largest expected hardware ERG) so the software
+// fallback bitmap mirrors native LL/SC granularity instead of falsely
+// serializing every reservation in a shared 64KB page.
+#define A64_RESERVE_BLOCK_SHIFT 7
 #define A64_RESERVE_NUM_ENTRIES \
   ((1024ULL * 1024ULL * 1024ULL * 4ULL) >> A64_RESERVE_BLOCK_SHIFT)
 
