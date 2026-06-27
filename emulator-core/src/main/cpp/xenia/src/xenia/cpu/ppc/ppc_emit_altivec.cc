@@ -1034,34 +1034,111 @@ int InstrEmit_vmrglw128(PPCHIRBuilder& f, const InstrData& i) {
   return InstrEmit_vmrglw_(f, VX128_VD128, VX128_VA128, VX128_VB128);
 }
 
+// Clamp a 64-bit accumulator to the signed 32-bit range and truncate.
+static Value* SatToS32(PPCHIRBuilder& f, Value* acc64) {
+  Value* hi = f.LoadConstantInt64(INT32_MAX);
+  Value* lo = f.LoadConstantInt64(INT32_MIN);
+  acc64 = f.Select(f.CompareSGT(acc64, hi), hi, acc64);
+  acc64 = f.Select(f.CompareSLT(acc64, lo), lo, acc64);
+  return f.Truncate(acc64, INT32_TYPE);
+}
+
+// Clamp a 64-bit accumulator to the unsigned 32-bit range and truncate.
+// Inputs here are always non-negative, so a signed clamp against [0, 2^32-1]
+// is exact.
+static Value* SatToU32(PPCHIRBuilder& f, Value* acc64) {
+  Value* hi = f.LoadConstantInt64(0xFFFFFFFFll);
+  Value* lo = f.LoadConstantInt64(0);
+  acc64 = f.Select(f.CompareSGT(acc64, hi), hi, acc64);
+  acc64 = f.Select(f.CompareSLT(acc64, lo), lo, acc64);
+  return f.Truncate(acc64, INT32_TYPE);
+}
+
+// vmsum* are VA,VB,VC form; VC is a per-word accumulator added to each result
+// word. extend == SignExtend/ZeroExtend chooses the operand signedness; sat ==
+// nullptr for the MODULO variants, otherwise the saturating-truncate helper.
+typedef Value* (PPCHIRBuilder::*ExtendFn)(Value*, TypeName);
+static int EmitVMSumByte(PPCHIRBuilder& f, const InstrData& i, ExtendFn extend_a,
+                         ExtendFn extend_b, Value* (*sat)(PPCHIRBuilder&,
+                                                          Value*)) {
+  Value* va = f.LoadVR(i.VXA.VA);
+  Value* vb = f.LoadVR(i.VXA.VB);
+  Value* vc = f.LoadVR(i.VXA.VC);
+  Value* vd = f.LoadZeroVec128();
+  for (int w = 0; w < 4; ++w) {
+    // VC is signed for the saturating variants; byte ops are all modulo so the
+    // accumulator extension does not matter (the result is truncated).
+    Value* acc = f.SignExtend(f.Extract(vc, (uint8_t)w, INT32_TYPE), INT64_TYPE);
+    for (int k = 0; k < 4; ++k) {
+      uint8_t b = (uint8_t)(4 * w + k);
+      // Extend operands all the way to 64 bits before multiplying to avoid any
+      // 32-bit product overflow.
+      Value* a = (f.*extend_a)(f.Extract(va, b, INT8_TYPE), INT64_TYPE);
+      Value* bb = (f.*extend_b)(f.Extract(vb, b, INT8_TYPE), INT64_TYPE);
+      acc = f.Add(acc, f.Mul(a, bb));
+    }
+    Value* word = sat ? sat(f, acc) : f.Truncate(acc, INT32_TYPE);
+    vd = f.Insert(vd, (uint8_t)w, word);
+  }
+  f.StoreVR(i.VXA.VD, vd);
+  return 0;
+}
+
+static int EmitVMSumHalf(PPCHIRBuilder& f, const InstrData& i, ExtendFn extend,
+                         Value* (*sat)(PPCHIRBuilder&, Value*)) {
+  Value* va = f.LoadVR(i.VXA.VA);
+  Value* vb = f.LoadVR(i.VXA.VB);
+  Value* vc = f.LoadVR(i.VXA.VC);
+  Value* vd = f.LoadZeroVec128();
+  for (int w = 0; w < 4; ++w) {
+    // Extend VC with the op's signedness; for the saturating variants this
+    // determines how the 32-bit accumulator word is interpreted. (For the
+    // modulo variants the result is truncated, so it does not matter.)
+    Value* acc = (f.*extend)(f.Extract(vc, (uint8_t)w, INT32_TYPE), INT64_TYPE);
+    for (int k = 0; k < 2; ++k) {
+      uint8_t h = (uint8_t)(2 * w + k);
+      // u16*u16 overflows int32, so extend to 64 bits before multiplying.
+      Value* a = (f.*extend)(f.Extract(va, h, INT16_TYPE), INT64_TYPE);
+      Value* b = (f.*extend)(f.Extract(vb, h, INT16_TYPE), INT64_TYPE);
+      acc = f.Add(acc, f.Mul(a, b));
+    }
+    Value* word = sat ? sat(f, acc) : f.Truncate(acc, INT32_TYPE);
+    vd = f.Insert(vd, (uint8_t)w, word);
+  }
+  f.StoreVR(i.VXA.VD, vd);
+  return 0;
+}
+
 int InstrEmit_vmsummbm(PPCHIRBuilder& f, const InstrData& i) {
-  XEINSTRNOTIMPLEMENTED();
-  return 1;
+  // VA bytes signed, VB bytes unsigned, modulo.
+  return EmitVMSumByte(f, i, &PPCHIRBuilder::SignExtend,
+                       &PPCHIRBuilder::ZeroExtend, nullptr);
 }
 
 int InstrEmit_vmsumshm(PPCHIRBuilder& f, const InstrData& i) {
-  XEINSTRNOTIMPLEMENTED();
-  return 1;
+  // Signed halfword, modulo.
+  return EmitVMSumHalf(f, i, &PPCHIRBuilder::SignExtend, nullptr);
 }
 
 int InstrEmit_vmsumshs(PPCHIRBuilder& f, const InstrData& i) {
-  XEINSTRNOTIMPLEMENTED();
-  return 1;
+  // Signed halfword, signed saturate.
+  return EmitVMSumHalf(f, i, &PPCHIRBuilder::SignExtend, &SatToS32);
 }
 
 int InstrEmit_vmsumubm(PPCHIRBuilder& f, const InstrData& i) {
-  XEINSTRNOTIMPLEMENTED();
-  return 1;
+  // Unsigned byte, modulo.
+  return EmitVMSumByte(f, i, &PPCHIRBuilder::ZeroExtend,
+                       &PPCHIRBuilder::ZeroExtend, nullptr);
 }
 
 int InstrEmit_vmsumuhm(PPCHIRBuilder& f, const InstrData& i) {
-  XEINSTRNOTIMPLEMENTED();
-  return 1;
+  // Unsigned halfword, modulo.
+  return EmitVMSumHalf(f, i, &PPCHIRBuilder::ZeroExtend, nullptr);
 }
 
 int InstrEmit_vmsumuhs(PPCHIRBuilder& f, const InstrData& i) {
-  XEINSTRNOTIMPLEMENTED();
-  return 1;
+  // Unsigned halfword, unsigned saturate.
+  return EmitVMSumHalf(f, i, &PPCHIRBuilder::ZeroExtend, &SatToU32);
 }
 
 int InstrEmit_vmsum3fp128(PPCHIRBuilder& f, const InstrData& i) {
@@ -1769,28 +1846,73 @@ int InstrEmit_vsubuws(PPCHIRBuilder& f, const InstrData& i) {
 }
 
 int InstrEmit_vsumsws(PPCHIRBuilder& f, const InstrData& i) {
-  XEINSTRNOTIMPLEMENTED();
-  return 1;
+  // VD.word[3] = satS32(VB.word[3] + sum_{k=0..3} (int64)VA.word[k]).
+  // VD.word[0..2] = 0. VB is the accumulator.
+  Value* va = f.LoadVR(i.VX.VA);
+  Value* vb = f.LoadVR(i.VX.VB);
+  Value* acc = f.SignExtend(f.Extract(vb, (uint8_t)3, INT32_TYPE), INT64_TYPE);
+  for (int k = 0; k < 4; ++k) {
+    acc = f.Add(acc,
+                f.SignExtend(f.Extract(va, (uint8_t)k, INT32_TYPE), INT64_TYPE));
+  }
+  Value* vd = f.Insert(f.LoadZeroVec128(), (uint8_t)3, SatToS32(f, acc));
+  f.StoreVR(i.VX.VD, vd);
+  return 0;
 }
 
 int InstrEmit_vsum2sws(PPCHIRBuilder& f, const InstrData& i) {
-  XEINSTRNOTIMPLEMENTED();
-  return 1;
+  // For h in {0,1}: VD.word[2h+1] = satS32(VB.word[2h+1] + VA.word[2h] +
+  // VA.word[2h+1]). VD.word[2h] = 0. VB is the accumulator.
+  Value* va = f.LoadVR(i.VX.VA);
+  Value* vb = f.LoadVR(i.VX.VB);
+  Value* vd = f.LoadZeroVec128();
+  for (int h = 0; h < 2; ++h) {
+    uint8_t w = (uint8_t)(2 * h + 1);
+    Value* acc = f.SignExtend(f.Extract(vb, w, INT32_TYPE), INT64_TYPE);
+    acc = f.Add(acc, f.SignExtend(f.Extract(va, (uint8_t)(2 * h), INT32_TYPE),
+                                  INT64_TYPE));
+    acc = f.Add(acc, f.SignExtend(f.Extract(va, w, INT32_TYPE), INT64_TYPE));
+    vd = f.Insert(vd, w, SatToS32(f, acc));
+  }
+  f.StoreVR(i.VX.VD, vd);
+  return 0;
+}
+
+// vsum4* are VA,VB form; VB is a per-word accumulator. The four (or two) VA
+// sub-elements of each word are summed, added to VB.word[w], then saturated.
+static int EmitVSum4(PPCHIRBuilder& f, const InstrData& i, TypeName part_type,
+                     ExtendFn extend, Value* (*sat)(PPCHIRBuilder&, Value*)) {
+  Value* va = f.LoadVR(i.VX.VA);
+  Value* vb = f.LoadVR(i.VX.VB);
+  Value* vd = f.LoadZeroVec128();
+  int per_word = part_type == INT8_TYPE ? 4 : 2;
+  for (int w = 0; w < 4; ++w) {
+    // Extend the VB accumulator word with the op's signedness (signed for the
+    // *sbs/*shs variants, unsigned for *ubs).
+    Value* acc = (f.*extend)(f.Extract(vb, (uint8_t)w, INT32_TYPE), INT64_TYPE);
+    for (int k = 0; k < per_word; ++k) {
+      uint8_t e = (uint8_t)(per_word * w + k);
+      acc = f.Add(acc, (f.*extend)(f.Extract(va, e, part_type), INT64_TYPE));
+    }
+    vd = f.Insert(vd, (uint8_t)w, sat(f, acc));
+  }
+  f.StoreVR(i.VX.VD, vd);
+  return 0;
 }
 
 int InstrEmit_vsum4sbs(PPCHIRBuilder& f, const InstrData& i) {
-  XEINSTRNOTIMPLEMENTED();
-  return 1;
+  // Signed byte, signed saturate.
+  return EmitVSum4(f, i, INT8_TYPE, &PPCHIRBuilder::SignExtend, &SatToS32);
 }
 
 int InstrEmit_vsum4shs(PPCHIRBuilder& f, const InstrData& i) {
-  XEINSTRNOTIMPLEMENTED();
-  return 1;
+  // Signed halfword, signed saturate.
+  return EmitVSum4(f, i, INT16_TYPE, &PPCHIRBuilder::SignExtend, &SatToS32);
 }
 
 int InstrEmit_vsum4ubs(PPCHIRBuilder& f, const InstrData& i) {
-  XEINSTRNOTIMPLEMENTED();
-  return 1;
+  // Unsigned byte, unsigned saturate. VB.word is an unsigned accumulator.
+  return EmitVSum4(f, i, INT8_TYPE, &PPCHIRBuilder::ZeroExtend, &SatToU32);
 }
 
 static Value* vkpkx_in_low(PPCHIRBuilder& f, Value* input) {
