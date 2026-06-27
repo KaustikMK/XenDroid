@@ -236,6 +236,9 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
       // interpolation.
       XE_UI_VULKAN_LOCAL_EXTENSION(KHR_fragment_shader_barycentric)
       XE_UI_VULKAN_LOCAL_EXTENSION(NV_fragment_shader_barycentric)
+      // #456. Per-sub-feature dynamic state used to collapse pipeline key
+      // permutations. EDS1/EDS2 are core in 1.3; only EDS3 needs an extension.
+      XE_UI_VULKAN_STRUCT_EXTENSION(EXT_extended_dynamic_state3)
     }
     if (properties.apiVersion >= VK_MAKE_API_VERSION(0, 1, 1, 0)) {
       // #237.
@@ -377,6 +380,15 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
   VulkanFeatures<VkPhysicalDeviceFaultFeaturesEXT,
                  VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT>
       features_EXT_device_fault;
+  // VK_EXT_extended_dynamic_state3 (#456). Per-sub-feature dynamic state.
+  VulkanFeatures<
+      VkPhysicalDeviceExtendedDynamicState3FeaturesEXT,
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_3_FEATURES_EXT>
+      features_EXT_extended_dynamic_state3;
+  // dynamicPrimitiveTopologyUnrestricted is a property, not a feature.
+  VkPhysicalDeviceExtendedDynamicState3PropertiesEXT
+      properties_EXT_extended_dynamic_state3 = {
+          VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_3_PROPERTIES_EXT};
 
   if (get_physical_device_properties2_supported) {
     if (properties.apiVersion >= VK_MAKE_API_VERSION(0, 1, 1, 0)) {
@@ -450,6 +462,12 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
     }
     if (device->extensions_.ext_EXT_device_fault) {
       features_EXT_device_fault.Link(supported_features_2, device_create_info);
+    }
+    if (device->extensions_.ext_EXT_extended_dynamic_state3) {
+      features_EXT_extended_dynamic_state3.Link(supported_features_2,
+                                                device_create_info);
+      properties_EXT_extended_dynamic_state3.pNext = properties_2.pNext;
+      properties_2.pNext = &properties_EXT_extended_dynamic_state3;
     }
     ifn.vkGetPhysicalDeviceProperties2(physical_device, &properties_2);
     ifn.vkGetPhysicalDeviceFeatures2(physical_device, &supported_features_2);
@@ -948,6 +966,41 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
        ext_NV_fragment_shader_barycentric) &&
       !driver_is_moltenvk;
 
+  // Extended dynamic state. EDS1 (#268) and EDS2 (#378) are promoted to Vulkan
+  // 1.3 core - always available on a 1.3 device. EDS3 (#456) is a standalone
+  // extension with per-sub-feature bools; mirror only the sub-features Xenia
+  // actually makes dynamic into the enabled struct (leaving the rest disabled
+  // avoids requesting unsupported sub-features at device creation).
+  if (with_gpu_emulation) {
+    device->properties_.extendedDynamicState =
+        properties.apiVersion >= VK_MAKE_API_VERSION(0, 1, 3, 0);
+    if (device->properties_.extendedDynamicState) {
+      XELOGI("* extendedDynamicState (core 1.3)");
+    }
+    if (device->extensions_.ext_EXT_extended_dynamic_state3 &&
+        device->properties_.extendedDynamicState) {
+      XE_UI_VULKAN_FEATURE_2(features_EXT_extended_dynamic_state3,
+                             extendedDynamicState3DepthClampEnable);
+      XE_UI_VULKAN_FEATURE_2(features_EXT_extended_dynamic_state3,
+                             extendedDynamicState3PolygonMode);
+      XE_UI_VULKAN_FEATURE_2(features_EXT_extended_dynamic_state3,
+                             extendedDynamicState3ColorBlendEnable);
+      XE_UI_VULKAN_FEATURE_2(features_EXT_extended_dynamic_state3,
+                             extendedDynamicState3ColorBlendEquation);
+      XE_UI_VULKAN_FEATURE_2(features_EXT_extended_dynamic_state3,
+                             extendedDynamicState3ColorWriteMask);
+    }
+  }
+  // dynamicPrimitiveTopologyUnrestricted is a property of the extension, not a
+  // feature to enable - read it from the properties structure (valid only when
+  // the extension is present and queried above). When false, dynamic topology
+  // must stay within its class, so the class is kept in the pipeline key.
+  if (device->extensions_.ext_EXT_extended_dynamic_state3) {
+    device->properties_.extendedDynamicState3PrimitiveTopologyUnrestricted =
+        properties_EXT_extended_dynamic_state3
+            .dynamicPrimitiveTopologyUnrestricted;
+  }
+
 #undef XE_UI_VULKAN_LIMIT
 #undef XE_UI_VULKAN_ENUM_LIMIT
 #undef XE_UI_VULKAN_FEATURE
@@ -995,6 +1048,13 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
   if (properties.apiVersion >= VK_MAKE_API_VERSION(0, 1, 3, 0)) {
 #include "xenia/ui/vulkan/functions/device_1_3_khr_dynamic_rendering.inc"
 #include "xenia/ui/vulkan/functions/device_1_3_khr_maintenance4.inc"
+    // VK_EXT_extended_dynamic_state (#268) + VK_EXT_extended_dynamic_state2
+    // (#378) setters and the core topology/restart setters, all promoted to
+    // 1.3 core and loaded by their core name.
+    if (with_gpu_emulation) {
+#include "xenia/ui/vulkan/functions/device_ext_extended_dynamic_state.inc"
+#include "xenia/ui/vulkan/functions/device_1_3_core_dynamic_topology.inc"
+    }
   }
 #undef XE_UI_VULKAN_FUNCTION_PROMOTED
 
@@ -1031,6 +1091,29 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
 #undef XE_UI_VULKAN_FUNCTION_PROMOTED
 
 #undef XE_UI_VULKAN_FUNCTION
+
+  // VK_EXT_extended_dynamic_state3 (#456) is optional and never promoted - load
+  // its EXT-named setters non-fatally (like vkGetDeviceFaultInfoEXT). If any are
+  // missing, disable the extension so the GPU backend bakes those fields into
+  // the pipeline key instead of trying to call null function pointers.
+  if (device->extensions_.ext_EXT_extended_dynamic_state3) {
+    bool eds3_functions_loaded = true;
+#define XE_UI_VULKAN_FUNCTION(name)                                   \
+  eds3_functions_loaded &= (dfn.name = PFN_##name(ifn.vkGetDeviceProcAddr( \
+                               device->device_, #name))) != nullptr;
+#include "xenia/ui/vulkan/functions/device_ext_extended_dynamic_state3.inc"
+#undef XE_UI_VULKAN_FUNCTION
+    if (!eds3_functions_loaded) {
+      device->extensions_.ext_EXT_extended_dynamic_state3 = false;
+      device->properties_.extendedDynamicState3DepthClampEnable = false;
+      device->properties_.extendedDynamicState3PolygonMode = false;
+      device->properties_.extendedDynamicState3ColorBlendEnable = false;
+      device->properties_.extendedDynamicState3ColorBlendEquation = false;
+      device->properties_.extendedDynamicState3ColorWriteMask = false;
+      device->properties_
+          .extendedDynamicState3PrimitiveTopologyUnrestricted = false;
+    }
+  }
 
   // Optional fault-info function pointer - failing to load is not fatal.
   if (device->extensions_.ext_EXT_device_fault) {

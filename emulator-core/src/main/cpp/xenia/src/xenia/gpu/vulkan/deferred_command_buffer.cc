@@ -411,6 +411,97 @@ void DeferredCommandBuffer::Execute(VkCommandBuffer command_buffer) {
                 xe::align(sizeof(ArgsVkSetViewport), alignof(VkViewport))));
       } break;
 
+      case Command::kVkSetCullMode: {
+        auto& args = *reinterpret_cast<const ArgsVkSetCullMode*>(stream);
+        dfn.vkCmdSetCullMode(command_buffer, args.cull_mode);
+      } break;
+
+      case Command::kVkSetFrontFace: {
+        auto& args = *reinterpret_cast<const ArgsVkSetFrontFace*>(stream);
+        dfn.vkCmdSetFrontFace(command_buffer, args.front_face);
+      } break;
+
+      case Command::kVkSetPrimitiveTopology: {
+        auto& args =
+            *reinterpret_cast<const ArgsVkSetPrimitiveTopology*>(stream);
+        dfn.vkCmdSetPrimitiveTopology(command_buffer, args.primitive_topology);
+      } break;
+
+      case Command::kVkSetPrimitiveRestartEnable: {
+        auto& args = *reinterpret_cast<const ArgsVkSetBool*>(stream);
+        dfn.vkCmdSetPrimitiveRestartEnable(command_buffer, args.value);
+      } break;
+
+      case Command::kVkSetDepthTestEnable: {
+        auto& args = *reinterpret_cast<const ArgsVkSetBool*>(stream);
+        dfn.vkCmdSetDepthTestEnable(command_buffer, args.value);
+      } break;
+
+      case Command::kVkSetDepthWriteEnable: {
+        auto& args = *reinterpret_cast<const ArgsVkSetBool*>(stream);
+        dfn.vkCmdSetDepthWriteEnable(command_buffer, args.value);
+      } break;
+
+      case Command::kVkSetDepthCompareOp: {
+        auto& args = *reinterpret_cast<const ArgsVkSetDepthCompareOp*>(stream);
+        dfn.vkCmdSetDepthCompareOp(command_buffer, args.depth_compare_op);
+      } break;
+
+      case Command::kVkSetStencilTestEnable: {
+        auto& args = *reinterpret_cast<const ArgsVkSetBool*>(stream);
+        dfn.vkCmdSetStencilTestEnable(command_buffer, args.value);
+      } break;
+
+      case Command::kVkSetStencilOp: {
+        auto& args = *reinterpret_cast<const ArgsVkSetStencilOp*>(stream);
+        dfn.vkCmdSetStencilOp(command_buffer, args.face_mask, args.fail_op,
+                              args.pass_op, args.depth_fail_op,
+                              args.compare_op);
+      } break;
+
+      case Command::kVkSetDepthClampEnableEXT: {
+        auto& args = *reinterpret_cast<const ArgsVkSetBool*>(stream);
+        dfn.vkCmdSetDepthClampEnableEXT(command_buffer, args.value);
+      } break;
+
+      case Command::kVkSetPolygonModeEXT: {
+        auto& args = *reinterpret_cast<const ArgsVkSetPolygonModeEXT*>(stream);
+        dfn.vkCmdSetPolygonModeEXT(command_buffer, args.polygon_mode);
+      } break;
+
+      case Command::kVkSetColorBlendEnableEXT: {
+        auto& args =
+            *reinterpret_cast<const ArgsVkSetColorBlendEnableEXT*>(stream);
+        dfn.vkCmdSetColorBlendEnableEXT(
+            command_buffer, args.first_attachment, args.attachment_count,
+            reinterpret_cast<const VkBool32*>(
+                reinterpret_cast<const uint8_t*>(stream) +
+                xe::align(sizeof(ArgsVkSetColorBlendEnableEXT),
+                          alignof(VkBool32))));
+      } break;
+
+      case Command::kVkSetColorBlendEquationEXT: {
+        auto& args =
+            *reinterpret_cast<const ArgsVkSetColorBlendEquationEXT*>(stream);
+        dfn.vkCmdSetColorBlendEquationEXT(
+            command_buffer, args.first_attachment, args.attachment_count,
+            reinterpret_cast<const VkColorBlendEquationEXT*>(
+                reinterpret_cast<const uint8_t*>(stream) +
+                xe::align(sizeof(ArgsVkSetColorBlendEquationEXT),
+                          alignof(VkColorBlendEquationEXT))));
+      } break;
+
+      case Command::kVkSetColorWriteMaskEXT: {
+        auto& args =
+            *reinterpret_cast<const ArgsVkSetColorWriteMaskEXT*>(stream);
+        dfn.vkCmdSetColorWriteMaskEXT(
+            command_buffer, args.first_attachment, args.attachment_count,
+            reinterpret_cast<const VkColorComponentFlags*>(
+                reinterpret_cast<const uint8_t*>(stream) +
+                xe::align(sizeof(ArgsVkSetColorWriteMaskEXT),
+                          alignof(VkColorComponentFlags))));
+      } break;
+
       case Command::kVkBeginDebugUtilsLabelEXT: {
         const ui::vulkan::VulkanInstance::Functions& ifn =
             command_processor_.GetVulkanDevice()

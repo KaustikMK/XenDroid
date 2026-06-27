@@ -59,6 +59,33 @@ class VulkanPipelineCache {
     PipelineLayoutProvider() = default;
   };
 
+  // Pre-mapped dynamic-state values for one pipeline, derived from the same
+  // (non-canonicalized) state the static pipeline would have baked. The command
+  // processor reads these to emit the extended-dynamic-state setters per draw
+  // with dirty tracking, guaranteeing the dynamic values match the static
+  // encoding exactly. Only fields whose capability bit is set are dynamic; the
+  // rest are baked and their values here are ignored.
+  struct DynamicState {
+    VkPrimitiveTopology primitive_topology;
+    VkBool32 primitive_restart_enable;
+    VkCullModeFlags cull_mode;
+    VkFrontFace front_face;
+    VkBool32 depth_test_enable;
+    VkBool32 depth_write_enable;
+    VkCompareOp depth_compare_op;
+    VkBool32 stencil_test_enable;
+    VkStencilOpState stencil_front;
+    VkStencilOpState stencil_back;
+    VkBool32 depth_clamp_enable;
+    VkPolygonMode polygon_mode;
+    // Per color render target. color_rts_used is the bitmask of valid indices
+    // (matching render_pass_key.depth_and_color_used >> 1).
+    uint32_t color_rts_used;
+    VkBool32 color_blend_enable[xenos::kMaxColorRenderTargets];
+    VkColorBlendEquationEXT color_blend_equation[xenos::kMaxColorRenderTargets];
+    VkColorComponentFlags color_write_mask[xenos::kMaxColorRenderTargets];
+  };
+
   struct Pipeline {
     // VK_NULL_HANDLE while asynchronous creation is pending (or after it
     // failed). The slot address is STABLE for the cache's lifetime
@@ -69,19 +96,23 @@ class VulkanPipelineCache {
     // The layouts are owned by the VulkanCommandProcessor, and must not be
     // destroyed by it while the pipeline cache is active.
     const PipelineLayoutProvider* pipeline_layout;
+    // Pre-mapped dynamic-state values for this pipeline (see DynamicState).
+    DynamicState dynamic_state;
 
     Pipeline(const PipelineLayoutProvider* pipeline_layout_provider)
-        : pipeline_layout(pipeline_layout_provider) {}
+        : pipeline_layout(pipeline_layout_provider), dynamic_state{} {}
 
     // Copy constructor needed for unordered_map
     Pipeline(const Pipeline& other)
         : pipeline(other.pipeline.load(std::memory_order_acquire)),
-          pipeline_layout(other.pipeline_layout) {}
+          pipeline_layout(other.pipeline_layout),
+          dynamic_state(other.dynamic_state) {}
 
     // Move constructor
     Pipeline(Pipeline&& other) noexcept
         : pipeline(other.pipeline.load(std::memory_order_acquire)),
-          pipeline_layout(other.pipeline_layout) {}
+          pipeline_layout(other.pipeline_layout),
+          dynamic_state(other.dynamic_state) {}
 
     // Deleted copy assignment to prevent accidental copying
     Pipeline& operator=(const Pipeline&) = delete;
@@ -89,6 +120,30 @@ class VulkanPipelineCache {
     // Deleted move assignment
     Pipeline& operator=(Pipeline&&) = delete;
   };
+
+  // Resolved extended-dynamic-state capabilities for the current device and the
+  // vulkan_dynamic_pipeline_state cvar. A field is dynamic only when its bit is
+  // set here; otherwise it is baked into the pipeline key as before. EDS1/EDS2
+  // fields share `extended_dynamic_state` (core in Vulkan 1.3); each EDS3
+  // sub-feature has its own bit. Computed once in Initialize().
+  struct DynamicStateCapabilities {
+    // EDS1/EDS2 (core in 1.3): cull mode, front face, primitive topology,
+    // primitive restart enable, depth test/write/compare op, stencil test
+    // enable, stencil op.
+    bool extended_dynamic_state = false;
+    // EDS3 sub-features.
+    bool depth_clamp_enable = false;
+    bool polygon_mode = false;
+    bool color_blend_enable = false;
+    bool color_blend_equation = false;
+    bool color_write_mask = false;
+    // When false, dynamic topology must stay within its class, so the topology
+    // class is kept in the pipeline key.
+    bool primitive_topology_unrestricted = false;
+  };
+  const DynamicStateCapabilities& dynamic_state_capabilities() const {
+    return dynamic_state_capabilities_;
+  }
 
   static constexpr size_t kLayoutUIDEmpty = 0;
 
@@ -260,6 +315,11 @@ class VulkanPipelineCache {
     xenos::StencilOp stencil_back_depth_fail_op : 3;     // 6
     xenos::CompareFunction stencil_back_compare_op : 3;  // 9
 
+    // Topology class (0=point, 1=line, 2=triangle, 3=patch). Only kept in the
+    // key when dynamic primitive topology is enabled but topology may not cross
+    // classes (dynamicPrimitiveTopologyUnrestricted absent). Zero otherwise.
+    uint32_t topology_class : 2;  // 11
+
     // Filled only for the attachments present in the render pass object.
     PipelineRenderTarget render_targets[xenos::kMaxColorRenderTargets];
 
@@ -283,7 +343,7 @@ class VulkanPipelineCache {
       }
     };
 
-    static constexpr uint32_t kVersion = 0x20250118;
+    static constexpr uint32_t kVersion = 0x20260627;
   });
 
   // Pipeline storage constants.
@@ -405,6 +465,23 @@ class VulkanPipelineCache {
   bool denorm_flush_to_zero_float32_;
   // Already combined with the spirv_disable_rounding_mode_rte cvar.
   bool rounding_mode_rte_float32_;
+
+  // Resolved once in Initialize() from the device features and the
+  // vulkan_dynamic_pipeline_state cvar.
+  DynamicStateCapabilities dynamic_state_capabilities_;
+
+  // Zeroes the fields of `description` that are made dynamic by
+  // dynamic_state_capabilities_ so that draws differing only in dynamic state
+  // collapse onto one pipeline. Keeps the topology class when topology is not
+  // unrestricted. Must be called right before hashing / cache lookup.
+  void CanonicalizePipelineDescription(PipelineDescription& description) const;
+
+  // Maps a (non-canonicalized) description to the pre-resolved Vulkan dynamic
+  // state values the command processor emits per draw. Always computes all
+  // fields; the command processor only emits the ones whose capability bit is
+  // set.
+  void FillDynamicState(const PipelineDescription& description,
+                        DynamicState& dynamic_state) const;
 
   // Temporary storage for AnalyzeUcode calls on the processor thread.
   StringBuffer ucode_disasm_buffer_;

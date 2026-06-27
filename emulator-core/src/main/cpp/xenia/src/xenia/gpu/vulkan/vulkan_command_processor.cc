@@ -4019,7 +4019,8 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
   // Update dynamic graphics pipeline state.
   UpdateDynamicState(viewport_info, primitive_polygonal,
                      normalized_depth_control, draw_resolution_scale_x,
-                     draw_resolution_scale_y, apply_host_depth_polygon_offset);
+                     draw_resolution_scale_y, apply_host_depth_polygon_offset,
+                     pipeline->dynamic_state);
 
   auto vgt_draw_initiator = regs.Get<reg::VGT_DRAW_INITIATOR>();
 
@@ -6327,6 +6328,21 @@ bool VulkanCommandProcessor::BeginSubmission(bool is_guest_command) {
     dynamic_stencil_write_mask_back_update_needed_ = true;
     dynamic_stencil_reference_front_update_needed_ = true;
     dynamic_stencil_reference_back_update_needed_ = true;
+    dynamic_primitive_topology_update_needed_ = true;
+    dynamic_primitive_restart_enable_update_needed_ = true;
+    dynamic_cull_mode_update_needed_ = true;
+    dynamic_front_face_update_needed_ = true;
+    dynamic_depth_test_enable_update_needed_ = true;
+    dynamic_depth_write_enable_update_needed_ = true;
+    dynamic_depth_compare_op_update_needed_ = true;
+    dynamic_stencil_test_enable_update_needed_ = true;
+    dynamic_stencil_op_front_update_needed_ = true;
+    dynamic_stencil_op_back_update_needed_ = true;
+    dynamic_depth_clamp_enable_update_needed_ = true;
+    dynamic_polygon_mode_update_needed_ = true;
+    dynamic_color_blend_enable_update_needed_ = true;
+    dynamic_color_blend_equation_update_needed_ = true;
+    dynamic_color_write_mask_update_needed_ = true;
     current_render_pass_ = VK_NULL_HANDLE;
     current_framebuffer_ = nullptr;
     in_render_pass_ = false;
@@ -6883,7 +6899,8 @@ void VulkanCommandProcessor::UpdateDynamicState(
     const draw_util::ViewportInfo& viewport_info, bool primitive_polygonal,
     reg::RB_DEPTHCONTROL normalized_depth_control,
     uint32_t draw_resolution_scale_x, uint32_t draw_resolution_scale_y,
-    bool depth_bias_in_pixel_shader) {
+    bool depth_bias_in_pixel_shader,
+    const VulkanPipelineCache::DynamicState& pipeline_dynamic_state) {
 #if XE_GPU_FINE_GRAINED_DRAW_SCOPES
   SCOPE_profile_cpu_f("gpu");
 #endif  // XE_GPU_FINE_GRAINED_DRAW_SCOPES
@@ -7108,8 +7125,198 @@ void VulkanCommandProcessor::UpdateDynamicState(
     }
   }
 
-  // TODO(Triang3l): VK_EXT_extended_dynamic_state and
-  // VK_EXT_extended_dynamic_state2.
+  // Extended dynamic state (VK_EXT_extended_dynamic_state / state2 / state3).
+  // The pipeline cache resolved the exact Vulkan values these draw must use
+  // (matching what a static pipeline would have baked) into
+  // pipeline_dynamic_state; emit only the fields whose capability bit is set,
+  // with dirty tracking so redundant setters aren't recorded.
+  const VulkanPipelineCache::DynamicStateCapabilities& eds_caps =
+      pipeline_cache_->dynamic_state_capabilities();
+  if (eds_caps.extended_dynamic_state) {
+    const VulkanPipelineCache::DynamicState& ds = pipeline_dynamic_state;
+
+    // Primitive topology (EDS1 core).
+    dynamic_primitive_topology_update_needed_ |=
+        dynamic_primitive_topology_ != ds.primitive_topology;
+    if (dynamic_primitive_topology_update_needed_) {
+      dynamic_primitive_topology_ = ds.primitive_topology;
+      deferred_command_buffer_.CmdVkSetPrimitiveTopology(
+          dynamic_primitive_topology_);
+      dynamic_primitive_topology_update_needed_ = false;
+    }
+    // Primitive restart enable (EDS2 core).
+    dynamic_primitive_restart_enable_update_needed_ |=
+        dynamic_primitive_restart_enable_ != ds.primitive_restart_enable;
+    if (dynamic_primitive_restart_enable_update_needed_) {
+      dynamic_primitive_restart_enable_ = ds.primitive_restart_enable;
+      deferred_command_buffer_.CmdVkSetPrimitiveRestartEnable(
+          dynamic_primitive_restart_enable_);
+      dynamic_primitive_restart_enable_update_needed_ = false;
+    }
+    // Cull mode (EDS1 core).
+    dynamic_cull_mode_update_needed_ |= dynamic_cull_mode_ != ds.cull_mode;
+    if (dynamic_cull_mode_update_needed_) {
+      dynamic_cull_mode_ = ds.cull_mode;
+      deferred_command_buffer_.CmdVkSetCullMode(dynamic_cull_mode_);
+      dynamic_cull_mode_update_needed_ = false;
+    }
+    // Front face (EDS1 core).
+    dynamic_front_face_update_needed_ |= dynamic_front_face_ != ds.front_face;
+    if (dynamic_front_face_update_needed_) {
+      dynamic_front_face_ = ds.front_face;
+      deferred_command_buffer_.CmdVkSetFrontFace(dynamic_front_face_);
+      dynamic_front_face_update_needed_ = false;
+    }
+
+    // Depth / stencil dynamic state. The pipeline cache disables the whole
+    // extended-dynamic-state capability on the fragment-shader-interlock path
+    // (where these aren't fixed-function), so reaching here implies a render
+    // pass with real depth / stencil state.
+    {
+      // Depth test enable (EDS1 core).
+      dynamic_depth_test_enable_update_needed_ |=
+          dynamic_depth_test_enable_ != ds.depth_test_enable;
+      if (dynamic_depth_test_enable_update_needed_) {
+        dynamic_depth_test_enable_ = ds.depth_test_enable;
+        deferred_command_buffer_.CmdVkSetDepthTestEnable(
+            dynamic_depth_test_enable_);
+        dynamic_depth_test_enable_update_needed_ = false;
+      }
+      // Depth write enable (EDS1 core).
+      dynamic_depth_write_enable_update_needed_ |=
+          dynamic_depth_write_enable_ != ds.depth_write_enable;
+      if (dynamic_depth_write_enable_update_needed_) {
+        dynamic_depth_write_enable_ = ds.depth_write_enable;
+        deferred_command_buffer_.CmdVkSetDepthWriteEnable(
+            dynamic_depth_write_enable_);
+        dynamic_depth_write_enable_update_needed_ = false;
+      }
+      // Depth compare op (EDS1 core).
+      dynamic_depth_compare_op_update_needed_ |=
+          dynamic_depth_compare_op_ != ds.depth_compare_op;
+      if (dynamic_depth_compare_op_update_needed_) {
+        dynamic_depth_compare_op_ = ds.depth_compare_op;
+        deferred_command_buffer_.CmdVkSetDepthCompareOp(
+            dynamic_depth_compare_op_);
+        dynamic_depth_compare_op_update_needed_ = false;
+      }
+      // Stencil test enable (EDS1 core).
+      dynamic_stencil_test_enable_update_needed_ |=
+          dynamic_stencil_test_enable_ != ds.stencil_test_enable;
+      if (dynamic_stencil_test_enable_update_needed_) {
+        dynamic_stencil_test_enable_ = ds.stencil_test_enable;
+        deferred_command_buffer_.CmdVkSetStencilTestEnable(
+            dynamic_stencil_test_enable_);
+        dynamic_stencil_test_enable_update_needed_ = false;
+      }
+      // Stencil ops (EDS1 core), tracked per face. memcmp because
+      // VkStencilOpState bundles the (dynamic) compare/write masks and
+      // reference, which are set separately and must be ignored here.
+      auto stencil_ops_equal = [](const VkStencilOpState& a,
+                                  const VkStencilOpState& b) {
+        return a.failOp == b.failOp && a.passOp == b.passOp &&
+               a.depthFailOp == b.depthFailOp && a.compareOp == b.compareOp;
+      };
+      dynamic_stencil_op_front_update_needed_ |=
+          !stencil_ops_equal(dynamic_stencil_op_front_, ds.stencil_front);
+      if (dynamic_stencil_op_front_update_needed_) {
+        dynamic_stencil_op_front_ = ds.stencil_front;
+        deferred_command_buffer_.CmdVkSetStencilOp(
+            VK_STENCIL_FACE_FRONT_BIT, ds.stencil_front.failOp,
+            ds.stencil_front.passOp, ds.stencil_front.depthFailOp,
+            ds.stencil_front.compareOp);
+        dynamic_stencil_op_front_update_needed_ = false;
+      }
+      dynamic_stencil_op_back_update_needed_ |=
+          !stencil_ops_equal(dynamic_stencil_op_back_, ds.stencil_back);
+      if (dynamic_stencil_op_back_update_needed_) {
+        dynamic_stencil_op_back_ = ds.stencil_back;
+        deferred_command_buffer_.CmdVkSetStencilOp(
+            VK_STENCIL_FACE_BACK_BIT, ds.stencil_back.failOp,
+            ds.stencil_back.passOp, ds.stencil_back.depthFailOp,
+            ds.stencil_back.compareOp);
+        dynamic_stencil_op_back_update_needed_ = false;
+      }
+    }
+
+    // EDS3 sub-features.
+    if (eds_caps.depth_clamp_enable) {
+      dynamic_depth_clamp_enable_update_needed_ |=
+          dynamic_depth_clamp_enable_ != ds.depth_clamp_enable;
+      if (dynamic_depth_clamp_enable_update_needed_) {
+        dynamic_depth_clamp_enable_ = ds.depth_clamp_enable;
+        deferred_command_buffer_.CmdVkSetDepthClampEnableEXT(
+            dynamic_depth_clamp_enable_);
+        dynamic_depth_clamp_enable_update_needed_ = false;
+      }
+    }
+    if (eds_caps.polygon_mode) {
+      dynamic_polygon_mode_update_needed_ |=
+          dynamic_polygon_mode_ != ds.polygon_mode;
+      if (dynamic_polygon_mode_update_needed_) {
+        dynamic_polygon_mode_ = ds.polygon_mode;
+        deferred_command_buffer_.CmdVkSetPolygonModeEXT(dynamic_polygon_mode_);
+        dynamic_polygon_mode_update_needed_ = false;
+      }
+    }
+    {
+      // Per-render-target blend state. Emit only for the attachments present in
+      // the render pass (ds.color_rts_used), as a single contiguous range
+      // covering [0, highest used] so the array is dense for the setter.
+      uint32_t color_rts_used = ds.color_rts_used;
+      uint32_t attachment_count =
+          color_rts_used ? (32 - xe::lzcnt(color_rts_used)) : 0;
+      if (attachment_count) {
+        if (eds_caps.color_blend_enable) {
+          bool changed = false;
+          for (uint32_t i = 0; i < attachment_count; ++i) {
+            if (dynamic_color_blend_enable_[i] != ds.color_blend_enable[i]) {
+              dynamic_color_blend_enable_[i] = ds.color_blend_enable[i];
+              changed = true;
+            }
+          }
+          dynamic_color_blend_enable_update_needed_ |= changed;
+          if (dynamic_color_blend_enable_update_needed_) {
+            deferred_command_buffer_.CmdVkSetColorBlendEnableEXT(
+                0, attachment_count, dynamic_color_blend_enable_);
+            dynamic_color_blend_enable_update_needed_ = false;
+          }
+        }
+        if (eds_caps.color_blend_equation) {
+          bool changed = false;
+          for (uint32_t i = 0; i < attachment_count; ++i) {
+            if (std::memcmp(&dynamic_color_blend_equation_[i],
+                            &ds.color_blend_equation[i],
+                            sizeof(VkColorBlendEquationEXT)) != 0) {
+              dynamic_color_blend_equation_[i] = ds.color_blend_equation[i];
+              changed = true;
+            }
+          }
+          dynamic_color_blend_equation_update_needed_ |= changed;
+          if (dynamic_color_blend_equation_update_needed_) {
+            deferred_command_buffer_.CmdVkSetColorBlendEquationEXT(
+                0, attachment_count, dynamic_color_blend_equation_);
+            dynamic_color_blend_equation_update_needed_ = false;
+          }
+        }
+        if (eds_caps.color_write_mask) {
+          bool changed = false;
+          for (uint32_t i = 0; i < attachment_count; ++i) {
+            if (dynamic_color_write_mask_[i] != ds.color_write_mask[i]) {
+              dynamic_color_write_mask_[i] = ds.color_write_mask[i];
+              changed = true;
+            }
+          }
+          dynamic_color_write_mask_update_needed_ |= changed;
+          if (dynamic_color_write_mask_update_needed_) {
+            deferred_command_buffer_.CmdVkSetColorWriteMaskEXT(
+                0, attachment_count, dynamic_color_write_mask_);
+            dynamic_color_write_mask_update_needed_ = false;
+          }
+        }
+      }
+    }
+  }
 }
 
 void VulkanCommandProcessor::UpdateSystemConstantValues(

@@ -516,12 +516,12 @@ class VulkanCommandProcessor final : public CommandProcessor {
   bool AwaitQueryResolve(ReportHandle report_handle,
                          uint64_t wait_for_submission) override;
 
-  void UpdateDynamicState(const draw_util::ViewportInfo& viewport_info,
-                          bool primitive_polygonal,
-                          reg::RB_DEPTHCONTROL normalized_depth_control,
-                          uint32_t draw_resolution_scale_x,
-                          uint32_t draw_resolution_scale_y,
-                          bool depth_bias_in_pixel_shader);
+  void UpdateDynamicState(
+      const draw_util::ViewportInfo& viewport_info, bool primitive_polygonal,
+      reg::RB_DEPTHCONTROL normalized_depth_control,
+      uint32_t draw_resolution_scale_x, uint32_t draw_resolution_scale_y,
+      bool depth_bias_in_pixel_shader,
+      const VulkanPipelineCache::DynamicState& pipeline_dynamic_state);
   void UpdateSystemConstantValues(
       bool primitive_polygonal,
       const PrimitiveProcessor::ProcessingResult& primitive_processing_result,
@@ -927,6 +927,44 @@ class VulkanCommandProcessor final : public CommandProcessor {
   bool dynamic_stencil_write_mask_back_update_needed_;
   bool dynamic_stencil_reference_front_update_needed_;
   bool dynamic_stencil_reference_back_update_needed_;
+
+  // Extended dynamic state (VK_EXT_extended_dynamic_state / state2 / state3).
+  // Cached last-emitted values + dirty flags, mirroring the existing dynamic
+  // state idiom. Initialized to invalid sentinels so the first draw of each
+  // submission always emits. Only emitted when the matching capability bit in
+  // the pipeline cache is set.
+  VkPrimitiveTopology dynamic_primitive_topology_ = VK_PRIMITIVE_TOPOLOGY_MAX_ENUM;
+  VkBool32 dynamic_primitive_restart_enable_ = VK_FALSE;
+  VkCullModeFlags dynamic_cull_mode_ = VK_CULL_MODE_FLAG_BITS_MAX_ENUM;
+  VkFrontFace dynamic_front_face_ = VK_FRONT_FACE_MAX_ENUM;
+  VkBool32 dynamic_depth_test_enable_ = VK_FALSE;
+  VkBool32 dynamic_depth_write_enable_ = VK_FALSE;
+  VkCompareOp dynamic_depth_compare_op_ = VK_COMPARE_OP_MAX_ENUM;
+  VkBool32 dynamic_stencil_test_enable_ = VK_FALSE;
+  VkStencilOpState dynamic_stencil_op_front_ = {};
+  VkStencilOpState dynamic_stencil_op_back_ = {};
+  VkBool32 dynamic_depth_clamp_enable_ = VK_FALSE;
+  VkPolygonMode dynamic_polygon_mode_ = VK_POLYGON_MODE_MAX_ENUM;
+  VkBool32 dynamic_color_blend_enable_[xenos::kMaxColorRenderTargets] = {};
+  VkColorBlendEquationEXT
+      dynamic_color_blend_equation_[xenos::kMaxColorRenderTargets] = {};
+  VkColorComponentFlags
+      dynamic_color_write_mask_[xenos::kMaxColorRenderTargets] = {};
+  bool dynamic_primitive_topology_update_needed_;
+  bool dynamic_primitive_restart_enable_update_needed_;
+  bool dynamic_cull_mode_update_needed_;
+  bool dynamic_front_face_update_needed_;
+  bool dynamic_depth_test_enable_update_needed_;
+  bool dynamic_depth_write_enable_update_needed_;
+  bool dynamic_depth_compare_op_update_needed_;
+  bool dynamic_stencil_test_enable_update_needed_;
+  bool dynamic_stencil_op_front_update_needed_;
+  bool dynamic_stencil_op_back_update_needed_;
+  bool dynamic_depth_clamp_enable_update_needed_;
+  bool dynamic_polygon_mode_update_needed_;
+  bool dynamic_color_blend_enable_update_needed_;
+  bool dynamic_color_blend_equation_update_needed_;
+  bool dynamic_color_write_mask_update_needed_;
 
   // Currently used samplers.
   std::vector<std::pair<VulkanTextureCache::SamplerParameters, VkSampler>>

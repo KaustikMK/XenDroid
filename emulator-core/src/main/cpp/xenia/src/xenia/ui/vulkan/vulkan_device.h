@@ -195,6 +195,28 @@ class VulkanDevice {
     uint32_t maxSubgroupSize = 0;
     bool subgroupSizeControl = false;
     bool computeFullSubgroups = false;
+
+    // VK_EXT_extended_dynamic_state (#268) / VK_EXT_extended_dynamic_state2
+    // (#378). Both promoted to Vulkan 1.3 core. On the target (Vulkan 1.3),
+    // these are always available; the flags are only false on pre-1.3 devices
+    // without the extensions (in which case the extended-dynamic-state path is
+    // disabled entirely).
+    bool extendedDynamicState = false;
+
+    // VK_EXT_extended_dynamic_state3 (#456). Not promoted to core; per-
+    // sub-feature bools queried from VkPhysicalDeviceExtendedDynamicState3-
+    // FeaturesEXT. Each gates one piece of dynamic state - when false, that
+    // field is baked into the pipeline key instead of being made dynamic.
+    bool extendedDynamicState3DepthClampEnable = false;
+    bool extendedDynamicState3PolygonMode = false;
+    bool extendedDynamicState3ColorBlendEnable = false;
+    bool extendedDynamicState3ColorBlendEquation = false;
+    bool extendedDynamicState3ColorWriteMask = false;
+    // Governs whether dynamic primitive topology may cross topology class
+    // (point/line/triangle/patch). When false, dynamic topology must stay
+    // within the class the pipeline was created with, so the class is kept in
+    // the pipeline key.
+    bool extendedDynamicState3PrimitiveTopologyUnrestricted = false;
   };
 
   // Properties of the core API and enabled extensions, and enabled features.
@@ -235,6 +257,10 @@ class VulkanDevice {
     // VK_EXT_device_fault (#342). For driver-side fault description after
     // VK_ERROR_DEVICE_LOST.
     bool ext_EXT_device_fault = false;
+    // VK_EXT_extended_dynamic_state3 (#456). Per-sub-feature dynamic state for
+    // collapsing pipeline-state-object key permutations. EDS1/EDS2 are core in
+    // Vulkan 1.3 and tracked via Properties::extendedDynamicState instead.
+    bool ext_EXT_extended_dynamic_state3 = false;
   };
 
   const Extensions& extensions() const { return extensions_; }
@@ -258,7 +284,16 @@ class VulkanDevice {
 #include "xenia/ui/vulkan/functions/device_1_3_khr_maintenance4.inc"
     // VK_KHR_dynamic_rendering (#55, promoted to 1.3)
 #include "xenia/ui/vulkan/functions/device_1_3_khr_dynamic_rendering.inc"
+    // VK_EXT_extended_dynamic_state (#268, promoted to 1.3) +
+    // VK_EXT_extended_dynamic_state2 (#378, promoted to 1.3).
+#include "xenia/ui/vulkan/functions/device_ext_extended_dynamic_state.inc"
+    // vkCmdSetPrimitiveTopology (#268) / vkCmdSetPrimitiveRestartEnable (#378),
+    // core 1.3 entry points loaded by core name.
+#include "xenia/ui/vulkan/functions/device_1_3_core_dynamic_topology.inc"
 #undef XE_UI_VULKAN_FUNCTION_PROMOTED
+    // VK_EXT_extended_dynamic_state3 (#456) - never promoted, always loaded by
+    // EXT name and only when the extension is present (optional, non-fatal).
+#include "xenia/ui/vulkan/functions/device_ext_extended_dynamic_state3.inc"
 #undef XE_UI_VULKAN_FUNCTION
   };
 
