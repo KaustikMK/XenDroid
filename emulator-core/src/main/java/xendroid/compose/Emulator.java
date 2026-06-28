@@ -56,6 +56,28 @@ public class Emulator extends xendroid.emulator.Emulator{
     // thread (0 when none is in flight). Poll it for a determinate progress bar.
     public native float compressProgress();
 
+    // Extract an STFS/SVOD content package at srcPath into the content tree rooted
+    // at contentRoot (both REAL host paths). Placement is content-type aware: profiles
+    // under their account XUID, everything else under machine XUID 0. Returns X_STATUS
+    // (0 == success). Blocking VFS walk -- MUST be called off the main thread.
+    public native int install_content(String srcPath, String contentRoot);
+
+    // Fraction 0..1 of the in-flight content install (0 when none). Poll for a bar.
+    public native float installProgress();
+
+    // Header-only probe of an STFS/SVOD package: title id, content type, size,
+    // display name, icon. Returns null for a non-CON/unreadable container. Off-main.
+    public native ContentInfo content_header(String srcPath);
+
+    // List installed packages of contentType (DLC 0x2, Title Update 0xB0000) for
+    // titleId (8-char hex) under contentRoot. Both types live under machine XUID 0.
+    // Returns an empty array when nothing is installed. Off-main.
+    public native Emulator.ContentItem[] list_content(String contentRoot, String titleId, int contentType);
+
+    // Delete one installed package of contentType (data dir + .header sidecar).
+    // Returns X_STATUS (0 == success). Off-main.
+    public native int delete_content(String contentRoot, String titleId, int contentType, String pkgDir);
+
     // ---- Real-path (All Files Access) scan probes: take an ABSOLUTE host path
     // (no Context: no ContentResolver / fd). The core's real-path DiscImageDevice /
     // DiscZarchiveDevice / Extract*Metadata back these. format: 0=ISO, 1=XEX_FOLDER,
@@ -82,6 +104,7 @@ public class Emulator extends xendroid.emulator.Emulator{
         public String uri;
         public String name;
         public String titleId;   // 8-char uppercase hex, or null for non-GOD / unreadable
+        public String mediaId;   // 8-char uppercase hex, or null when unreadable
         public int fd;
         public byte[] icon;
 
@@ -94,6 +117,8 @@ public class Emulator extends xendroid.emulator.Emulator{
                 json.put("name",info.name);
             if(info.titleId!=null)
                 json.put("titleId",info.titleId);
+            if(info.mediaId!=null)
+                json.put("mediaId",info.mediaId);
 
             if(info.icon!=null)
                 json.put("icon", Base64.getEncoder().encodeToString(info.icon));
@@ -107,10 +132,29 @@ public class Emulator extends xendroid.emulator.Emulator{
                 info.name=json.getString("name");
             if(json.has("titleId"))
                 info.titleId=json.getString("titleId");
+            if(json.has("mediaId"))
+                info.mediaId=json.getString("mediaId");
             if(json.has("icon"))
                 info.icon=Base64.getDecoder().decode(json.getString("icon"));
 
             return info;
         }
+    }
+
+    // Parsed STFS/SVOD content-package header (CON/LIVE/PIRS). Distinct from
+    // GameInfo because the content installer needs contentType, which the GameInfo
+    // bridge drops -- without it Kotlin can't tell a DLC CON from a game CON.
+    public static class ContentInfo {
+        public int titleId;       // raw u32 (compare uppercase-hex against the game's)
+        public int contentType;   // XContentType; DLC == 0x2 (kMarketplaceContent)
+        public long contentSize;  // payload bytes (be u64 from the metadata header)
+        public String displayName;
+        public byte[] icon;
+    }
+
+    public static class ContentItem {
+        public String pkgDir;
+        public String displayName;
+        public long size;
     }
 }

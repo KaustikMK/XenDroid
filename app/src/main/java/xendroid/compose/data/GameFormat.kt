@@ -6,12 +6,12 @@ package xendroid.compose.data
  * XEX_FOLDER is handled separately (it's a directory, not a filename match).
  */
 enum class GameFormat {
-    ISO, ZAR, GOD, XEX_FOLDER;
+    ISO, ZAR, GOD, XEX_FOLDER, STFS;
 
     /** Display name from a *file* name (XEX folders use the folder name verbatim). */
     fun displayNameFor(fileName: String): String = when (this) {
         ISO, ZAR -> fileName.dropLast(4)   // strip ".iso"/".zar"
-        GOD, XEX_FOLDER -> fileName
+        GOD, XEX_FOLDER, STFS -> fileName  // STFS containers are extensionless
     }
 
     /** Native title-id format code (MUST match the enum in emulator_xendroid.cpp).
@@ -21,6 +21,7 @@ enum class GameFormat {
         XEX_FOLDER -> 1
         ZAR -> 2           // mounts the .zar disc + reads default.xex's XDBF
         GOD -> null        // GOD uses its own GameInfo reader
+        STFS -> null       // STFS reads its title id from the content_header
     }
 
     companion object {

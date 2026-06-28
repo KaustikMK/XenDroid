@@ -31,6 +31,11 @@ class GameMetadataCache(cacheDir: File) {
         val iconCacheName: String?,
         val sizeBytes: Long,
         val lastModified: Long,
+        val titleId: String? = null,
+        val mediaId: String? = null,
+        // Extensionless files share one branch (GOD vs STFS); a null format is a legacy
+        // entry that predates STFS and is GOD by construction.
+        val format: GameFormat? = null,
     )
 
     @Serializable
@@ -56,10 +61,19 @@ class GameMetadataCache(cacheDir: File) {
 
     /** Record an extraction result. A non-cacheable signature (see [Signature.cacheable])
      *  is NOT stored: an unreliable SAF signature must re-extract every scan. */
-    fun put(launchUri: String, name: String, iconCacheName: String?, signature: Signature) {
+    fun put(
+        launchUri: String,
+        name: String,
+        iconCacheName: String?,
+        signature: Signature,
+        titleId: String? = null,
+        mediaId: String? = null,
+        format: GameFormat? = null,
+    ) {
         if (!signature.cacheable) return
         synchronized(lock) {
-            entries[launchUri] = Entry(name, iconCacheName, signature.sizeBytes, signature.lastModified)
+            entries[launchUri] =
+                Entry(name, iconCacheName, signature.sizeBytes, signature.lastModified, titleId, mediaId, format)
         }
     }
 
@@ -105,7 +119,7 @@ class GameMetadataCache(cacheDir: File) {
 
     companion object {
         private const val TAG = "GameMetadataCache"
-        const val FILE_NAME = "game_metadata.json"
+        const val FILE_NAME = "game_metadata_v3.json"
 
         /**
          * PURE, side-effect-free HIT/MISS decision (no SAF/JNI/IO) so it is unit-testable.
@@ -132,13 +146,19 @@ class GameMetadataCache(cacheDir: File) {
             }
             val icon = cached.iconCacheName
             if (icon != null && !iconFileExists(icon)) return Decision.Miss
-            return Decision.Hit(cached.name, cached.iconCacheName)
+            return Decision.Hit(cached.name, cached.iconCacheName, cached.titleId, cached.mediaId, cached.format)
         }
     }
 
     /** Outcome of [decide]. [Hit] carries the cached values to build the Game from. */
     sealed interface Decision {
         data object Miss : Decision
-        data class Hit(val name: String, val iconCacheName: String?) : Decision
+        data class Hit(
+            val name: String,
+            val iconCacheName: String?,
+            val titleId: String? = null,
+            val mediaId: String? = null,
+            val format: GameFormat? = null,
+        ) : Decision
     }
 }

@@ -43,6 +43,8 @@ fun GameLibraryScreen(
     onOpenTouchControls: () -> Unit,
     onOpenPerGameSettings: (titleId: String, gameName: String, format: GameFormat, launchUri: String) -> Unit,
     onOpenGamePatches: (titleId: String, gameName: String) -> Unit,
+    onOpenContentManager: (titleId: String, gameName: String) -> Unit,
+    onOpenInstallContent: () -> Unit,
     compressVm: GameCompressViewModel,
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -119,6 +121,10 @@ fun GameLibraryScreen(
                                 onClick = { menuOpen = false; startRealPathMode() },
                             )
                         }
+                        DropdownMenuItem(
+                            text = { Text("Install content") },
+                            onClick = { menuOpen = false; onOpenInstallContent() },
+                        )
                         DropdownMenuItem(
                             text = { Text("Key mapping") },
                             onClick = { menuOpen = false; onOpenKeymap() },
@@ -223,7 +229,17 @@ fun GameLibraryScreen(
                     headlineContent = {
                         Text(game.name, style = MaterialTheme.typography.titleLarge)
                     },
-                    supportingContent = statusContent,
+                    supportingContent = if (game.titleId != null || game.mediaId != null || statusContent != null) {
+                        {
+                            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                game.titleId?.let { Text("Title ID: $it") }
+                                game.mediaId?.let { Text("Media ID: $it") }
+                                statusContent?.invoke()
+                            }
+                        }
+                    } else {
+                        null
+                    },
                 )
 
                 // Per-game settings — disabled (and visually dimmed) while the title id resolves.
@@ -257,6 +273,23 @@ fun GameLibraryScreen(
                     },
                     modifier = Modifier.clickable(enabled = perGameEnabled) {
                         viewModel.requestGamePatches(game)
+                    },
+                )
+
+                // Manage content — install, list and remove DLC + title updates for this game
+                // (title id resolved boot-free, same as patches above).
+                ListItem(
+                    headlineContent = { Text("Manage content") },
+                    colors = if (perGameEnabled) {
+                        ListItemDefaults.colors()
+                    } else {
+                        ListItemDefaults.colors(
+                            headlineColor =
+                                MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f),
+                        )
+                    },
+                    modifier = Modifier.clickable(enabled = perGameEnabled) {
+                        viewModel.requestContentManager(game)
                     },
                 )
 
@@ -294,6 +327,8 @@ fun GameLibraryScreen(
                     onOpenPerGameSettings(r.titleId, r.game.name, r.game.format, r.game.launchUri)
                 GameAction.GAME_PATCHES ->
                     onOpenGamePatches(r.titleId, r.game.name)
+                GameAction.MANAGE_CONTENT ->
+                    onOpenContentManager(r.titleId, r.game.name)
             }
             pendingGame = null
             viewModel.clearTitleIdRequest()

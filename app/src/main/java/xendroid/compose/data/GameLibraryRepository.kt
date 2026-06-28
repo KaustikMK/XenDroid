@@ -2,6 +2,7 @@ package xendroid.compose.data
 
 import android.content.Context
 import android.util.Log
+import xendroid.compose.core.ContentPaths
 import xendroid.compose.core.GameMetadataSource
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.firstOrNull
@@ -69,8 +70,10 @@ class GameLibraryRepository(
      *  default.xex directly (all boot-free via title_id_from_path / ExtractZarMetadata).
      *  MUST run off the main thread (these mmap the file). [Game.launchUri] is an absolute path. */
     suspend fun readTitleId(ctx: Context, game: Game): String? = withContext(Dispatchers.IO) {
+        game.titleId?.takeIf { it.isNotBlank() && it != "00000000" }?.let { return@withContext it }
         when (game.format) {
             GameFormat.GOD -> metadata.readGodPath(game.launchUri)?.titleId
+            GameFormat.STFS -> metadata.readContentHeader(game.launchUri)?.titleId
             GameFormat.ISO, GameFormat.XEX_FOLDER, GameFormat.ZAR ->
                 metadata.readTitleIdPath(game.launchUri, game.format)
         }
@@ -96,21 +99,28 @@ class GameLibraryRepository(
         return decision as? GameMetadataCache.Decision.Hit
     }
 
+    private data class Extracted(
+        val name: String,
+        val iconCacheName: String?,
+        val titleId: String?,
+        val mediaId: String?,
+    )
+
     /** Shared cache wrapper for the always-producing extracting branches (ISO, XEX_FOLDER,
-     *  ZAR): reuse the cached (name, iconCacheName) on a fresh HIT; otherwise run [extract],
-     *  cache its result, and build the Game. [extract] returns (displayName, iconCacheName?). */
+     *  ZAR): reuse the cached values on a fresh HIT; otherwise run [extract], cache its result,
+     *  and build the Game. */
     private inline fun cachedOrExtract(
         launchUri: String,
         signature: GameMetadataCache.Signature,
         format: GameFormat,
-        extract: () -> Pair<String, String?>,
+        extract: () -> Extracted,
     ): Game {
         metadataCacheHit(launchUri, signature)?.let {
-            return Game(launchUri, it.name, format, it.iconCacheName)
+            return Game(launchUri, it.name, format, it.iconCacheName, it.titleId, it.mediaId)
         }
-        val (name, iconName) = extract()
-        metadataCache.put(launchUri, name, iconName, signature)
-        return Game(launchUri, name, format, iconName)
+        val (name, iconName, titleId, mediaId) = extract()
+        metadataCache.put(launchUri, name, iconName, signature, titleId, mediaId)
+        return Game(launchUri, name, format, iconName, titleId, mediaId)
     }
 
     // ---- Real-path (All Files Access) scan: a java.io.File walk using real paths + the
@@ -150,7 +160,7 @@ class GameLibraryRepository(
                 val meta = metadata.readXexMetaPath(xexPath, GameFormat.XEX_FOLDER)
                 val displayName = meta?.name?.takeIf { it.isNotEmpty() } ?: name
                 val iconName = meta?.iconPng?.let { iconCache.write(xexPath, it) }
-                displayName to iconName
+                Extracted(displayName, iconName, meta?.titleId, meta?.mediaId)
             }
         }
         return when (GameFormat.fromFileName(name)) {
@@ -162,24 +172,38 @@ class GameLibraryRepository(
                     val displayName = meta?.name?.takeIf { it.isNotEmpty() }
                         ?: fmt.displayNameFor(name)
                     val iconName = meta?.iconPng?.let { iconCache.write(path, it) }
-                    displayName to iconName
+                    Extracted(displayName, iconName, meta?.titleId, meta?.mediaId)
                 }
             }
-            GameFormat.GOD -> {
-                val path = child.absolutePath
-                // GOD distinguishes "not a GOD container" (drop) from a miss, so it can't use
-                // cachedOrExtract's non-null contract: extract on a miss, drop if not GOD.
-                val cacheHit = metadataCacheHit(path, signatureOf(child))
-                if (cacheHit != null) {
-                    return Game(path, cacheHit.name, GameFormat.GOD, cacheHit.iconCacheName)
-                }
-                val meta = metadata.readGodPath(path) ?: return null  // not a GOD container
-                val displayName = meta.name.ifEmpty { name }
-                val iconName = meta.iconPng?.let { iconCache.write(path, it) }
-                metadataCache.put(path, displayName, iconName, signatureOf(child))
-                Game(path, displayName, GameFormat.GOD, iconName)
-            }
-            GameFormat.XEX_FOLDER, null -> null
+            GameFormat.GOD -> classifyExtensionless(child, name)
+            GameFormat.STFS, GameFormat.XEX_FOLDER, null -> null
         }
+    }
+
+    /** An extensionless file: a GOD container, an STFS launchable-game container, or neither
+     *  (dropped). Unlike cachedOrExtract this distinguishes "not a game" (return null) from a
+     *  cache miss, and carries the format through the cache so a hit rebuilds the right Game.
+     *  Probe order matches the scan: GOD (readGodPath) first, then an STFS content-header probe. */
+    private fun classifyExtensionless(child: File, name: String): Game? {
+        val path = child.absolutePath
+        metadataCacheHit(path, signatureOf(child))?.let { hit ->
+            val fmt = hit.format ?: GameFormat.GOD   // legacy entries predate STFS -> GOD
+            return Game(path, hit.name, fmt, hit.iconCacheName, hit.titleId, hit.mediaId)
+        }
+        metadata.readGodPath(path)?.let { meta ->
+            val displayName = meta.name.ifEmpty { name }
+            val iconName = meta.iconPng?.let { iconCache.write(path, it) }
+            metadataCache.put(path, displayName, iconName, signatureOf(child), meta.titleId, meta.mediaId, GameFormat.GOD)
+            return Game(path, displayName, GameFormat.GOD, iconName, meta.titleId, meta.mediaId)
+        }
+        // GOD MUST be probed first (above): a GOD container also parses as a content
+        // package, so reaching here only after readGodPath fails keeps GOD out of this
+        // STFS branch. What's left is an STFS launchable-game container (XBLA/arcade, etc.).
+        val header = metadata.readContentHeader(path) ?: return null
+        if (!ContentPaths.isLaunchableGameType(header.contentType)) return null  // add-on content, not a game
+        val displayName = header.displayName.ifBlank { name }
+        val iconName = header.iconPng?.let { iconCache.write(path, it) }
+        metadataCache.put(path, displayName, iconName, signatureOf(child), header.titleId, null, GameFormat.STFS)
+        return Game(path, displayName, GameFormat.STFS, iconName, header.titleId, mediaId = null)
     }
 }

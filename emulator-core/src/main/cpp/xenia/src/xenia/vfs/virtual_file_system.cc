@@ -371,6 +371,10 @@ X_STATUS VirtualFileSystem::ExtractContentFile(Entry* entry,
   size_t buffer_size = 0;
   uint8_t* buffer = nullptr;
 
+  if (!entry) {
+    return X_STATUS_INVALID_PARAMETER;
+  }
+
   XELOGI("Extracting file: {}", entry->path());
 
   auto dest_name =
@@ -447,6 +451,10 @@ X_STATUS VirtualFileSystem::ExtractContentFiles(
   // Run through all the files, breadth-first style.
   std::queue<vfs::Entry*> queue;
   auto root = device->ResolvePath("/");
+  if (!root) {
+    XELOGE("ExtractContentFiles: package has no root entry (corrupt)");
+    return X_STATUS_INVALID_PARAMETER;
+  }
   queue.push(root);
 
   while (!queue.empty()) {
@@ -457,8 +465,13 @@ X_STATUS VirtualFileSystem::ExtractContentFiles(
 
     auto entry = queue.front();
     queue.pop();
-    for (auto& entry : entry->children()) {
-      queue.push(entry.get());
+    if (!entry) {
+      continue;
+    }
+    for (auto& child : entry->children()) {
+      if (child) {
+        queue.push(child.get());
+      }
     }
 
     ExtractContentFile(entry, base_path, progress);

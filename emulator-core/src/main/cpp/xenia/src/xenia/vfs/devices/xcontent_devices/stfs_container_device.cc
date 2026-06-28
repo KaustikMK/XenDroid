@@ -66,6 +66,10 @@ StfsContainerDevice::Result StfsContainerDevice::Read() {
   size_t n = 0;
   for (n = 0; n < descriptor.file_table_block_count; n++) {
     const size_t offset = BlockToOffset(table_block_index);
+    if (offset + sizeof(StfsDirectoryBlock) > data_->size()) {
+      XELOGE("STFS directory block offset out of bounds (corrupt)");
+      return Result::kReadError;
+    }
     directory = *reinterpret_cast<StfsDirectoryBlock*>(data_->data() + offset);
 
     for (size_t m = 0; m < kEntriesPerDirectoryBlock; m++) {
@@ -76,10 +80,15 @@ StfsContainerDevice::Result StfsContainerDevice::Read() {
         break;
       }
 
-      StfsContainerEntry* parent_entry =
-          dir_entry.directory_index == 0xFFFF
-              ? root_entry
-              : all_entries[dir_entry.directory_index];
+      StfsContainerEntry* parent_entry = root_entry;
+      if (dir_entry.directory_index != 0xFFFF) {
+        if (dir_entry.directory_index >= all_entries.size()) {
+          XELOGE("STFS directory_index {} out of range (corrupt)",
+                 dir_entry.directory_index.get());
+          return Result::kReadError;
+        }
+        parent_entry = all_entries[dir_entry.directory_index];
+      }
 
       std::unique_ptr<StfsContainerEntry> entry =
           ReadEntry(parent_entry, &dir_entry);
@@ -92,6 +101,13 @@ StfsContainerDevice::Result StfsContainerDevice::Read() {
     if (table_block_index == kEndOfChain) {
       break;
     }
+  }
+
+  // A truncated package's hash table can map past EOF; the read is clamped
+  // (zero-filled) below, so surface it here instead of building a garbage tree.
+  if (hash_table_out_of_bounds_) {
+    XELOGE("STFS hash table out of bounds (corrupt)");
+    return Result::kReadError;
   }
 
   if (n + 1 != descriptor.file_table_block_count) {
@@ -245,8 +261,16 @@ void StfsContainerDevice::UpdateCachedHashTable(
   const size_t hash_offset = BlockToHashBlockOffset(block_index, hash_level);
   // Do nothing. It's already there.
   if (!cached_hash_tables_.count(hash_offset)) {
-    cached_hash_tables_[hash_offset] = *reinterpret_cast<StfsHashTable*>(
-        data_->data() + hash_offset + secondary_table_offset);
+    const size_t read_offset = hash_offset + secondary_table_offset;
+    if (read_offset + sizeof(StfsHashTable) > data_->size()) {
+      // Hash table past EOF: cache a zeroed table (next-block 0 keeps the walk
+      // in bounds; Read() turns the flag into a read error) rather than deref.
+      hash_table_out_of_bounds_ = true;
+      cached_hash_tables_[hash_offset] = {};
+    } else {
+      cached_hash_tables_[hash_offset] =
+          *reinterpret_cast<StfsHashTable*>(data_->data() + read_offset);
+    }
   }
 
   uint32_t record = block_index % kBlocksPerHashLevel[0];
