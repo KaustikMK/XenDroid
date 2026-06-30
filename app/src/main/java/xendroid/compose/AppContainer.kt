@@ -19,6 +19,7 @@ import xendroid.compose.ui.keymap.KeymapViewModel
 import xendroid.compose.ui.compress.GameCompressViewModel
 import xendroid.compose.ui.content.ContentManagerViewModel
 import xendroid.compose.ui.content.InstallContentViewModel
+import xendroid.compose.ui.profile.ProfileManagerViewModel
 import xendroid.compose.patches.AssetPatchAssets
 import xendroid.compose.patches.GamePatchesViewModel
 import xendroid.compose.patches.PatchPaths
@@ -122,6 +123,17 @@ class AppContainer(context: Context) {
                     "Unknown ViewModel ${modelClass.name}"
                 }
                 return InstallContentViewModel(appContext, metadataSource, prefs) as T
+            }
+        }
+
+    fun profileManagerViewModelFactory(): ViewModelProvider.Factory =
+        object : ViewModelProvider.Factory {
+            @Suppress("UNCHECKED_CAST")
+            override fun <T : ViewModel> create(modelClass: Class<T>): T {
+                require(modelClass == ProfileManagerViewModel::class.java) {
+                    "Unknown ViewModel ${modelClass.name}"
+                }
+                return ProfileManagerViewModel(appContext, configStore) as T
             }
         }
 

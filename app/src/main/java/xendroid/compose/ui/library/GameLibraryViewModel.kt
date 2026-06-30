@@ -13,6 +13,7 @@ import androidx.core.content.getSystemService
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import xendroid.compose.core.EmulatorRuntime
+import xendroid.compose.core.ProfileBootstrap
 import xendroid.compose.data.Game
 import xendroid.compose.data.GameFormat
 import xendroid.compose.data.GameLibraryRepository
@@ -77,7 +78,10 @@ class GameLibraryViewModel(
             _state.value = runCatching {
                 // ensureLoaded() can sleep + System.loadLibrary on delay-load devices
                 // (Adreno 5xx/6xx) -> never on the main thread.
-                withContext(Dispatchers.IO) { EmulatorRuntime.ensureLoaded() }
+                withContext(Dispatchers.IO) {
+                    EmulatorRuntime.ensureLoaded()
+                    ProfileBootstrap.ensureDefaultProfile(appContext)
+                }
                 when (val r = repo.scan()) {
                     GameLibraryRepository.ScanResult.NoFolder -> LibraryUiState.NoFolder
                     GameLibraryRepository.ScanResult.PermissionLost -> LibraryUiState.PermissionLost
