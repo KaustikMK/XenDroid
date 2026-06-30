@@ -318,6 +318,8 @@ else()
   # Clang-specific C++ warnings (matches AppleClang too)
   if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     add_compile_options(
+      # NDK Clang versions disagree on -Wno-* flag names; tolerate unknown ones.
+      -Wno-unknown-warning-option
       $<$<COMPILE_LANGUAGE:CXX>:-Wno-deprecated-register>
       $<$<COMPILE_LANGUAGE:CXX>:-Wno-deprecated-volatile>
       $<$<COMPILE_LANGUAGE:CXX>:-Wno-deprecated-enum-enum-conversion>
