@@ -19,7 +19,17 @@
 #include "xenia/ui/d3d12/d3d12_immediate_drawer.h"
 #include "xenia/ui/d3d12/d3d12_presenter.h"
 #include "xenia/ui/d3d12/d3d12_util.h"
+#include "xenia/ui/redist_installer_wx.h"
 DEFINE_bool(d3d12_debug, false, "Enable Direct3D 12 and DXGI debug layer.",
+            "D3D12");
+DEFINE_bool(d3d12_gpu_validation, false,
+            "Enable Direct3D 12 GPU-based validation to catch out-of-bounds "
+            "shader resource access. Requires --d3d12_debug. Very slow.",
+            "D3D12");
+DEFINE_bool(d3d12_dred, false,
+            "Enable Direct3D 12 Device Removed Extended Data (DRED) to log the "
+            "operation and allocations involved in a device removal. Works "
+            "without the debug layer.",
             "D3D12");
 DEFINE_bool(d3d12_break_on_error, false,
             "Break on Direct3D 12 validation errors.", "D3D12");
@@ -51,6 +61,66 @@ bool D3D12Provider::IsD3D12APIAvailable() {
 
 const std::string& D3D12Provider::GetAdapterDescription() const {
   return adapter_description_;
+}
+
+void D3D12Provider::DumpDeviceRemovedData() const {
+  ID3D12DeviceRemovedExtendedData* dred;
+  if (FAILED(device_->QueryInterface(IID_PPV_ARGS(&dred)))) {
+    return;
+  }
+  bool any_data = false;
+  // Breadcrumbs identify the last GPU operation that ran before the removal.
+  D3D12_DRED_AUTO_BREADCRUMBS_OUTPUT breadcrumbs;
+  if (SUCCEEDED(dred->GetAutoBreadcrumbsOutput(&breadcrumbs))) {
+    for (const D3D12_AUTO_BREADCRUMB_NODE* node =
+             breadcrumbs.pHeadAutoBreadcrumbNode;
+         node; node = node->pNext) {
+      uint32_t op_count = node->BreadcrumbCount;
+      uint32_t completed =
+          node->pLastBreadcrumbValue ? *node->pLastBreadcrumbValue : 0;
+      if (completed >= op_count) {
+        // This command list finished, so it is not where the GPU stopped.
+        continue;
+      }
+      any_data = true;
+      XELOGE(
+          "DRED: command list '{}' on queue '{}' stopped after {} of {} ops, "
+          "next op was {}",
+          node->pCommandListDebugNameA ? node->pCommandListDebugNameA
+                                       : "<unnamed>",
+          node->pCommandQueueDebugNameA ? node->pCommandQueueDebugNameA
+                                        : "<unnamed>",
+          completed, op_count, uint32_t(node->pCommandHistory[completed]));
+    }
+  }
+  // Page-fault data names the allocation a bad GPU address belonged to.
+  D3D12_DRED_PAGE_FAULT_OUTPUT page_fault;
+  if (SUCCEEDED(dred->GetPageFaultAllocationOutput(&page_fault)) &&
+      page_fault.PageFaultVA) {
+    any_data = true;
+    XELOGE("DRED: GPU page fault at virtual address 0x{:016X}",
+           uint64_t(page_fault.PageFaultVA));
+    for (const D3D12_DRED_ALLOCATION_NODE* node =
+             page_fault.pHeadExistingAllocationNode;
+         node; node = node->pNext) {
+      XELOGE("DRED:   live allocation '{}' (type {})",
+             node->ObjectNameA ? node->ObjectNameA : "<unnamed>",
+             uint32_t(node->AllocationType));
+    }
+    for (const D3D12_DRED_ALLOCATION_NODE* node =
+             page_fault.pHeadRecentFreedAllocationNode;
+         node; node = node->pNext) {
+      XELOGE("DRED:   recently freed allocation '{}' (type {})",
+             node->ObjectNameA ? node->ObjectNameA : "<unnamed>",
+             uint32_t(node->AllocationType));
+    }
+  }
+  if (!any_data) {
+    XELOGW(
+        "DRED: no device-removed data; restart with --d3d12_dred to capture "
+        "the faulting operation");
+  }
+  dred->Release();
 }
 
 // Check for Intel Arc cards and Intel Graphics iGPUs which use
@@ -104,6 +174,9 @@ D3D12Provider::~D3D12Provider() {
 
   if (library_dxcompiler_ != nullptr) {
     FreeLibrary(library_dxcompiler_);
+  }
+  if (library_dxil_ != nullptr) {
+    FreeLibrary(library_dxil_);
   }
   if (library_dxilconv_ != nullptr) {
     FreeLibrary(library_dxilconv_);
@@ -203,19 +276,29 @@ bool D3D12Provider::Initialize() {
         "will be unavailable - DXIL may be unsupported by your OS version");
   }
 
-  // Load optional dxcompiler.dll - prefer the one next to the executable
-  // to avoid loading an older system version.
+  // Load the required DXIL shader compiler runtime (dxcompiler.dll + dxil.dll)
+  // from the D3D12 folder next to the executable. The D3D12 backend can't run
+  // without it, so offer to download it if it's missing.
+  auto d3d12_dir = xe::filesystem::GetExecutablePath().parent_path() / "D3D12";
   pfn_dxcompiler_dxc_create_instance_ = nullptr;
   {
-    auto exe_dir = xe::filesystem::GetExecutablePath().parent_path();
-    auto dxcompiler_path = exe_dir / "dxcompiler.dll";
-    auto dxcompiler_path_utf16 = xe::path_to_utf16(dxcompiler_path);
+    EnsureShaderCompilerRuntime(d3d12_dir);
+
+    // Pre-load dxil.dll by full path so dxcompiler's later plain-name load of
+    // it resolves here. That search skips D3D12/, so without this the DXIL
+    // would be left unsigned.
+    auto dxil_path_utf16 = xe::path_to_utf16(d3d12_dir / "dxil.dll");
+    library_dxil_ =
+        LoadLibraryW(reinterpret_cast<LPCWSTR>(dxil_path_utf16.c_str()));
+
+    auto dxcompiler_path_utf16 =
+        xe::path_to_utf16(d3d12_dir / "dxcompiler.dll");
     library_dxcompiler_ =
         LoadLibraryW(reinterpret_cast<LPCWSTR>(dxcompiler_path_utf16.c_str()));
     if (library_dxcompiler_) {
-      XELOGI("Loaded dxcompiler.dll from executable directory");
+      XELOGI("Loaded dxcompiler.dll from the D3D12 directory");
     } else {
-      // Fall back to system search path.
+      // Fall back to the system search path (system-wide, or next to the exe).
       library_dxcompiler_ = LoadLibraryW(L"dxcompiler.dll");
     }
   }
@@ -236,6 +319,20 @@ bool D3D12Provider::Initialize() {
         "unavailable - download from "
         "https://github.com/microsoft/DirectXShaderCompiler/releases",
         error);
+  }
+
+  // The D3D12SDKVersion exports make d3d12.dll load D3D12Core.dll at the first
+  // device creation, which fails outright if it's missing, so fetch it first.
+  std::error_code ec;
+  if (!std::filesystem::exists(d3d12_dir / "D3D12Core.dll", ec)) {
+    // Returns only on decline or failure. On success it restarts.
+    EnsureAgilityRuntime(d3d12_dir);
+    if (!std::filesystem::exists(d3d12_dir / "D3D12Core.dll", ec)) {
+      XELOGE(
+          "The DirectX 12 Agility SDK runtime (D3D12Core.dll) is required but "
+          "was not installed");
+      return false;
+    }
   }
 
   // Configure the DXGI debug info queue.
@@ -264,10 +361,43 @@ bool D3D12Provider::Initialize() {
     if (SUCCEEDED(
             pfn_d3d12_get_debug_interface_(IID_PPV_ARGS(&debug_interface)))) {
       debug_interface->EnableDebugLayer();
+      // GPU-based validation catches out-of-bounds shader resource access that
+      // the CPU-side layer misses, but is very slow, so keep it opt-in.
+      bool gpu_validation = false;
+      if (cvars::d3d12_gpu_validation) {
+        ID3D12Debug1* debug_interface1;
+        if (SUCCEEDED(debug_interface->QueryInterface(
+                IID_PPV_ARGS(&debug_interface1)))) {
+          debug_interface1->SetEnableGPUBasedValidation(TRUE);
+          debug_interface1->Release();
+          gpu_validation = true;
+        }
+      }
       debug_interface->Release();
+      XELOGI("Direct3D 12 debug layer enabled{}",
+             gpu_validation ? " with GPU-based validation" : "");
     } else {
+      // The debug layer (D3D12SDKLayers.dll) isn't redistributable on its own.
+      // Offer to fetch it from the Agility SDK and restart.
+      EnsureDebugLayer(d3d12_dir);
       XELOGW("Failed to enable the Direct3D 12 debug layer");
       debug = false;
+    }
+  }
+
+  // Enable Device Removed Extended Data. Must be set before device creation,
+  // and unlike the debug layer it does not need the Graphics Tools feature.
+  if (cvars::d3d12_dred) {
+    ID3D12DeviceRemovedExtendedDataSettings* dred_settings;
+    if (SUCCEEDED(
+            pfn_d3d12_get_debug_interface_(IID_PPV_ARGS(&dred_settings)))) {
+      dred_settings->SetAutoBreadcrumbsEnablement(
+          D3D12_DRED_ENABLEMENT_FORCED_ON);
+      dred_settings->SetPageFaultEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+      dred_settings->Release();
+      XELOGI("Direct3D 12 DRED enabled");
+    } else {
+      XELOGW("Failed to enable Direct3D 12 DRED");
     }
   }
 
@@ -348,25 +478,22 @@ bool D3D12Provider::Initialize() {
   }
   adapter->Release();
 
-  // Report whether the bundled DirectX 12 Agility SDK runtime was loaded.
-  // d3d12.dll loads D3D12Core.dll from D3D12SDKPath on the first device
-  // creation, so it is present by now if the SDK is in use.
-  if (HMODULE d3d12_core = GetModuleHandleW(L"D3D12Core.dll")) {
-    WCHAR core_path[MAX_PATH];
-    DWORD core_path_length = GetModuleFileNameW(d3d12_core, core_path,
-                                                DWORD(xe::countof(core_path)));
-    if (core_path_length != 0 && core_path_length < xe::countof(core_path)) {
-      XELOGI(
-          "DirectX 12 Agility SDK runtime loaded: {}",
-          xe::to_utf8(std::u16string_view(
-              reinterpret_cast<const char16_t*>(core_path), core_path_length)));
-    } else {
-      XELOGI("DirectX 12 Agility SDK runtime loaded");
+  // Safety net: the Agility runtime should provide Shader Model 6.6 for DXIL.
+  {
+    D3D12_FEATURE_DATA_SHADER_MODEL shader_model;
+    shader_model.HighestShaderModel = D3D_SHADER_MODEL_6_6;
+    bool shader_model_6_6_supported =
+        SUCCEEDED(device->CheckFeatureSupport(
+            D3D12_FEATURE_SHADER_MODEL, &shader_model, sizeof(shader_model))) &&
+        shader_model.HighestShaderModel >= D3D_SHADER_MODEL_6_6;
+    if (!shader_model_6_6_supported) {
+      device->Release();
+      dxgi_factory->Release();
+      XELOGE(
+          "The Direct3D 12 runtime lacks Shader Model 6.6 required for DXIL "
+          "shaders");
+      return false;
     }
-  } else {
-    XELOGI(
-        "DirectX 12 Agility SDK runtime not loaded; using the in-box Direct3D "
-        "12 runtime");
   }
 
   // Configure the Direct3D 12 debug info queue.

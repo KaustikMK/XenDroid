@@ -13,7 +13,7 @@ plugins {
 android {
     namespace 'xendroid.compose.core'
     compileSdk 35
-    ndkVersion '27.2.12479018'
+    ndkVersion '29.0.14206865'
 
     defaultConfig {
         // 29+ gives native ELF TLS (thread_local = register read, not an emutls call).

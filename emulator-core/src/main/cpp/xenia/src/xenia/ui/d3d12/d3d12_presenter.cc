@@ -25,6 +25,7 @@ DEFINE_bool(
     "it. On displays not supporting VRR, screen tearing may occur in certain "
     "cases.",
     "D3D12");
+DECLARE_bool(d3d12_debug);
 
 namespace xe {
 namespace ui {
@@ -1082,9 +1083,16 @@ Presenter::PaintResult D3D12Presenter::PaintAndPresentImpl(
   paint_context_.present_submission_tracker.NextSubmission();
   switch (present_result) {
     case DXGI_ERROR_DEVICE_REMOVED:
-      return PaintResult::kGpuLostExternally;
     case DXGI_ERROR_DEVICE_RESET:
-      return PaintResult::kGpuLostResponsible;
+      XELOGE("Direct3D 12 device removed on Present, reason: 0x{:08X}",
+             uint32_t(provider_.GetDevice()->GetDeviceRemovedReason()));
+      provider_.DumpDeviceRemovedData();
+      if (cvars::d3d12_debug) {
+        provider_.LogD3D12DebugMessages();
+      }
+      return present_result == DXGI_ERROR_DEVICE_REMOVED
+                 ? PaintResult::kGpuLostExternally
+                 : PaintResult::kGpuLostResponsible;
     default:
       return SUCCEEDED(present_result) ? PaintResult::kPresented
                                        : PaintResult::kNotPresented;
