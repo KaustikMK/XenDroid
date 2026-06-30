@@ -52,6 +52,10 @@ class D3D12Provider : public GraphicsProvider {
   ID3D12Device* GetDevice() const { return device_; }
   ID3D12CommandQueue* GetDirectQueue() const { return direct_queue_; }
 
+  // Logs Device Removed Extended Data (breadcrumbs and page-fault allocations)
+  // after a device removal. Only produces data when started with --d3d12_dred.
+  void DumpDeviceRemovedData() const;
+
   uint32_t GetDescriptorSize(D3D12_DESCRIPTOR_HEAP_TYPE type) const {
     return descriptor_sizes_[type];
   }
@@ -193,6 +197,11 @@ class D3D12Provider : public GraphicsProvider {
 
   HMODULE library_dxcompiler_ = nullptr;
   DxcCreateInstanceProc pfn_dxcompiler_dxc_create_instance_ = nullptr;
+
+  // Pre-loaded by full path so dxcompiler.dll's own plain-name load of dxil.dll
+  // resolves to the copy in the D3D12 folder. May be nullptr (system-wide
+  // dxil.dll, if any, still resolves on dxcompiler's own).
+  HMODULE library_dxil_ = nullptr;
 
   IDXGIFactory2* dxgi_factory_ = nullptr;
   ID3D12Device* device_ = nullptr;

@@ -20,9 +20,8 @@
 
 #include <Psapi.h>
 
-// DirectX 12 Agility SDK opt-in. d3d12.dll reads these exports at startup and
-// loads D3D12Core.dll from the D3D12 subfolder next to the exe. Keep the
-// version in sync with the Agility SDK bundled by the build.
+// DirectX 12 Agility SDK opt-in. d3d12.dll reads these exports and loads
+// D3D12Core.dll from the D3D12 subfolder next to the exe.
 extern "C" {
 __declspec(dllexport) extern const UINT D3D12SDKVersion = 619;
 }
