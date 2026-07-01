@@ -7,7 +7,7 @@ on:
     tags:  "v*" 
 
 jobs:
-  build:
+  build-arm64_v8a:
     runs-on: ubuntu-24.04
 
     container:
