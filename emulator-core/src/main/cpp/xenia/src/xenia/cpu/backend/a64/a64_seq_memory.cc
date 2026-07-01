@@ -27,12 +27,12 @@ DECLARE_bool(emit_mmio_aware_stores_for_recorded_exception_addresses);
 DECLARE_bool(emit_inline_mmio_checks);
 
 DEFINE_bool(a64_native_reserved_ops, true,
-            "Compile guest lwarx/stwcx. (RESERVED_LOAD/STORE) to native "
-            "ldaxr/stlxr instead of calling the software reservation helpers. "
-            "ABA-immune and avoids the per-atomic thunk. A failed stlxr "
-            "(contention or a monitor lost to preemption/migration) retries "
-            "via the guest's own lwarx/stwcx. loop. Behaviorally neutral when "
-            "disabled.",
+            "Compile guest lwarx/stwcx. to inline native atomics (LSE CASAL) "
+            "instead of the software-reservation thunk: lwarx captures the word "
+            "and arms a per-thread flag; stwcx. validates with one CAS. The "
+            "single atomic has no LDXR->STXR window, avoiding the monitor-loss "
+            "livelock of a spanning ldaxr/stlxr (which hung Forza Horizon). "
+            "Requires FEAT_LSE.",
             "CPU");
 
 namespace xe {
@@ -1200,24 +1200,37 @@ static const Xbyak_aarch64::XReg& LoadBackendCtxPtr(A64Emitter& e) {
   return e.GetBackendCtxReg();
 }
 
-// RESERVED_LOAD/STORE call out to host helpers in a64_backend.cc. The helpers
-// share a global per-cache-line bitmap so a stwcx. on one thread invalidates
-// concurrent lwarx reservations on others (PPC semantics). Doing this purely
-// inline with ldaxr/stlxr would only protect against contention on the same
-// host cache line; ABA on the cached value would silently succeed.
-// Native LL: ldaxr the host word to arm the per-PE exclusive monitor. The
-// guest byte-swap is a separate HIR op, exactly as on the plain ldr software
-// path, so nothing is reversed here. The hardware monitor is the sole
-// reservation state on this path; the matching bare stlxr in RESERVED_STORE
-// succeeds iff no store touched the line since (ABA-immune), so no
-// cached_reserve_value_ bookkeeping is needed.
+// Two paths, selected by a64_native_reserved_ops:
+//  - Software (cvar off): RESERVED_LOAD/STORE call host helpers that keep a
+//    global per-block bitmap, so a stwcx. on one thread invalidates concurrent
+//    lwarx reservations on others.
+//  - Native (cvar on, default): inline, no thunk. lwarx plain-loads the word,
+//    stashes it in cached_reserve_value_, and arms a per-thread reserve flag;
+//    stwcx. validates with one LSE CASAL. An EARLIER native design armed the
+//    hardware exclusive monitor at lwarx and consumed it with a bare stlxr at
+//    stwcx., but that monitor only survives a window with no intervening memory
+//    access - a register spill or context/guest load-store between the (far
+//    apart) guest lwarx and stwcx. clears it every iteration, so stlxr never
+//    succeeds and the guest retry loop livelocks (hung Forza Horizon). The CAS
+//    is a single atomic with no such window. The guest byte-swap is a separate
+//    HIR op on both paths, so the captured/compared value is the raw word.
 struct RESERVED_LOAD_I32
     : Sequence<RESERVED_LOAD_I32, I<OPCODE_RESERVED_LOAD, I32Op, I64Op>> {
   static void Emit(A64Emitter& e, const EmitArgType& i) {
     if (cvars::a64_native_reserved_ops && !IsPossibleMMIOInstruction(e, i.instr)) {
+      // Plain load + capture (value, reserve flag). The matching stwcx.
+      // validates with one CASAL; no hardware monitor spans the window.
       auto addr = ComputeMemoryAddress(e, i.src1);
       e.add(e.x16, e.GetMembaseReg(), addr);
-      e.ldaxr(i.dest, ptr(e.x16));
+      e.ldr(i.dest, ptr(e.x16));
+      auto bctx = LoadBackendCtxPtr(e);
+      e.str(i.dest, ptr(bctx, static_cast<uint32_t>(offsetof(
+                                A64BackendContext, cached_reserve_value_))));
+      const uint32_t kFlagsOff =
+          static_cast<uint32_t>(offsetof(A64BackendContext, flags));
+      e.ldr(e.w0, ptr(bctx, kFlagsOff));
+      e.orr(e.w0, e.w0, uint64_t(1) << kA64BackendHasReserveBit);
+      e.str(e.w0, ptr(bctx, kFlagsOff));
       return;
     }
     if (i.src1.is_constant) {
@@ -1238,9 +1251,19 @@ struct RESERVED_LOAD_I64
     : Sequence<RESERVED_LOAD_I64, I<OPCODE_RESERVED_LOAD, I64Op, I64Op>> {
   static void Emit(A64Emitter& e, const EmitArgType& i) {
     if (cvars::a64_native_reserved_ops && !IsPossibleMMIOInstruction(e, i.instr)) {
+      // Plain load + capture (value, reserve flag). The matching stwcx.
+      // validates with one CASAL; no hardware monitor spans the window.
       auto addr = ComputeMemoryAddress(e, i.src1);
       e.add(e.x16, e.GetMembaseReg(), addr);
-      e.ldaxr(i.dest, ptr(e.x16));
+      e.ldr(i.dest, ptr(e.x16));
+      auto bctx = LoadBackendCtxPtr(e);
+      e.str(i.dest, ptr(bctx, static_cast<uint32_t>(offsetof(
+                                A64BackendContext, cached_reserve_value_))));
+      const uint32_t kFlagsOff =
+          static_cast<uint32_t>(offsetof(A64BackendContext, flags));
+      e.ldr(e.w0, ptr(bctx, kFlagsOff));
+      e.orr(e.w0, e.w0, uint64_t(1) << kA64BackendHasReserveBit);
+      e.str(e.w0, ptr(bctx, kFlagsOff));
       return;
     }
     if (i.src1.is_constant) {
@@ -1259,22 +1282,21 @@ struct RESERVED_LOAD_I64
 EMITTER_OPCODE_TABLE(OPCODE_RESERVED_LOAD, RESERVED_LOAD_I32,
                      RESERVED_LOAD_I64);
 
-// Native SC: a bare stlxr to the line armed by the matching RESERVED_LOAD's
-// ldaxr. No re-arming ldaxr and no value compare (PPC stwcx. performs none) —
-// the monitor armed at lwarx is the sole source of truth, so this is
-// ABA-immune. The value is already byte-swapped by the HIR, matching the plain
-// str software path. stlxr returns 0 on success; CR0.eq (i.dest) is set from
-// that. Any failure -- a competing store broke the line (contention) or the
-// per-PE monitor was lost to preemption/migration -- sets CR0.eq=0 and the
-// guest's own lwarx/stwcx. loop retries, identical to real PPC. No software
-// fallback is used: an unconditional-success one would corrupt stwcx.
-// semantics under contention (a losing store reported as a win).
+// Native SC: fail if no matching lwarx armed the per-thread flag (and always
+// clear it - PPC stwcx. unconditionally releases). Otherwise one LSE CASAL
+// against the value captured at lwarx: if memory still holds it, swap in the
+// new (already HIR-byte-swapped) value and report success; otherwise a store
+// landed since lwarx, so fail. CR0.eq (i.dest) = compare matched. The CAS is a
+// single atomic instruction, so unlike a spanning ldaxr/stlxr there is no
+// window for a spill/context access to clear and no possibility of livelock.
+// Value-CAS carries the same (rare, benign) ABA characteristic as the software
+// path; it does not need that path's contended global bitmap.
 struct RESERVED_STORE_I32
     : Sequence<RESERVED_STORE_I32,
                I<OPCODE_RESERVED_STORE, I8Op, I64Op, I32Op>> {
   static void Emit(A64Emitter& e, const EmitArgType& i) {
     if (cvars::a64_native_reserved_ops && !IsPossibleMMIOInstruction(e, i.instr)) {
-      // Stage the value before clobbering w0/w17 via ComputeMemoryAddress.
+      // Stage the value before clobbering w0 via ComputeMemoryAddress.
       if (i.src2.is_constant) {
         e.mov(e.w3, static_cast<uint32_t>(i.src2.constant()));
       } else {
@@ -1282,13 +1304,27 @@ struct RESERVED_STORE_I32
       }
       auto addr = ComputeMemoryAddress(e, i.src1);
       e.add(e.x16, e.GetMembaseReg(), addr);
-      e.stlxr(e.w17, e.w3, ptr(e.x16));
-      // CR0.eq = stlxr success (status 0). Any failure (contention or a
-      // monitor lost to preemption/migration) yields CR0.eq=0; the guest's
-      // own lwarx/stwcx. loop retries, exactly as on real PPC.
+      auto bctx = LoadBackendCtxPtr(e);
+      // Consume the per-thread reservation (stwcx. always clears it); no
+      // matching lwarx -> fail, exactly like PPC.
+      const uint32_t kFlagsOff =
+          static_cast<uint32_t>(offsetof(A64BackendContext, flags));
+      e.ldr(e.w0, ptr(bctx, kFlagsOff));
+      e.and_(e.w1, e.w0, uint64_t(1) << kA64BackendHasReserveBit);
+      e.eor(e.w0, e.w0, e.w1);  // clear reserve flag (w1 = mask if set, else 0)
+      e.str(e.w0, ptr(bctx, kFlagsOff));
       auto& sc_fail = e.NewCachedLabel();
       auto& sc_done = e.NewCachedLabel();
-      e.cbnz(e.w17, sc_fail);
+      e.cbz(e.w1, sc_fail);
+      // Single-instruction CAS vs the value captured at lwarx: succeeds iff
+      // memory is unchanged. Atomic, so there is no LDXR->STXR window to lose
+      // and it cannot livelock. CR0.eq = compare matched.
+      e.ldr(e.w1, ptr(bctx, static_cast<uint32_t>(offsetof(
+                                A64BackendContext, cached_reserve_value_))));
+      e.mov(e.w2, e.w1);
+      e.casal(e.w1, e.w3, ptr(e.x16));
+      e.cmp(e.w1, e.w2);
+      e.bne(sc_fail);
       e.mov(i.dest, 1);
       e.b(sc_done);
       e.L(sc_fail);
@@ -1327,11 +1363,26 @@ struct RESERVED_STORE_I64
       }
       auto addr = ComputeMemoryAddress(e, i.src1);
       e.add(e.x16, e.GetMembaseReg(), addr);
-      e.stlxr(e.w17, e.x3, ptr(e.x16));
-      // CR0.eq = stlxr success; any failure retries via the guest loop (see I32).
+      auto bctx = LoadBackendCtxPtr(e);
+      // Consume the per-thread reservation (stwcx. always clears it); no
+      // matching lwarx -> fail, exactly like PPC.
+      const uint32_t kFlagsOff =
+          static_cast<uint32_t>(offsetof(A64BackendContext, flags));
+      e.ldr(e.w0, ptr(bctx, kFlagsOff));
+      e.and_(e.w1, e.w0, uint64_t(1) << kA64BackendHasReserveBit);
+      e.eor(e.w0, e.w0, e.w1);  // clear reserve flag (w1 = mask if set, else 0)
+      e.str(e.w0, ptr(bctx, kFlagsOff));
       auto& sc_fail = e.NewCachedLabel();
       auto& sc_done = e.NewCachedLabel();
-      e.cbnz(e.w17, sc_fail);
+      e.cbz(e.w1, sc_fail);
+      // Single-instruction CAS vs the value captured at lwarx (see I32): one
+      // atomic, no LDXR->STXR window, cannot livelock. CR0.eq = compare matched.
+      e.ldr(e.x1, ptr(bctx, static_cast<uint32_t>(offsetof(
+                                A64BackendContext, cached_reserve_value_))));
+      e.mov(e.x2, e.x1);
+      e.casal(e.x1, e.x3, ptr(e.x16));
+      e.cmp(e.x1, e.x2);
+      e.bne(sc_fail);
       e.mov(i.dest, 1);
       e.b(sc_done);
       e.L(sc_fail);
