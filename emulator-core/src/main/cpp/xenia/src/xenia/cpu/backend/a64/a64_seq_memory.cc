@@ -7,11 +7,14 @@
  ******************************************************************************
  */
 
+#include <chrono>
+
 #include "xenia/cpu/backend/a64/a64_sequences.h"
 
 #include "xenia/base/clock.h"
 #include "xenia/base/cvar.h"
 #include "xenia/base/memory.h"
+#include "xenia/base/threading.h"
 #include "xenia/cpu/backend/a64/a64_backend.h"
 #include "xenia/cpu/backend/a64/a64_emitter.h"
 #include "xenia/cpu/backend/a64/a64_op.h"
@@ -33,6 +36,18 @@ DEFINE_bool(a64_native_reserved_ops, true,
             "single atomic has no LDXR->STXR window, avoiding the monitor-loss "
             "livelock of a spanning ldaxr/stlxr (which hung Forza Horizon). "
             "Requires FEAT_LSE.",
+            "CPU");
+
+DECLARE_bool(guest_scheduler);
+
+DEFINE_bool(a64_park_spin_backoff, true,
+            "For collapsed guest spin-backoff loops, spin cheaply for the first "
+            "few iterations then park the thread with a short real sleep "
+            "(adaptive) instead of the fixed isb sled - reclaims CPU on long "
+            "guest spin-waits while short waits (resolved during the cheap "
+            "spin) stay latency-unaffected. Falls back to a cheap spin under "
+            "the cooperative guest scheduler, where host-blocking a fiber could "
+            "stall its producer.",
             "CPU");
 
 namespace xe {
@@ -76,6 +91,37 @@ struct DELAY_EXECUTION
 };
 EMITTER_OPCODE_TABLE(OPCODE_DELAY_EXECUTION, DELAY_EXECUTION);
 
+// Adaptive park helper for OPCODE_SPIN_BACKOFF (a64_park_spin_backoff), called
+// once per outer poll iteration of a collapsed guest spin-wait. A young wait
+// spins cheap (a few isb); once it proves long it sleeps briefly so the core
+// stops burning cycles. A gap since the previous call starts a fresh episode so
+// an unrelated later wait spins cheap again. Never host-blocks under the
+// cooperative scheduler - blocking a dispatch thread there can stall the
+// sibling fiber that releases the polled word (raw-jit-spin-path.md Blocker 2).
+// The sleep timeout guarantees forward progress, so no wake plumbing is needed.
+static void SpinBackoffParkThunk(void* /*ppc_context*/) {
+  static constexpr uint32_t kSpinIters = 24;
+  static constexpr int64_t kParkNs = 30000;  // 30us bounded park
+  static constexpr int64_t kGapNs = 200000;  // >200us idle -> new episode
+  thread_local uint32_t consec = 0;
+  thread_local int64_t last_ns = 0;
+  const int64_t now_ns =
+      std::chrono::duration_cast<std::chrono::nanoseconds>(
+          std::chrono::steady_clock::now().time_since_epoch())
+          .count();
+  if (now_ns - last_ns > kGapNs) {
+    consec = 0;
+  }
+  last_ns = now_ns;
+  if (cvars::guest_scheduler || ++consec < kSpinIters) {
+    for (uint32_t n = 0; n < 8; ++n) {
+      __asm__ __volatile__("isb sy" ::: "memory");
+    }
+    return;
+  }
+  xe::threading::NanoSleep(kParkNs);
+}
+
 // ============================================================================
 // OPCODE_SPIN_BACKOFF
 // ============================================================================
@@ -93,6 +139,13 @@ struct SPIN_BACKOFF
   static void Emit(A64Emitter& e, const EmitArgType& i) {
     const uint32_t count = static_cast<uint32_t>(i.src1.value);
     if (!count) {
+      return;
+    }
+    if (cvars::a64_park_spin_backoff) {
+      // Adaptive spin-then-park (see SpinBackoffParkThunk): cheap for short
+      // waits, a real short sleep for long ones. CallNativeSafe preserves guest
+      // context across the (possibly sleeping) helper.
+      e.CallNativeSafe(reinterpret_cast<void*>(&SpinBackoffParkThunk));
       return;
     }
     Xbyak_aarch64::Label loop;
