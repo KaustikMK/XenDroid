@@ -6,6 +6,9 @@ on:
     branches: main
     tags:  "v*" 
 
+permissions:
+  contents: write
+
 jobs:
   build-arm64_v8a:
     runs-on: ubuntu-24.04
@@ -38,6 +41,10 @@ jobs:
       with:
         submodules: recursive
         fetch-depth: 1
+
+    - name: Configure Git
+      run: |
+        git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
     ##################################################################
     # System tools
@@ -166,11 +173,16 @@ jobs:
         SHORT_SHA=$(git rev-parse --short HEAD)
         TAG="XenDroid-${SHORT_SHA}"
 
-        git config user.name "github-actions"
-        git config user.email "github-actions@github.com"
+        git config user.name "github-actions[bot]"
+        git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+        if git ls-remote --tags origin "$TAG" | grep -q "$TAG"; then
+          echo "Tag '$TAG' already exists."
+          exit 0
+        fi
 
         git tag "$TAG"
-        git push origin "$TAG"
+        git push origin "refs/tags/$TAG"
 
     ##################################################################
     # Sign APK
@@ -209,3 +221,12 @@ jobs:
       with:
         name: XenDroid_Release_${{ steps.vars.outputs.sha_short }}
         path: XenDroid_Release_${{ steps.vars.outputs.sha_short }}.apk
+
+    - name: Create GitHub Release
+      if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: XenDroid-${{ steps.vars.outputs.sha_short }}
+        name: XenDroid ${{ steps.vars.outputs.sha_short }}
+        generate_release_notes: true
+        files: XenDroid_Release_${{ steps.vars.outputs.sha_short }}.apk
