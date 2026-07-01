@@ -29,7 +29,7 @@
 #include "xenia/kernel/user_module.h"
 #include "xenia/kernel/xboxkrnl/xboxkrnl_threading.h"
 
-DEFINE_bool(ignore_thread_priorities, false,
+DEFINE_bool(ignore_thread_priorities, true,
             "Ignores game-specified thread priorities.", "Kernel");
 UPDATE_from_bool(ignore_thread_priorities, 2026, 4, 9, 12, true);
 DEFINE_bool(ignore_thread_affinities, true,

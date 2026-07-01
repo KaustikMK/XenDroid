@@ -350,6 +350,19 @@ bool SetTlsValue(TlsHandle handle, uintptr_t value) {
   return pthread_setspecific(handle, reinterpret_cast<void*>(value)) == 0;
 }
 
+// Multi-object waits: each signal bumps a generation and notifies this
+// condvar so WaitMultiple wakes at once; the timeout cap covers a miss.
+static std::mutex g_multi_wait_mutex;
+static std::condition_variable g_multi_wait_cv;
+static std::atomic<uint64_t> g_multi_wait_gen{0};
+static void PokeMultiWaiters() {
+  {
+    std::lock_guard<std::mutex> lock(g_multi_wait_mutex);
+    g_multi_wait_gen.fetch_add(1, std::memory_order_relaxed);
+  }
+  g_multi_wait_cv.notify_all();
+}
+
 class PosixConditionBase {
  public:
   PosixConditionBase() {
@@ -404,6 +417,12 @@ class PosixConditionBase {
     return WaitResult::kTimeout;
   }
 
+  // Wake this object's waiters and any parked WaitMultiple.
+  void NotifyAll() {
+    cond_.notify_all();
+    PokeMultiWaiters();
+  }
+
   static std::pair<WaitResult, size_t> WaitMultiple(
       std::vector<PosixConditionBase*>&& handles, bool wait_all,
       std::chrono::milliseconds timeout) {
@@ -428,6 +447,8 @@ class PosixConditionBase {
       // Cancellation point, clear of the alloc below.
       pthread_testcancel();
 #endif
+      // Snapshot the gen before checking so a racing signal isn't missed.
+      uint64_t wait_gen = g_multi_wait_gen.load(std::memory_order_acquire);
 
       // Check all handles to see if any/all are signaled.
       // Use try_lock to avoid deadlocks from lock ordering issues.
@@ -527,11 +548,14 @@ class PosixConditionBase {
         return std::make_pair<WaitResult, size_t>(WaitResult::kTimeout, 0);
       }
 
-      // Sleep for a short time before polling again.
+      // Park on the shared condvar (any signal wakes us); 1ms cap covers a lost poke.
       auto remaining =
           std::chrono::duration_cast<std::chrono::milliseconds>(end_time - now);
-      auto sleep_time = std::min(remaining, std::chrono::milliseconds(1));
-      std::this_thread::sleep_for(sleep_time);
+      auto park = std::min(remaining, std::chrono::milliseconds(1));
+      std::unique_lock<std::mutex> mw_lock(g_multi_wait_mutex);
+      g_multi_wait_cv.wait_for(mw_lock, park, [&] {
+        return g_multi_wait_gen.load(std::memory_order_acquire) != wait_gen;
+      });
     }
   }
 
@@ -563,7 +587,7 @@ class PosixCondition<Event> : public PosixConditionBase {
   bool Signal() override {
     auto lock = std::unique_lock(mutex_);
     signal_ = true;
-    cond_.notify_all();
+    NotifyAll();
     return true;
   }
 
@@ -613,7 +637,7 @@ class PosixCondition<Semaphore> final : public PosixConditionBase {
       *out_previous_count = count_;
     }
     count_ += release_count;
-    cond_.notify_all();
+    NotifyAll();
     return true;
   }
 
@@ -672,7 +696,7 @@ class PosixCondition<Semaphore> final : public PosixConditionBase {
     while (abandoned_tickets_.erase(serve_ticket_)) {
       ++serve_ticket_;
     }
-    cond_.notify_all();
+    NotifyAll();
   }
 
   // For multi-object waits (which bypass the ticket queue): only report
@@ -683,7 +707,7 @@ class PosixCondition<Semaphore> final : public PosixConditionBase {
   }
   void post_execution() override {
     count_--;
-    cond_.notify_all();
+    NotifyAll();
   }
   uint32_t count_;
   const uint32_t maximum_count_;
@@ -710,7 +734,7 @@ class PosixCondition<Mutant> final : public PosixConditionBase {
       --count_;
       // Free to be acquired by another thread
       if (count_ == 0) {
-        cond_.notify_all();
+        NotifyAll();
       }
       return true;
     }
@@ -744,7 +768,7 @@ class PosixCondition<Timer> final : public PosixConditionBase {
   bool Signal() override {
     std::lock_guard lock(mutex_);
     signal_ = true;
-    cond_.notify_all();
+    NotifyAll();
     return true;
   }
 
@@ -1300,7 +1324,7 @@ class PosixCondition<Thread> final : public PosixConditionBase {
 
       exit_code_ = exit_code;
       signaled_ = true;
-      cond_.notify_all();
+      NotifyAll();
     }
     if (is_current_thread) {
 #if XE_PLATFORM_MAC && defined(__aarch64__)
@@ -1763,7 +1787,7 @@ void* PosixCondition<Thread>::ThreadStartRoutine(void* parameter) {
   std::unique_lock lock(thread->handle_.mutex_);
   thread->handle_.exit_code_ = 0;
   thread->handle_.signaled_ = true;
-  thread->handle_.cond_.notify_all();
+  thread->handle_.NotifyAll();
 
   current_thread_ = nullptr;
   return nullptr;
