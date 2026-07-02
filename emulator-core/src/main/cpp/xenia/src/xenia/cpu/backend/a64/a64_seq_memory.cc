@@ -7,12 +7,15 @@
  ******************************************************************************
  */
 
+#include <atomic>
 #include <chrono>
+#include <cstdio>
 
 #include "xenia/cpu/backend/a64/a64_sequences.h"
 
 #include "xenia/base/clock.h"
 #include "xenia/base/cvar.h"
+#include "xenia/base/logging.h"
 #include "xenia/base/memory.h"
 #include "xenia/base/threading.h"
 #include "xenia/cpu/backend/a64/a64_backend.h"
@@ -49,6 +52,12 @@ DEFINE_bool(a64_park_spin_backoff, true,
             "the cooperative guest scheduler, where host-blocking a fiber could "
             "stall its producer.",
             "CPU");
+
+DEFINE_bool(
+    log_spin_wait_histogram, false,
+    "Bucket the wall-clock length of every collapsed guest spin-wait episode "
+    "and dump the distribution once per second. Requires a64_park_spin_backoff.",
+    "CPU");
 
 namespace xe {
 namespace cpu {
@@ -91,6 +100,83 @@ struct DELAY_EXECUTION
 };
 EMITTER_OPCODE_TABLE(OPCODE_DELAY_EXECUTION, DELAY_EXECUTION);
 
+// Spin-wait-length histogram (log_spin_wait_histogram): eight wall-clock
+// duration buckets, dumping both the ~1s interval delta and cumulative totals.
+namespace {
+constexpr size_t kSpinHistBuckets = 8;
+// Upper edges (ns) for buckets 0..6; bucket 7 (>10ms) is everything larger.
+constexpr int64_t kSpinHistEdgesNs[kSpinHistBuckets - 1] = {
+    1000, 3000, 10000, 30000, 100000, 1000000, 10000000};
+const char* const kSpinHistLabels[kSpinHistBuckets] = {
+    "<1us",     "1-3us", "3-10us", "10-30us",
+    "30-100us", "100us-1ms",  "1-10ms",  ">10ms"};
+std::atomic<uint64_t> g_spin_hist_count[kSpinHistBuckets];
+std::atomic<uint64_t> g_spin_hist_time_ns[kSpinHistBuckets];
+// Snapshot at the previous dump; written only by the dump-winning thread.
+uint64_t g_spin_hist_prev_count[kSpinHistBuckets];
+uint64_t g_spin_hist_prev_time_ns[kSpinHistBuckets];
+std::atomic<int64_t> g_spin_hist_last_dump_ns{0};
+
+void FormatSpinHistLine(const char* tag, const uint64_t* cc, const uint64_t* tt,
+                        uint64_t ctot, uint64_t ttot) {
+  const double td = ttot ? static_cast<double>(ttot) : 1.0;
+  char line[512];
+  int off = 0;
+  for (size_t i = 0; i < kSpinHistBuckets; ++i) {
+    off += std::snprintf(line + off, sizeof(line) - off, "%s:%llu(%.0f%%t) ",
+                         kSpinHistLabels[i],
+                         static_cast<unsigned long long>(cc[i]),
+                         100.0 * static_cast<double>(tt[i]) / td);
+    if (off < 0 || off >= static_cast<int>(sizeof(line))) {
+      break;
+    }
+  }
+  XELOGI("SpinWaitHist[{}]: episodes={} spin={:.1f}ms | {}", tag, ctot,
+         static_cast<double>(ttot) / 1.0e6, line);
+}
+
+void RecordSpinEpisode(int64_t dur_ns, int64_t now_ns) {
+  if (dur_ns < 0) {
+    dur_ns = 0;
+  }
+  size_t b = kSpinHistBuckets - 1;
+  for (size_t i = 0; i < kSpinHistBuckets - 1; ++i) {
+    if (dur_ns < kSpinHistEdgesNs[i]) {
+      b = i;
+      break;
+    }
+  }
+  g_spin_hist_count[b].fetch_add(1, std::memory_order_relaxed);
+  g_spin_hist_time_ns[b].fetch_add(static_cast<uint64_t>(dur_ns),
+                                   std::memory_order_relaxed);
+
+  int64_t last = g_spin_hist_last_dump_ns.load(std::memory_order_relaxed);
+  if (now_ns - last <= 1000000000LL) {
+    return;  // <1s since last dump
+  }
+  if (!g_spin_hist_last_dump_ns.compare_exchange_strong(
+          last, now_ns, std::memory_order_relaxed)) {
+    return;  // another thread is dumping this second
+  }
+  uint64_t c[kSpinHistBuckets], t[kSpinHistBuckets], ctot = 0, ttot = 0;
+  uint64_t ic[kSpinHistBuckets], it[kSpinHistBuckets], ictot = 0, ittot = 0;
+  for (size_t i = 0; i < kSpinHistBuckets; ++i) {
+    c[i] = g_spin_hist_count[i].load(std::memory_order_relaxed);
+    t[i] = g_spin_hist_time_ns[i].load(std::memory_order_relaxed);
+    ic[i] = c[i] - g_spin_hist_prev_count[i];
+    it[i] = t[i] - g_spin_hist_prev_time_ns[i];
+    g_spin_hist_prev_count[i] = c[i];
+    g_spin_hist_prev_time_ns[i] = t[i];
+    ctot += c[i];
+    ttot += t[i];
+    ictot += ic[i];
+    ittot += it[i];
+  }
+  FormatSpinHistLine("interval~1s", ic, it, ictot, ittot);
+  FormatSpinHistLine("cumulative", c, t, ctot, ttot);
+}
+}  // namespace
+
 // Adaptive park helper for OPCODE_SPIN_BACKOFF (a64_park_spin_backoff), called
 // once per outer poll iteration of a collapsed guest spin-wait. A young wait
 // spins cheap (a few isb); once it proves long it sleeps briefly so the core
@@ -105,12 +191,18 @@ static void SpinBackoffParkThunk(void* /*ppc_context*/) {
   static constexpr int64_t kGapNs = 200000;  // >200us idle -> new episode
   thread_local uint32_t consec = 0;
   thread_local int64_t last_ns = 0;
+  thread_local int64_t ep_start_ns = 0;
   const int64_t now_ns =
       std::chrono::duration_cast<std::chrono::nanoseconds>(
           std::chrono::steady_clock::now().time_since_epoch())
           .count();
   if (now_ns - last_ns > kGapNs) {
+    // A gap since the last poll ends the previous episode; record its duration.
+    if (cvars::log_spin_wait_histogram && last_ns != 0) {
+      RecordSpinEpisode(last_ns - ep_start_ns, now_ns);
+    }
     consec = 0;
+    ep_start_ns = now_ns;
   }
   last_ns = now_ns;
   if (cvars::guest_scheduler || ++consec < kSpinIters) {
