@@ -64,15 +64,6 @@ DEFINE_bool(
     "Vulkan");
 
 DEFINE_bool(
-    skip_resolves_unsafe, false,
-    "DEBUG ONLY - skip all resolve GPU work (render target dumps, copy "
-    "dispatches, clears) while still committing the destination range and "
-    "invalidating textures, so CPU-side bookkeeping and the readback path "
-    "behave exactly as usual. Corrupts rendering; only for measuring the "
-    "total GPU cost of resolves in an A/B run.",
-    "GPU");
-
-DEFINE_bool(
     log_resolve_details, false,
     "Log a once-per-second histogram of resolve (EDRAM copy) operations: "
     "count and bytes per frame grouped by size, color/depth, MSAA, source and "
@@ -1939,21 +1930,6 @@ bool VulkanRenderTargetCache::Resolve(const Memory& memory,
 
   // Nothing to copy/clear.
   if (!resolve_info.coordinate_info.width_div_8 || !resolve_info.height_div_8) {
-    return true;
-  }
-
-  if (cvars::skip_resolves_unsafe) {
-    // Measurement-only: drop the GPU work but keep every CPU-side effect the
-    // real path produces, so fences/readback/PM4 flow are bit-identical and
-    // only resolve emission cost disappears from the A/B.
-    if (resolve_info.copy_dest_extent_length &&
-        shared_memory.RequestRange(resolve_info.copy_dest_extent_start,
-                                   resolve_info.copy_dest_extent_length)) {
-      texture_cache.MarkRangeAsResolved(resolve_info.copy_dest_extent_start,
-                                        resolve_info.copy_dest_extent_length);
-      written_address_out = resolve_info.copy_dest_extent_start;
-      written_length_out = resolve_info.copy_dest_extent_length;
-    }
     return true;
   }
 
