@@ -627,6 +627,11 @@ class VulkanCommandProcessor final : public CommandProcessor {
     uint64_t gpu_exec_max_ns = 0;
     uint64_t gpu_gap_ns = 0;
     uint64_t gpu_samples = 0;
+    // GPU time inside resolve emission regions (see the pairs in IssueCopy).
+    uint64_t resolve_gpu_ns = 0;
+    uint64_t resolve_gpu_max_ns = 0;
+    uint64_t resolve_gpu_samples = 0;
+    uint64_t resolve_ts_dropped = 0;
     uint64_t last_report_ns = 0;
   };
   VkFrameSyncStats vk_frame_sync_stats_;
@@ -635,6 +640,9 @@ class VulkanCommandProcessor final : public CommandProcessor {
     uint64_t submit_ns;
     // Slot in frame_timestamp_pool_, UINT32_MAX if timestamps unavailable.
     uint32_t timestamp_slot;
+    // Resolve timestamp pairs recorded in this submission.
+    uint32_t resolve_slot_base;
+    uint32_t resolve_pair_count;
   };
   std::deque<SubmitTimeRecord> vk_submit_times_;
   // GPU timestamps around each submission (2 per slot), copied in-buffer to
@@ -651,6 +659,17 @@ class VulkanCommandProcessor final : public CommandProcessor {
   VkDeviceSize frame_timestamp_buffer_size_ = 0;
   uint64_t* frame_timestamp_mapping_ = nullptr;
   uint64_t frame_timestamp_prev_end_ = 0;
+  // GPU timestamps bracketing each resolve region, ring-buffered per
+  // submission like the per-submission pair above (same no-host-query rule).
+  static constexpr uint32_t kResolveTimestampPairsPerSubmission = 48;
+  static constexpr uint32_t kResolveTimestampRingSubmissions = 32;
+  VkQueryPool resolve_timestamp_pool_ = VK_NULL_HANDLE;
+  VkBuffer resolve_timestamp_buffer_ = VK_NULL_HANDLE;
+  VkDeviceMemory resolve_timestamp_buffer_memory_ = VK_NULL_HANDLE;
+  VkDeviceSize resolve_timestamp_buffer_size_ = 0;
+  uint64_t* resolve_timestamp_mapping_ = nullptr;
+  uint64_t resolve_ts_submission_ = 0;
+  uint32_t resolve_ts_count_ = 0;
   // Completion of resolve readback copies on the dedicated transfer queue.
   ui::vulkan::VulkanGPUCompletionTimeline transfer_completion_timeline_;
   bool submission_open_ = false;

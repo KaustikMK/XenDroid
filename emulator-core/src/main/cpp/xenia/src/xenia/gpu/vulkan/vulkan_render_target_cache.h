@@ -117,6 +117,10 @@ class VulkanRenderTargetCache final : public RenderTargetCache {
   void CompletedSubmissionUpdated();
   void EndSubmission();
 
+  // Called once per guest frame (from IssueSwap) to aggregate and, once per
+  // second, log the resolve classification when log_resolve_details is set.
+  void LogResolveDetailsOnFrameEnd();
+
   Path GetPath() const override { return path_; }
 
   VkBuffer edram_buffer() const { return edram_buffer_; }
@@ -1044,6 +1048,31 @@ class VulkanRenderTargetCache final : public RenderTargetCache {
 
   // Temporary storage for Resolve.
   std::vector<Transfer> clear_transfers_[2];
+
+  // log_resolve_details aggregation, reported once per second on frame end.
+  struct ResolveDetailsBucket {
+    uint64_t key;
+    uint32_t count;
+    uint64_t bytes;
+  };
+  struct ResolveDetailsStats {
+    static constexpr size_t kMaxBuckets = 48;
+    ResolveDetailsBucket buckets[kMaxBuckets] = {};
+    size_t bucket_count = 0;
+    uint32_t frames = 0;
+    uint32_t copies = 0;
+    uint32_t clears_only = 0;
+    uint64_t total_bytes = 0;
+    uint32_t dest_distinct = 0;
+    uint32_t dest_repeats_in_frame = 0;
+    uint32_t dest_repeats_cross_frame = 0;
+    uint64_t last_report_ns = 0;
+  };
+  ResolveDetailsStats resolve_details_stats_;
+  std::vector<uint32_t> resolve_dests_current_frame_;
+  std::vector<uint32_t> resolve_dests_previous_frame_;
+  void RecordResolveDetails(const draw_util::ResolveInfo& resolve_info,
+                            bool copied, bool direct_host);
 
   // Temporary storage for PerformTransfersAndResolveClears.
   std::vector<TransferInvocation> current_transfer_invocations_;

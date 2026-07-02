@@ -1485,6 +1485,36 @@ bool VulkanCommandProcessor::SetupContext() {
       }
     }
   }
+  // Per-resolve GPU timestamps, ring-buffered per submission; only meaningful
+  // alongside the per-submission pair above.
+  if (frame_timestamp_mapping_) {
+    VkQueryPoolCreateInfo resolve_ts_pool_info = {
+        VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
+    resolve_ts_pool_info.queryType = VK_QUERY_TYPE_TIMESTAMP;
+    resolve_ts_pool_info.queryCount = kResolveTimestampPairsPerSubmission *
+                                      kResolveTimestampRingSubmissions * 2;
+    if (dfn.vkCreateQueryPool(device, &resolve_ts_pool_info, nullptr,
+                              &resolve_timestamp_pool_) == VK_SUCCESS) {
+      if (!ui::vulkan::util::CreateDedicatedAllocationBuffer(
+              vulkan_device, resolve_ts_pool_info.queryCount * sizeof(uint64_t),
+              VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+              ui::vulkan::util::MemoryPurpose::kReadback,
+              resolve_timestamp_buffer_, resolve_timestamp_buffer_memory_,
+              nullptr, &resolve_timestamp_buffer_size_) ||
+          dfn.vkMapMemory(device, resolve_timestamp_buffer_memory_, 0,
+                          VK_WHOLE_SIZE, 0,
+                          reinterpret_cast<void**>(
+                              &resolve_timestamp_mapping_)) != VK_SUCCESS) {
+        ui::vulkan::util::DestroyAndNullHandle(dfn.vkDestroyBuffer, device,
+                                               resolve_timestamp_buffer_);
+        ui::vulkan::util::DestroyAndNullHandle(
+            dfn.vkFreeMemory, device, resolve_timestamp_buffer_memory_);
+        ui::vulkan::util::DestroyAndNullHandle(dfn.vkDestroyQueryPool, device,
+                                               resolve_timestamp_pool_);
+        resolve_timestamp_mapping_ = nullptr;
+      }
+    }
+  }
 
   // Just not to expose uninitialized memory.
   std::memset(&system_constants_, 0, sizeof(system_constants_));
@@ -1518,6 +1548,17 @@ void VulkanCommandProcessor::ShutdownContext() {
                                          frame_timestamp_pool_);
   vk_submit_times_.clear();
   frame_timestamp_prev_end_ = 0;
+  if (resolve_timestamp_mapping_) {
+    dfn.vkUnmapMemory(device, resolve_timestamp_buffer_memory_);
+    resolve_timestamp_mapping_ = nullptr;
+  }
+  ui::vulkan::util::DestroyAndNullHandle(dfn.vkDestroyBuffer, device,
+                                         resolve_timestamp_buffer_);
+  ui::vulkan::util::DestroyAndNullHandle(dfn.vkFreeMemory, device,
+                                         resolve_timestamp_buffer_memory_);
+  ui::vulkan::util::DestroyAndNullHandle(dfn.vkDestroyQueryPool, device,
+                                         resolve_timestamp_pool_);
+  resolve_ts_count_ = 0;
 
   DestroyScratchBuffer();
 
@@ -2131,6 +2172,10 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
   // stats (the game's real frame rate, independent of the host present path).
   xe::RecordGuestPresent();
 
+  if (render_target_cache_) {
+    render_target_cache_->LogResolveDetailsOnFrameEnd();
+  }
+
   if (cvars::log_gpu_frame_time_breakdown) {
     auto& s = vk_frame_sync_stats_;
     s.frames++;
@@ -2145,7 +2190,8 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
           "readback_awaits={:.1f} "
           "| submit->fence avg={:.1f}ms max={:.1f}ms | blocking={:.1f} "
           "delta avg={:.2f} | gpu exec avg={:.1f}ms max={:.1f}ms "
-          "gap avg={:.1f}ms",
+          "gap avg={:.1f}ms | resolve_ms={:.2f} avg={:.3f} max={:.2f} "
+          "dropped={}",
           s.frames, s.awaits / f, s.await_ns / f / 1e6, s.submissions / f,
           s.resolves / f, s.memexport_awaits / f, s.readback_awaits / f,
           s.sub_completions
@@ -2161,7 +2207,13 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
           s.gpu_exec_max_ns / 1e6,
           s.gpu_samples
               ? s.gpu_gap_ns / static_cast<double>(s.gpu_samples) / 1e6
-              : 0.0);
+              : 0.0,
+          s.resolve_gpu_ns / f / 1e6,
+          s.resolve_gpu_samples
+              ? s.resolve_gpu_ns /
+                    static_cast<double>(s.resolve_gpu_samples) / 1e6
+              : 0.0,
+          s.resolve_gpu_max_ns / 1e6, s.resolve_ts_dropped);
       s = VkFrameSyncStats();
       s.last_report_ns = now;
     }
@@ -4768,9 +4820,41 @@ bool VulkanCommandProcessor::IssueCopy() {
     PushDebugMarker("IssueCopy (Resolve)");
   }
 
+  // Bracket the resolve emission region with GPU timestamps (BOTTOM_OF_PIPE:
+  // the region begins and ends at full barriers already, so the wait-for-idle
+  // Turnip implies is ~free here).
+  uint32_t resolve_ts_pair = UINT32_MAX;
+  if (resolve_timestamp_mapping_) {
+    if (resolve_ts_submission_ != GetCurrentSubmission()) {
+      resolve_ts_submission_ = GetCurrentSubmission();
+      resolve_ts_count_ = 0;
+    }
+    if (resolve_ts_count_ < kResolveTimestampPairsPerSubmission) {
+      resolve_ts_pair =
+          uint32_t(resolve_ts_submission_ % kResolveTimestampRingSubmissions) *
+              kResolveTimestampPairsPerSubmission +
+          resolve_ts_count_;
+      deferred_command_buffer_.CmdVkWriteTimestamp(
+          VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, resolve_timestamp_pool_,
+          resolve_ts_pair * 2);
+    } else {
+      ++vk_frame_sync_stats_.resolve_ts_dropped;
+    }
+  }
+
   uint32_t written_address, written_length;
-  if (!render_target_cache_->Resolve(*memory_, *shared_memory_, *texture_cache_,
-                                     written_address, written_length)) {
+  const bool resolve_succeeded = render_target_cache_->Resolve(
+      *memory_, *shared_memory_, *texture_cache_, written_address,
+      written_length);
+  if (resolve_ts_pair != UINT32_MAX) {
+    // Always close an opened pair - a WAIT_BIT results copy over a written
+    // begin with no end would hang the GPU.
+    deferred_command_buffer_.CmdVkWriteTimestamp(
+        VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, resolve_timestamp_pool_,
+        resolve_ts_pair * 2 + 1);
+    ++resolve_ts_count_;
+  }
+  if (!resolve_succeeded) {
     if (debug_markers_enabled_) {
       PopDebugMarker();
     }
@@ -6223,6 +6307,29 @@ void VulkanCommandProcessor::CheckSubmissionCompletionAndDeviceLoss(
               uint64_t((ts_top - frame_timestamp_prev_end_) * period_ns);
         }
         frame_timestamp_prev_end_ = ts_bottom;
+        if (record.resolve_pair_count && resolve_timestamp_mapping_) {
+          VkMappedMemoryRange resolve_invalidate_range = {
+              VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE};
+          resolve_invalidate_range.memory = resolve_timestamp_buffer_memory_;
+          resolve_invalidate_range.offset = 0;
+          resolve_invalidate_range.size = VK_WHOLE_SIZE;
+          GetVulkanDevice()->functions().vkInvalidateMappedMemoryRanges(
+              GetVulkanDevice()->device(), 1, &resolve_invalidate_range);
+          for (uint32_t i = 0; i < record.resolve_pair_count; ++i) {
+            const uint64_t r0 =
+                resolve_timestamp_mapping_[(record.resolve_slot_base + i) * 2];
+            const uint64_t r1 =
+                resolve_timestamp_mapping_[(record.resolve_slot_base + i) * 2 +
+                                           1];
+            if (r1 > r0) {
+              const uint64_t resolve_ns = uint64_t((r1 - r0) * period_ns);
+              vk_frame_sync_stats_.resolve_gpu_ns += resolve_ns;
+              vk_frame_sync_stats_.resolve_gpu_max_ns = std::max(
+                  vk_frame_sync_stats_.resolve_gpu_max_ns, resolve_ns);
+              vk_frame_sync_stats_.resolve_gpu_samples++;
+            }
+          }
+        }
       }
       vk_submit_times_.pop_front();
     }
@@ -6698,6 +6805,15 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
       dfn.vkCmdWriteTimestamp(command_buffer.buffer,
                               VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
                               frame_timestamp_pool_, fs_timestamp_slot * 2);
+      if (resolve_timestamp_mapping_) {
+        // Reset this submission's resolve-pair range before the deferred
+        // buffer (which contains the writes) replays.
+        dfn.vkCmdResetQueryPool(
+            command_buffer.buffer, resolve_timestamp_pool_,
+            uint32_t(GetCurrentSubmission() % kResolveTimestampRingSubmissions) *
+                kResolveTimestampPairsPerSubmission * 2,
+            kResolveTimestampPairsPerSubmission * 2);
+      }
     }
     // Submission boundary for asynchronously created pipelines: by default
     // this waits until every pipeline referenced by the recorded deferred
@@ -6723,6 +6839,20 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
           2, frame_timestamp_buffer_,
           fs_timestamp_slot * 2 * sizeof(uint64_t), sizeof(uint64_t),
           VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT);
+      if (resolve_timestamp_mapping_ &&
+          resolve_ts_submission_ == GetCurrentSubmission() &&
+          resolve_ts_count_) {
+        // Copy only the pairs actually written this submission - reset-but-
+        // unwritten queries under WAIT_BIT would hang the GPU.
+        const uint32_t resolve_ts_base =
+            uint32_t(GetCurrentSubmission() % kResolveTimestampRingSubmissions) *
+            kResolveTimestampPairsPerSubmission;
+        dfn.vkCmdCopyQueryPoolResults(
+            command_buffer.buffer, resolve_timestamp_pool_, resolve_ts_base * 2,
+            resolve_ts_count_ * 2, resolve_timestamp_buffer_,
+            resolve_ts_base * 2 * sizeof(uint64_t), sizeof(uint64_t),
+            VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT);
+      }
       VkMemoryBarrier fs_timestamp_barrier = {VK_STRUCTURE_TYPE_MEMORY_BARRIER};
       fs_timestamp_barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
       fs_timestamp_barrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
@@ -6844,8 +6974,19 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
     draws_since_submission_ = 0;
     vk_frame_sync_stats_.submissions++;
     if (cvars::log_gpu_frame_time_breakdown) {
-      vk_submit_times_.push_back(
-          {submission_index, FrameStatsNow(), fs_timestamp_slot});
+      uint32_t resolve_base = 0;
+      uint32_t resolve_pairs = 0;
+      if (resolve_timestamp_mapping_ &&
+          resolve_ts_submission_ == submission_index) {
+        resolve_pairs = resolve_ts_count_;
+        resolve_base =
+            uint32_t(submission_index % kResolveTimestampRingSubmissions) *
+            kResolveTimestampPairsPerSubmission;
+      }
+      vk_submit_times_.push_back({submission_index, FrameStatsNow(),
+                                  fs_timestamp_slot, resolve_base,
+                                  resolve_pairs});
+      resolve_ts_count_ = 0;
     }
 
     // Process any ZPD resolves that completed with this submission.

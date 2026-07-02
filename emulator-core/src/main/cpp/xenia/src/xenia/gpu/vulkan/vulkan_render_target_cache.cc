@@ -10,6 +10,7 @@
 #include "xenia/gpu/vulkan/vulkan_render_target_cache.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -26,6 +27,7 @@
 #include "xenia/gpu/spirv_compatibility.h"
 #include "xenia/gpu/spirv_shader_translator.h"
 #include "xenia/gpu/texture_cache.h"
+#include "xenia/gpu/texture_info.h"
 #include "xenia/gpu/vulkan/deferred_command_buffer.h"
 #include "xenia/gpu/vulkan/vulkan_command_processor.h"
 #include "xenia/gpu/xenos.h"
@@ -60,6 +62,23 @@ DEFINE_bool(
     "(what drivers without unorm24 support, like Adreno proprietary, always "
     "use) for debugging.",
     "Vulkan");
+
+DEFINE_bool(
+    skip_resolves_unsafe, false,
+    "DEBUG ONLY - skip all resolve GPU work (render target dumps, copy "
+    "dispatches, clears) while still committing the destination range and "
+    "invalidating textures, so CPU-side bookkeeping and the readback path "
+    "behave exactly as usual. Corrupts rendering; only for measuring the "
+    "total GPU cost of resolves in an A/B run.",
+    "GPU");
+
+DEFINE_bool(
+    log_resolve_details, false,
+    "Log a once-per-second histogram of resolve (EDRAM copy) operations: "
+    "count and bytes per frame grouped by size, color/depth, MSAA, source and "
+    "destination formats and direct-host vs staged path, plus destination "
+    "address reuse within and across frames.",
+    "GPU");
 
 namespace xe {
 namespace gpu {
@@ -1923,6 +1942,21 @@ bool VulkanRenderTargetCache::Resolve(const Memory& memory,
     return true;
   }
 
+  if (cvars::skip_resolves_unsafe) {
+    // Measurement-only: drop the GPU work but keep every CPU-side effect the
+    // real path produces, so fences/readback/PM4 flow are bit-identical and
+    // only resolve emission cost disappears from the A/B.
+    if (resolve_info.copy_dest_extent_length &&
+        shared_memory.RequestRange(resolve_info.copy_dest_extent_start,
+                                   resolve_info.copy_dest_extent_length)) {
+      texture_cache.MarkRangeAsResolved(resolve_info.copy_dest_extent_start,
+                                        resolve_info.copy_dest_extent_length);
+      written_address_out = resolve_info.copy_dest_extent_start;
+      written_length_out = resolve_info.copy_dest_extent_length;
+    }
+    return true;
+  }
+
   const ui::vulkan::VulkanDevice* const vulkan_device =
       command_processor_.GetVulkanDevice();
   const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
@@ -1932,6 +1966,7 @@ bool VulkanRenderTargetCache::Resolve(const Memory& memory,
 
   // Copying.
   bool copied = false;
+  bool direct_host_used = false;
   if (resolve_info.copy_dest_extent_length) {
     if (command_processor_.debug_markers_enabled()) {
       char label[draw_util::kDebugMarkerLabelMaxLength];
@@ -1960,6 +1995,7 @@ bool VulkanRenderTargetCache::Resolve(const Memory& memory,
             resolve_info, copy_shader_constants, copy_shader, dump_base,
             dump_row_length_used, dump_rows, dump_pitch, shared_memory,
             texture_cache, written_address_out, written_length_out);
+        direct_host_used = copied;
       }
       if (!copied) {
         DumpRenderTargets(dump_base, dump_row_length_used, dump_rows,
@@ -2295,7 +2331,129 @@ bool VulkanRenderTargetCache::Resolve(const Memory& memory,
     cleared = true;
   }
 
+  if (cvars::log_resolve_details) {
+    RecordResolveDetails(resolve_info, copied, direct_host_used);
+  }
+
   return copied && cleared;
+}
+
+void VulkanRenderTargetCache::RecordResolveDetails(
+    const draw_util::ResolveInfo& resolve_info, bool copied, bool direct_host) {
+  ResolveDetailsStats& s = resolve_details_stats_;
+  if (!resolve_info.copy_dest_extent_length) {
+    ++s.clears_only;
+    return;
+  }
+  ++s.copies;
+  const draw_util::ResolveEdramInfo edram_info =
+      resolve_info.IsCopyingDepth() ? resolve_info.depth_edram_info
+                                    : resolve_info.color_edram_info;
+  const uint32_t path = direct_host ? 0 : (copied ? 1 : 2);
+  const uint64_t key =
+      uint64_t(path) | (uint64_t(edram_info.is_depth) << 2) |
+      (uint64_t(edram_info.msaa_samples) << 3) |
+      (uint64_t(edram_info.format) << 5) |
+      (uint64_t(edram_info.format_is_64bpp) << 9) |
+      (uint64_t(resolve_info.copy_dest_info.copy_dest_format) << 10) |
+      (uint64_t(resolve_info.coordinate_info.width_div_8) << 16) |
+      (uint64_t(resolve_info.height_div_8) << 27);
+  const uint64_t bytes = copied ? resolve_info.copy_dest_extent_length : 0;
+  s.total_bytes += bytes;
+  size_t i = 0;
+  for (; i < s.bucket_count; ++i) {
+    if (s.buckets[i].key == key) {
+      break;
+    }
+  }
+  if (i == s.bucket_count &&
+      s.bucket_count < ResolveDetailsStats::kMaxBuckets) {
+    s.buckets[s.bucket_count].key = key;
+    s.buckets[s.bucket_count].count = 0;
+    s.buckets[s.bucket_count].bytes = 0;
+    ++s.bucket_count;
+  }
+  if (i < s.bucket_count) {
+    ++s.buckets[i].count;
+    s.buckets[i].bytes += bytes;
+  }
+  // Destination address reuse. A destination re-resolved every frame is a live
+  // per-frame surface (consumed as a texture); repeats within one frame
+  // indicate tiled/multi-rect resolves or redundant re-resolves of the same
+  // buffer.
+  const uint32_t dest = resolve_info.copy_dest_extent_start;
+  if (std::find(resolve_dests_current_frame_.begin(),
+                resolve_dests_current_frame_.end(), dest) !=
+      resolve_dests_current_frame_.end()) {
+    ++s.dest_repeats_in_frame;
+  } else {
+    ++s.dest_distinct;
+    if (resolve_dests_current_frame_.size() < 256) {
+      resolve_dests_current_frame_.push_back(dest);
+    }
+    if (std::find(resolve_dests_previous_frame_.begin(),
+                  resolve_dests_previous_frame_.end(), dest) !=
+        resolve_dests_previous_frame_.end()) {
+      ++s.dest_repeats_cross_frame;
+    }
+  }
+}
+
+void VulkanRenderTargetCache::LogResolveDetailsOnFrameEnd() {
+  if (!cvars::log_resolve_details) {
+    return;
+  }
+  ResolveDetailsStats& s = resolve_details_stats_;
+  ++s.frames;
+  resolve_dests_previous_frame_.swap(resolve_dests_current_frame_);
+  resolve_dests_current_frame_.clear();
+  const uint64_t now =
+      uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                   std::chrono::steady_clock::now().time_since_epoch())
+                   .count());
+  if (!s.last_report_ns) {
+    s.last_report_ns = now;
+    return;
+  }
+  if (now - s.last_report_ns < 1000000000ull) {
+    return;
+  }
+  const double f = double(std::max(s.frames, 1u));
+  XELOGI(
+      "ResolveDetails: {} frames | per frame: copies={:.1f} "
+      "clears-only={:.1f} MB={:.2f} | dests per frame: distinct={:.1f} "
+      "in-frame-repeats={:.1f} recurring-vs-prev-frame={:.1f}",
+      s.frames, s.copies / f, s.clears_only / f,
+      s.total_bytes / f / (1024.0 * 1024.0), s.dest_distinct / f,
+      s.dest_repeats_in_frame / f, s.dest_repeats_cross_frame / f);
+  std::sort(s.buckets, s.buckets + s.bucket_count,
+            [](const ResolveDetailsBucket& a, const ResolveDetailsBucket& b) {
+              return a.count > b.count;
+            });
+  for (size_t i = 0; i < s.bucket_count; ++i) {
+    const ResolveDetailsBucket& b = s.buckets[i];
+    const uint32_t path = uint32_t(b.key & 0b11);
+    const bool is_depth = ((b.key >> 2) & 0b1) != 0;
+    const uint32_t msaa_log2 = uint32_t((b.key >> 3) & 0b11);
+    const uint32_t src_format = uint32_t((b.key >> 5) & 0b1111);
+    const uint32_t dest_format = uint32_t((b.key >> 10) & 0b111111);
+    const uint32_t width = uint32_t((b.key >> 16) & 0b11111111111) * 8;
+    const uint32_t height = uint32_t((b.key >> 27) & 0b11111111111) * 8;
+    XELOGI(
+        "ResolveDetails:   {:>5.2f}/fr {:>4}x{:<4} {} {}xAA src={} dst={} {} "
+        "{:.2f} MB/fr",
+        b.count / f, width, height, is_depth ? "depth" : "color",
+        1u << msaa_log2,
+        is_depth ? xenos::GetDepthRenderTargetFormatName(
+                       xenos::DepthRenderTargetFormat(src_format))
+                 : xenos::GetColorRenderTargetFormatName(
+                       xenos::ColorRenderTargetFormat(src_format)),
+        FormatInfo::GetName(dest_format),
+        path == 0 ? "direct" : (path == 1 ? "staged" : "dropped"),
+        b.bytes / f / (1024.0 * 1024.0));
+  }
+  s = ResolveDetailsStats();
+  s.last_report_ns = now;
 }
 
 bool VulkanRenderTargetCache::Update(
