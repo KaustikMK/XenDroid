@@ -16,6 +16,7 @@
 #include <cstdint>
 #include <deque>
 #include <functional>
+#include <map>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -632,6 +633,10 @@ class VulkanCommandProcessor final : public CommandProcessor {
     uint64_t resolve_gpu_max_ns = 0;
     uint64_t resolve_gpu_samples = 0;
     uint64_t resolve_ts_dropped = 0;
+    // Draw/pass structure counters.
+    uint64_t draws = 0;
+    uint64_t render_pass_begins = 0;
+    uint64_t primary_buffer_splits = 0;
     uint64_t last_report_ns = 0;
   };
   VkFrameSyncStats vk_frame_sync_stats_;
@@ -643,6 +648,9 @@ class VulkanCommandProcessor final : public CommandProcessor {
     // Resolve timestamp pairs recorded in this submission.
     uint32_t resolve_slot_base;
     uint32_t resolve_pair_count;
+    // Render-pass timestamp pairs recorded in this submission.
+    uint32_t pass_slot_base;
+    uint32_t pass_pair_count;
   };
   std::deque<SubmitTimeRecord> vk_submit_times_;
   // GPU timestamps around each submission (2 per slot), copied in-buffer to
@@ -670,6 +678,37 @@ class VulkanCommandProcessor final : public CommandProcessor {
   uint64_t* resolve_timestamp_mapping_ = nullptr;
   uint64_t resolve_ts_submission_ = 0;
   uint32_t resolve_ts_count_ = 0;
+  // GPU timestamps bracketing each render pass, bucketed CPU-side by
+  // framebuffer extent (bit 31 = ownership-transfer pass). Same ring/readback
+  // pattern; timestamps written OUTSIDE the pass (before begin / after end).
+  static constexpr uint32_t kPassTimestampPairsPerSubmission = 96;
+  static constexpr uint32_t kPassTimestampRingSubmissions = 32;
+  VkQueryPool pass_timestamp_pool_ = VK_NULL_HANDLE;
+  VkBuffer pass_timestamp_buffer_ = VK_NULL_HANDLE;
+  VkDeviceMemory pass_timestamp_buffer_memory_ = VK_NULL_HANDLE;
+  VkDeviceSize pass_timestamp_buffer_size_ = 0;
+  uint64_t* pass_timestamp_mapping_ = nullptr;
+  uint64_t pass_ts_submission_ = 0;
+  uint32_t pass_ts_count_ = 0;
+  uint32_t pass_ts_open_pair_ = UINT32_MAX;
+  uint64_t pass_ts_open_submission_ = 0;
+  uint64_t pass_ts_dropped_ = 0;
+  std::array<uint32_t, size_t(kPassTimestampPairsPerSubmission) *
+                           kPassTimestampRingSubmissions>
+      pass_ts_keys_{};
+  std::array<uint32_t, size_t(kPassTimestampPairsPerSubmission) *
+                           kPassTimestampRingSubmissions>
+      pass_ts_draws_{};
+  uint32_t pass_open_draws_ = 0;
+  struct PassBucketStat {
+    uint64_t ns = 0;
+    uint64_t passes = 0;
+    uint64_t draws = 0;
+  };
+  // Accumulated per bucket key since the last report.
+  std::map<uint32_t, PassBucketStat> pass_bucket_stats_;
+  void OpenPassTimestamp(uint32_t bucket_key);
+  void ClosePassTimestamp();
   // Completion of resolve readback copies on the dedicated transfer queue.
   ui::vulkan::VulkanGPUCompletionTimeline transfer_completion_timeline_;
   bool submission_open_ = false;

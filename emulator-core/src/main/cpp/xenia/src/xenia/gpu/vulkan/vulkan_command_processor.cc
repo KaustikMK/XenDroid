@@ -1515,6 +1515,35 @@ bool VulkanCommandProcessor::SetupContext() {
       }
     }
   }
+  // Per-render-pass timestamps, bucketed by framebuffer extent.
+  if (frame_timestamp_mapping_) {
+    VkQueryPoolCreateInfo pass_ts_pool_info = {
+        VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
+    pass_ts_pool_info.queryType = VK_QUERY_TYPE_TIMESTAMP;
+    pass_ts_pool_info.queryCount =
+        kPassTimestampPairsPerSubmission * kPassTimestampRingSubmissions * 2;
+    if (dfn.vkCreateQueryPool(device, &pass_ts_pool_info, nullptr,
+                              &pass_timestamp_pool_) == VK_SUCCESS) {
+      if (!ui::vulkan::util::CreateDedicatedAllocationBuffer(
+              vulkan_device, pass_ts_pool_info.queryCount * sizeof(uint64_t),
+              VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+              ui::vulkan::util::MemoryPurpose::kReadback,
+              pass_timestamp_buffer_, pass_timestamp_buffer_memory_, nullptr,
+              &pass_timestamp_buffer_size_) ||
+          dfn.vkMapMemory(
+              device, pass_timestamp_buffer_memory_, 0, VK_WHOLE_SIZE, 0,
+              reinterpret_cast<void**>(&pass_timestamp_mapping_)) !=
+              VK_SUCCESS) {
+        ui::vulkan::util::DestroyAndNullHandle(dfn.vkDestroyBuffer, device,
+                                               pass_timestamp_buffer_);
+        ui::vulkan::util::DestroyAndNullHandle(dfn.vkFreeMemory, device,
+                                               pass_timestamp_buffer_memory_);
+        ui::vulkan::util::DestroyAndNullHandle(dfn.vkDestroyQueryPool, device,
+                                               pass_timestamp_pool_);
+        pass_timestamp_mapping_ = nullptr;
+      }
+    }
+  }
 
   // Just not to expose uninitialized memory.
   std::memset(&system_constants_, 0, sizeof(system_constants_));
@@ -1559,6 +1588,19 @@ void VulkanCommandProcessor::ShutdownContext() {
   ui::vulkan::util::DestroyAndNullHandle(dfn.vkDestroyQueryPool, device,
                                          resolve_timestamp_pool_);
   resolve_ts_count_ = 0;
+  if (pass_timestamp_mapping_) {
+    dfn.vkUnmapMemory(device, pass_timestamp_buffer_memory_);
+    pass_timestamp_mapping_ = nullptr;
+  }
+  ui::vulkan::util::DestroyAndNullHandle(dfn.vkDestroyBuffer, device,
+                                         pass_timestamp_buffer_);
+  ui::vulkan::util::DestroyAndNullHandle(dfn.vkFreeMemory, device,
+                                         pass_timestamp_buffer_memory_);
+  ui::vulkan::util::DestroyAndNullHandle(dfn.vkDestroyQueryPool, device,
+                                         pass_timestamp_pool_);
+  pass_ts_count_ = 0;
+  pass_ts_open_pair_ = UINT32_MAX;
+  pass_bucket_stats_.clear();
 
   DestroyScratchBuffer();
 
@@ -2191,7 +2233,7 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
           "| submit->fence avg={:.1f}ms max={:.1f}ms | blocking={:.1f} "
           "delta avg={:.2f} | gpu exec avg={:.1f}ms max={:.1f}ms "
           "gap avg={:.1f}ms | resolve_ms={:.2f} avg={:.3f} max={:.2f} "
-          "dropped={}",
+          "dropped={} | draws={:.0f} rp_begins={:.0f} splits={:.1f}",
           s.frames, s.awaits / f, s.await_ns / f / 1e6, s.submissions / f,
           s.resolves / f, s.memexport_awaits / f, s.readback_awaits / f,
           s.sub_completions
@@ -2213,7 +2255,29 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
               ? s.resolve_gpu_ns /
                     static_cast<double>(s.resolve_gpu_samples) / 1e6
               : 0.0,
-          s.resolve_gpu_max_ns / 1e6, s.resolve_ts_dropped);
+          s.resolve_gpu_max_ns / 1e6, s.resolve_ts_dropped, s.draws / f,
+          s.render_pass_begins / f, s.primary_buffer_splits / f);
+      // Per-render-pass-bucket GPU time (key: WxH, bit31 = ownership transfer).
+      if (!pass_bucket_stats_.empty()) {
+        for (const auto& kv : pass_bucket_stats_) {
+          const uint32_t key = kv.first;
+          const bool transfer = (key & 0x80000000u) != 0;
+          XELOGI(
+              "VkPassTime: {}{}x{} : {:.2f}ms/fr ({:.1f}pass {:.0f}draw/fr, "
+              "{:.3f}ms ea)",
+              transfer ? "xfer " : "", (key >> 16) & 0x7FFF, key & 0xFFFF,
+              kv.second.ns / f / 1e6, kv.second.passes / f, kv.second.draws / f,
+              kv.second.passes
+                  ? kv.second.ns / static_cast<double>(kv.second.passes) / 1e6
+                  : 0.0);
+        }
+        pass_bucket_stats_.clear();
+      }
+      if (pass_ts_dropped_) {
+        XELOGI("VkPassTime: {} pass pairs dropped (raise pool)",
+               pass_ts_dropped_);
+        pass_ts_dropped_ = 0;
+      }
       s = VkFrameSyncStats();
       s.last_report_ns = now;
     }
@@ -2809,6 +2873,7 @@ void VulkanCommandProcessor::OnPrimaryBufferEnd() {
 
   if (cvars::submit_on_primary_buffer_end && submission_open_ &&
       !scratch_buffer_used_ && CanEndSubmissionImmediately()) {
+    ++vk_frame_sync_stats_.primary_buffer_splits;
     EndSubmission(false);
   }
 }
@@ -2995,6 +3060,50 @@ bool VulkanCommandProcessor::SubmitBarriers(bool force_end_render_pass) {
   return true;
 }
 
+void VulkanCommandProcessor::OpenPassTimestamp(uint32_t bucket_key) {
+  if (!pass_timestamp_mapping_) {
+    return;
+  }
+  if (pass_ts_submission_ != GetCurrentSubmission()) {
+    pass_ts_submission_ = GetCurrentSubmission();
+    pass_ts_count_ = 0;
+  }
+  if (pass_ts_count_ >= kPassTimestampPairsPerSubmission) {
+    ++pass_ts_dropped_;
+    return;
+  }
+  const uint32_t pair =
+      uint32_t(pass_ts_submission_ % kPassTimestampRingSubmissions) *
+          kPassTimestampPairsPerSubmission +
+      pass_ts_count_;
+  pass_ts_keys_[pair] = bucket_key;
+  deferred_command_buffer_.CmdVkWriteTimestamp(
+      VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, pass_timestamp_pool_, pair * 2);
+  pass_ts_open_pair_ = pair;
+  pass_ts_open_submission_ = pass_ts_submission_;
+  pass_open_draws_ = 0;
+}
+
+void VulkanCommandProcessor::ClosePassTimestamp() {
+  if (pass_ts_open_pair_ == UINT32_MAX) {
+    return;
+  }
+  // A pass that spanned a submission split has its begin in a prior
+  // submission's already-copied range; abandon it rather than corrupt this
+  // submission's pair count (its begin query is simply never copied).
+  if (pass_ts_open_submission_ != GetCurrentSubmission()) {
+    pass_ts_open_pair_ = UINT32_MAX;
+    ++pass_ts_dropped_;
+    return;
+  }
+  deferred_command_buffer_.CmdVkWriteTimestamp(
+      VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, pass_timestamp_pool_,
+      pass_ts_open_pair_ * 2 + 1);
+  pass_ts_draws_[pass_ts_open_pair_] = pass_open_draws_;
+  ++pass_ts_count_;
+  pass_ts_open_pair_ = UINT32_MAX;
+}
+
 void VulkanCommandProcessor::SubmitBarriersAndEnterRenderTargetCacheRenderPass(
     VkRenderPass render_pass,
     const VulkanRenderTargetCache::Framebuffer* framebuffer) {
@@ -3026,10 +3135,14 @@ void VulkanCommandProcessor::SubmitBarriersAndEnterRenderTargetCacheRenderPass(
       deferred_command_buffer_.CmdVkEndRenderPass();
     }
     in_render_pass_ = false;
+    ClosePassTimestamp();
   }
 
   current_render_pass_ = use_dynamic_rendering ? VK_NULL_HANDLE : render_pass;
   current_framebuffer_ = framebuffer;
+  ++vk_frame_sync_stats_.render_pass_begins;
+  OpenPassTimestamp((uint32_t(framebuffer->host_extent.width) << 16) |
+                    framebuffer->host_extent.height);
 
   if (use_dynamic_rendering) {
     // Use dynamic rendering - construct VkRenderingInfo from render targets.
@@ -3122,10 +3235,16 @@ void VulkanCommandProcessor::SubmitBarriersAndEnterRenderTargetCacheRenderPass(
       deferred_command_buffer_.CmdVkEndRenderPass();
     }
     in_render_pass_ = false;
+    ClosePassTimestamp();
   }
 
   current_render_pass_ = use_dynamic_rendering ? VK_NULL_HANDLE : render_pass;
   current_framebuffer_ = framebuffer;
+  ++vk_frame_sync_stats_.render_pass_begins;
+  // Bit 31 tags EDRAM ownership-transfer passes.
+  OpenPassTimestamp(0x80000000u |
+                    (uint32_t(framebuffer->host_extent.width) << 16) |
+                    framebuffer->host_extent.height);
 
   if (use_dynamic_rendering) {
     // Use dynamic rendering for transfers - construct VkRenderingInfo from
@@ -3221,6 +3340,7 @@ void VulkanCommandProcessor::EndRenderPass() {
   current_render_pass_ = VK_NULL_HANDLE;
   current_framebuffer_ = nullptr;
   in_render_pass_ = false;
+  ClosePassTimestamp();
 }
 
 VkDescriptorSet VulkanCommandProcessor::AllocateSingleTransientDescriptor(
@@ -4378,6 +4498,10 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
   // IssueDraw's BeginSubmission(true) reopens the submission, and the same call
   // resets draws_since_submission_ to 0. Guard mirrors OnPrimaryBufferEnd().
   ++draws_since_submission_;
+  ++vk_frame_sync_stats_.draws;
+  if (pass_ts_open_pair_ != UINT32_MAX) {
+    ++pass_open_draws_;
+  }
   if (cvars::vulkan_mid_frame_submission_draws > 0 &&
       draws_since_submission_ >=
           uint32_t(cvars::vulkan_mid_frame_submission_draws) &&
@@ -6330,6 +6454,26 @@ void VulkanCommandProcessor::CheckSubmissionCompletionAndDeviceLoss(
             }
           }
         }
+        if (record.pass_pair_count && pass_timestamp_mapping_) {
+          VkMappedMemoryRange pass_invalidate_range = {
+              VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE};
+          pass_invalidate_range.memory = pass_timestamp_buffer_memory_;
+          pass_invalidate_range.offset = 0;
+          pass_invalidate_range.size = VK_WHOLE_SIZE;
+          GetVulkanDevice()->functions().vkInvalidateMappedMemoryRanges(
+              GetVulkanDevice()->device(), 1, &pass_invalidate_range);
+          for (uint32_t i = 0; i < record.pass_pair_count; ++i) {
+            const uint32_t pair = record.pass_slot_base + i;
+            const uint64_t p0 = pass_timestamp_mapping_[pair * 2];
+            const uint64_t p1 = pass_timestamp_mapping_[pair * 2 + 1];
+            if (p1 > p0) {
+              auto& bucket = pass_bucket_stats_[pass_ts_keys_[pair]];
+              bucket.ns += uint64_t((p1 - p0) * period_ns);
+              bucket.passes++;
+              bucket.draws += pass_ts_draws_[pair];
+            }
+          }
+        }
       }
       vk_submit_times_.pop_front();
     }
@@ -6521,6 +6665,9 @@ bool VulkanCommandProcessor::BeginSubmission(bool is_guest_command) {
     current_render_pass_ = VK_NULL_HANDLE;
     current_framebuffer_ = nullptr;
     in_render_pass_ = false;
+    // Fresh deferred command buffer: abandon any open pass-timestamp pair
+    // without emitting an end (it would land in the new, unrelated buffer).
+    pass_ts_open_pair_ = UINT32_MAX;
     current_guest_graphics_pipeline_ = nullptr;
     current_external_graphics_pipeline_ = VK_NULL_HANDLE;
     current_external_compute_pipeline_ = VK_NULL_HANDLE;
@@ -6814,6 +6961,13 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
                 kResolveTimestampPairsPerSubmission * 2,
             kResolveTimestampPairsPerSubmission * 2);
       }
+      if (pass_timestamp_mapping_) {
+        dfn.vkCmdResetQueryPool(
+            command_buffer.buffer, pass_timestamp_pool_,
+            uint32_t(GetCurrentSubmission() % kPassTimestampRingSubmissions) *
+                kPassTimestampPairsPerSubmission * 2,
+            kPassTimestampPairsPerSubmission * 2);
+      }
     }
     // Submission boundary for asynchronously created pipelines: by default
     // this waits until every pipeline referenced by the recorded deferred
@@ -6851,6 +7005,19 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
             command_buffer.buffer, resolve_timestamp_pool_, resolve_ts_base * 2,
             resolve_ts_count_ * 2, resolve_timestamp_buffer_,
             resolve_ts_base * 2 * sizeof(uint64_t), sizeof(uint64_t),
+            VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT);
+      }
+      if (pass_timestamp_mapping_ &&
+          pass_ts_submission_ == GetCurrentSubmission() && pass_ts_count_) {
+        // Only fully-closed pairs are counted in pass_ts_count_; a pass still
+        // open across the split keeps its begin query but is not copied here.
+        const uint32_t pass_ts_base =
+            uint32_t(GetCurrentSubmission() % kPassTimestampRingSubmissions) *
+            kPassTimestampPairsPerSubmission;
+        dfn.vkCmdCopyQueryPoolResults(
+            command_buffer.buffer, pass_timestamp_pool_, pass_ts_base * 2,
+            pass_ts_count_ * 2, pass_timestamp_buffer_,
+            pass_ts_base * 2 * sizeof(uint64_t), sizeof(uint64_t),
             VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT);
       }
       VkMemoryBarrier fs_timestamp_barrier = {VK_STRUCTURE_TYPE_MEMORY_BARRIER};
@@ -6983,10 +7150,19 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
             uint32_t(submission_index % kResolveTimestampRingSubmissions) *
             kResolveTimestampPairsPerSubmission;
       }
+      uint32_t pass_base = 0;
+      uint32_t pass_pairs = 0;
+      if (pass_timestamp_mapping_ && pass_ts_submission_ == submission_index) {
+        pass_pairs = pass_ts_count_;
+        pass_base =
+            uint32_t(submission_index % kPassTimestampRingSubmissions) *
+            kPassTimestampPairsPerSubmission;
+      }
       vk_submit_times_.push_back({submission_index, FrameStatsNow(),
                                   fs_timestamp_slot, resolve_base,
-                                  resolve_pairs});
+                                  resolve_pairs, pass_base, pass_pairs});
       resolve_ts_count_ = 0;
+      pass_ts_count_ = 0;
     }
 
     // Process any ZPD resolves that completed with this submission.
