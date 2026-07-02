@@ -15,7 +15,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import xendroid.compose.Emulator
 
-private const val GRATITUDE = "Thanks Ruban for all the ICONS\n\nxendroid — Xbox 360 emulation on Android."
+private const val TITLE = "Xendroid — Xbox 360 emulation on Android."
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -56,7 +56,7 @@ fun AboutScreen(onBack: () -> Unit) {
             Spacer(Modifier.height(16.dp))
 
             Text("Credits", style = MaterialTheme.typography.titleMedium)
-            Text(GRATITUDE, style = MaterialTheme.typography.bodyMedium)
+            Text(TITLE, style = MaterialTheme.typography.bodyMedium)
             Spacer(Modifier.height(16.dp))
 
             Text("Device", style = MaterialTheme.typography.titleMedium)
