@@ -608,6 +608,7 @@ class VulkanCommandProcessor final : public CommandProcessor {
     uint64_t awaits = 0;    // blocking waits for own submissions
     uint64_t await_ns = 0;  // time inside those waits
     uint64_t submissions = 0;
+    uint64_t resolves = 0;  // EDRAM resolves issued (churn magnitude)
     uint64_t memexport_awaits = 0;
     uint64_t readback_awaits = 0;
     // Host-side latency from vkQueueSubmit to the fence being observed

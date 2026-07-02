@@ -2141,12 +2141,13 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
       const double f = static_cast<double>(s.frames);
       XELOGI(
           "VkFrameSync: {} frames | per frame: awaits={:.1f} await={:.1f}ms "
-          "submissions={:.1f} memexport_awaits={:.1f} readback_awaits={:.1f} "
+          "submissions={:.1f} resolves={:.1f} memexport_awaits={:.1f} "
+          "readback_awaits={:.1f} "
           "| submit->fence avg={:.1f}ms max={:.1f}ms | blocking={:.1f} "
           "delta avg={:.2f} | gpu exec avg={:.1f}ms max={:.1f}ms "
           "gap avg={:.1f}ms",
           s.frames, s.awaits / f, s.await_ns / f / 1e6, s.submissions / f,
-          s.memexport_awaits / f, s.readback_awaits / f,
+          s.resolves / f, s.memexport_awaits / f, s.readback_awaits / f,
           s.sub_completions
               ? s.sub_latency_ns / static_cast<double>(s.sub_completions) / 1e6
               : 0.0,
@@ -4776,6 +4777,7 @@ bool VulkanCommandProcessor::IssueCopy() {
     return false;
   }
   ++submission_in_progress_.resolve_count;
+  ++vk_frame_sync_stats_.resolves;
 
   // CPU readback resolve path (if not disabled).
   ReadbackResolveMode readback_mode = GetReadbackResolveMode();
