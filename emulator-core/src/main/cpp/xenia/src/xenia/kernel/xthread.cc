@@ -716,6 +716,7 @@ void XThread::Execute() {
 #if !XE_PLATFORM_WIN32
   // setjmp is always armed; Reenter() picks longjmp or the exception path.
   // bionic setjmp saves the signal mask, so longjmp restores SIGRTMIN itself.
+  reentry_armed_ = true;
   if (setjmp(reentry_jmp_buf_) != 0) {
     next_address = reentry_address_;
   } else {
@@ -781,6 +782,9 @@ void XThread::Execute() {
 
   // If we got here it means the execute completed without an exit being called.
   // Treat the return code as an implicit exit code (if desired).
+  // Disarm first: exit rundown routines run guest code, and a fiber switch
+  // from there must take the exception path, not jump back into these loops.
+  reentry_armed_ = false;
   Exit(!want_exit_code ? 0 : exit_code);
 }
 
@@ -789,9 +793,12 @@ void XThread::Reenter(uint32_t address) {
   // KeSetCurrentStackPointers in games like Forza Horizon 2).
   // Must unwind through all frames between here and Execute().
 #if !XE_PLATFORM_WIN32
-  if (cvars::fiber_reentry_longjmp && !fiber_) {
+  if (cvars::fiber_reentry_longjmp && !fiber_ && reentry_armed_ &&
+      !reentry_nested_guest_depth_) {
     // Abandon the frames directly instead of the exception path's per-switch
-    // DWARF unwind (see the cvar rationale).
+    // DWARF unwind (see the cvar rationale). Unarmed (pre-Execute APC delivery,
+    // XHostThread callbacks, exit rundown) and nested-guest (user APC routines)
+    // reentries take the throw below.
     reentry_address_ = address;
     std::longjmp(reentry_jmp_buf_, 1);
   }

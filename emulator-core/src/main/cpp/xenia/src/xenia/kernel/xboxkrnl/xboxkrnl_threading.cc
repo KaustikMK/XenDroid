@@ -1442,6 +1442,21 @@ X_STATUS xeProcessUserApcs(PPCContext* ctx) {
   if (!ctx) {
     ctx = cpu::ThreadState::Get()->context();
   }
+  // APC routines are nested guest calls inside host frames holding object_refs;
+  // raise the nested-guest depth so Reenter() uses the unwinding exception path.
+  struct NestedGuestScope {
+    XThread* thread = XThread::GetCurrentThread();
+    NestedGuestScope() {
+      if (thread) {
+        thread->EnterNestedGuestCall();
+      }
+    }
+    ~NestedGuestScope() {
+      if (thread) {
+        thread->LeaveNestedGuestCall();
+      }
+    }
+  } nested_guest_scope;
   X_STATUS alert_status = X_STATUS_SUCCESS;
   auto kpcr = ctx->TranslateVirtualGPR<X_KPCR*>(ctx->r[13]);
 
