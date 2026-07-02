@@ -5018,6 +5018,62 @@ bool VulkanCommandProcessor::IssueCopy() {
     uint64_t resolve_key =
         MakeReadbackResolveKey(written_address, written_length);
 
+    // "uma" mode: on a unified-memory GPU the shared-memory buffer is mapped, so
+    // the resolved bytes can be read straight out of it into guest RAM with no
+    // GPU staging copy, no barriers and no readback buffers.
+    if (readback_mode == ReadbackResolveMode::kUma &&
+        shared_memory_->IsHostMapped()) {
+      const uint64_t resolve_submission = GetCurrentSubmission();
+      ReadbackBuffer& uma_rb = readback_buffers_[resolve_key];
+      uma_rb.last_used_frame = frame_current_;
+
+      bool do_read;
+      if (uma_rb.last_write_submission == 0) {
+        // First time this destination is resolved: shared memory does not hold a
+        // resolve result yet, so make the just-recorded resolve visible to the
+        // host and drain to read this frame's data (also serves on-demand
+        // consumers such as screenshots).
+        PushBufferMemoryBarrier(
+            shared_memory_->buffer(), 0, VK_WHOLE_SIZE,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT |
+                VK_PIPELINE_STAGE_TRANSFER_BIT,
+            VK_PIPELINE_STAGE_HOST_BIT,
+            VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT,
+            VK_ACCESS_HOST_READ_BIT, VK_QUEUE_FAMILY_IGNORED,
+            VK_QUEUE_FAMILY_IGNORED, false);
+        SubmitBarriers(true);
+        vk_frame_sync_stats_.readback_awaits++;
+        if (!AwaitAllQueueOperationsCompletion()) {
+          XELOGE(
+              "VulkanCommandProcessor: Failed to complete queue operations for "
+              "uma resolve readback");
+          PopDebugMarker();
+          return true;
+        }
+        do_read = true;
+      } else {
+        // Already resolved before: read the previous resolve's bytes directly,
+        // but only once that submission has retired, so the CPU never races the
+        // GPU still writing the same region (tear-free) and the write is
+        // host-visible. Uses the cached completed-submission value - no blocking
+        // poll (vkGetFenceStatus stalls on Turnip/kgsl). If it has not retired,
+        // skip: guest RAM keeps the last consistent readback. Worst-case
+        // staleness is bounded by the frames-in-flight depth.
+        do_read = GetCompletedSubmission() >= uma_rb.last_write_submission;
+      }
+
+      if (do_read) {
+        InsertDebugMarker("Resolve Readback (uma): 0x%08X, %u bytes",
+                          written_address, written_length);
+        uint8_t* dest_ptr = memory_->TranslatePhysical(written_address);
+        shared_memory_->ReadHostMapped(written_address, written_length,
+                                       dest_ptr);
+      }
+      uma_rb.last_write_submission = resolve_submission;
+      PopDebugMarker();
+      return true;
+    }
+
     const ui::vulkan::VulkanDevice* const vulkan_device = GetVulkanDevice();
     const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
     const VkDevice device = vulkan_device->device();
@@ -5028,9 +5084,12 @@ bool VulkanCommandProcessor::IssueCopy() {
     uint32_t write_index = rb.current_index;
     uint32_t size = AlignReadbackBufferSize(written_length);
 
+    // "uma" reaches here only as a fallback when the shared-memory buffer is
+    // not host-mapped; behave like "fast" then.
     const bool use_delayed_sync =
         (readback_mode == ReadbackResolveMode::kFast ||
-         readback_mode == ReadbackResolveMode::kSome);
+         readback_mode == ReadbackResolveMode::kSome ||
+         readback_mode == ReadbackResolveMode::kUma);
     // fast/some can offload the copy to the dedicated transfer queue (DMA
     // engine) so it runs at full bandwidth in parallel with rendering instead
     // of serializing on the graphics queue.
@@ -5751,8 +5810,11 @@ bool VulkanCommandProcessor::IssueCopy() {
 
     PopDebugMarker();
 
+    // Scaled resolution downscales into a separate buffer, so "uma" cannot read
+    // shared memory directly here; treat it like "fast".
     bool use_delayed_sync = (readback_mode == ReadbackResolveMode::kFast ||
-                             readback_mode == ReadbackResolveMode::kSome);
+                             readback_mode == ReadbackResolveMode::kSome ||
+                             readback_mode == ReadbackResolveMode::kUma);
     uint32_t read_index = write_index;
 
     if (use_delayed_sync) {

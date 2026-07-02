@@ -9,12 +9,14 @@
 
 #include "xenia/gpu/vulkan/vulkan_shared_memory.h"
 
+#include <algorithm>
 #include <cstring>
 
 #include "xenia/base/assert.h"
 #include "xenia/base/cvar.h"
 #include "xenia/base/logging.h"
 #include "xenia/base/math.h"
+#include "xenia/base/memory.h"
 #include "xenia/gpu/vulkan/deferred_command_buffer.h"
 #include "xenia/gpu/vulkan/vulkan_command_processor.h"
 #include "xenia/ui/vulkan/vulkan_util.h"
@@ -26,6 +28,14 @@ DEFINE_bool(vulkan_sparse_shared_memory, true,
             "increases video memory usage - a 512 MB buffer is created - but "
             "allows graphics debuggers that don't support sparse binding to "
             "work.",
+            "Vulkan");
+
+DEFINE_bool(vulkan_shared_memory_host_visible, true,
+            "On unified-memory GPUs (Adreno, integrated), allocate the "
+            "shared-memory buffer from a host-visible cached memory type and "
+            "map it so resolve readback (readback_resolve=uma) can read guest "
+            "memory directly without a GPU staging copy. Only applies to the "
+            "dense (non-sparse) buffer.",
             "Vulkan");
 
 namespace xe {
@@ -142,9 +152,43 @@ bool VulkanSharedMemory::Initialize() {
     VkMemoryRequirements buffer_memory_requirements;
     dfn.vkGetBufferMemoryRequirements(device, buffer_,
                                       &buffer_memory_requirements);
-    if (!xe::bit_scan_forward(buffer_memory_requirements.memoryTypeBits &
-                                  vulkan_device->memory_types().device_local,
-                              &buffer_memory_type_)) {
+    const ui::vulkan::VulkanDevice::MemoryTypes& memory_types =
+        vulkan_device->memory_types();
+    const uint32_t buffer_memory_type_bits =
+        buffer_memory_requirements.memoryTypeBits;
+    // On a unified-memory GPU every device-local type is also host-visible, so
+    // the buffer can be mapped and read on the CPU with no staging copy. Prefer
+    // a cached-coherent host-visible type; accept a cached non-coherent one
+    // (readback invalidates per read). Never map an uncached type - CPU reads of
+    // uncached memory are far slower than the staging path, so fall back to the
+    // plain device-local type there.
+    const bool is_uma =
+        memory_types.device_local &&
+        (memory_types.device_local & memory_types.host_visible) ==
+            memory_types.device_local;
+    bool buffer_host_visible = false;
+    bool buffer_host_coherent = false;
+    if (cvars::vulkan_shared_memory_host_visible && is_uma) {
+      const uint32_t cached_coherent = buffer_memory_type_bits &
+                                       memory_types.device_local &
+                                       memory_types.host_visible &
+                                       memory_types.host_cached &
+                                       memory_types.host_coherent;
+      const uint32_t cached = buffer_memory_type_bits &
+                              memory_types.device_local &
+                              memory_types.host_visible &
+                              memory_types.host_cached;
+      if (xe::bit_scan_forward(cached_coherent, &buffer_memory_type_)) {
+        buffer_host_visible = true;
+        buffer_host_coherent = true;
+      } else if (xe::bit_scan_forward(cached, &buffer_memory_type_)) {
+        buffer_host_visible = true;
+      }
+    }
+    if (!buffer_host_visible &&
+        !xe::bit_scan_forward(
+            buffer_memory_type_bits & memory_types.device_local,
+            &buffer_memory_type_)) {
       XELOGE(
           "Shared memory: Failed to get a device-local Vulkan memory type for "
           "the buffer");
@@ -189,6 +233,25 @@ bool VulkanSharedMemory::Initialize() {
       Shutdown();
       return false;
     }
+
+    // Persistently map the buffer for direct CPU readback (readback_resolve=uma)
+    // when it landed on a host-visible type.
+    if (buffer_host_visible) {
+      void* mapped_data;
+      if (dfn.vkMapMemory(device, buffer_memory, 0, VK_WHOLE_SIZE, 0,
+                          &mapped_data) == VK_SUCCESS) {
+        host_mapped_data_ = static_cast<uint8_t*>(mapped_data);
+        host_mapped_coherent_ = buffer_host_coherent;
+        XELOGGPU(
+            "Shared memory: buffer is host-mapped for direct readback "
+            "(readback_resolve=uma available), coherent={}",
+            buffer_host_coherent ? "yes" : "no");
+      } else {
+        XELOGW(
+            "Shared memory: failed to map the host-visible buffer; direct "
+            "readback (uma) disabled");
+      }
+    }
   }
 
   // The first usage will likely be uploading.
@@ -212,6 +275,12 @@ void VulkanSharedMemory::Shutdown(bool from_destructor) {
       command_processor_.GetVulkanDevice();
   const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
   const VkDevice device = vulkan_device->device();
+
+  if (host_mapped_data_ != nullptr && !buffer_memory_.empty()) {
+    dfn.vkUnmapMemory(device, buffer_memory_.front());
+    host_mapped_data_ = nullptr;
+    host_mapped_coherent_ = false;
+  }
 
   ui::vulkan::util::DestroyAndNullHandle(dfn.vkDestroyBuffer, device, buffer_);
   for (VkDeviceMemory memory : buffer_memory_) {
@@ -269,6 +338,37 @@ void VulkanSharedMemory::Use(Usage usage,
         false);
   }
   last_written_range_ = written_range;
+}
+
+bool VulkanSharedMemory::ReadHostMapped(uint32_t guest_address, uint32_t length,
+                                        void* dest) const {
+  if (host_mapped_data_ == nullptr || !length) {
+    return false;
+  }
+  if (uint64_t(guest_address) + length > uint64_t(kBufferSize)) {
+    return false;
+  }
+  if (!host_mapped_coherent_) {
+    // Cached but not coherent: pull the GPU-written bytes out of DRAM into the
+    // CPU cache before reading them.
+    const ui::vulkan::VulkanDevice* const vulkan_device =
+        command_processor_.GetVulkanDevice();
+    const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
+    const VkDeviceSize atom_size = vulkan_device->properties().nonCoherentAtomSize;
+    VkMappedMemoryRange range;
+    range.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
+    range.pNext = nullptr;
+    range.memory = buffer_memory_.front();
+    range.offset = (VkDeviceSize(guest_address) / atom_size) * atom_size;
+    range.size = std::min(xe::round_up(uint64_t(guest_address) + length,
+                                       uint64_t(atom_size)),
+                          uint64_t(kBufferSize)) -
+                 range.offset;
+    dfn.vkInvalidateMappedMemoryRanges(vulkan_device->device(), 1, &range);
+  }
+  memory::vastcpy(static_cast<uint8_t*>(dest), host_mapped_data_ + guest_address,
+                  length);
+  return true;
 }
 
 bool VulkanSharedMemory::InitializeTraceSubmitDownloads() {
