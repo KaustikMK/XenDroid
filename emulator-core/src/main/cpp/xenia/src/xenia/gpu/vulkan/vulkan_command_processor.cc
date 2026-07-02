@@ -5194,6 +5194,7 @@ bool VulkanCommandProcessor::IssueCopy() {
         copy_region.size = written_length;
         deferred_command_buffer_.CmdVkCopyBuffer(
             shared_memory_buffer, rb.buffers[write_index], 1, &copy_region);
+        vk_frame_sync_stats_.readback_awaits++;
         if (!AwaitAllQueueOperationsCompletion()) {
           XELOGE(
               "VulkanCommandProcessor: Failed to complete queue operations for "
@@ -5240,6 +5241,7 @@ bool VulkanCommandProcessor::IssueCopy() {
         read_index = 1 - write_index;
       } else {
         // Wait for GPU to finish (accurate but slow)
+        vk_frame_sync_stats_.readback_awaits++;
         if (!AwaitAllQueueOperationsCompletion()) {
           XELOGE(
               "VulkanCommandProcessor: Failed to complete queue operations for "
@@ -5256,6 +5258,7 @@ bool VulkanCommandProcessor::IssueCopy() {
                                written_length > rb.sizes[read_index])) {
         is_cache_miss = true;
         read_index = write_index;
+        vk_frame_sync_stats_.readback_awaits++;
         if (!AwaitAllQueueOperationsCompletion()) {
           XELOGE(
               "VulkanCommandProcessor: Failed to complete queue operations for "
@@ -6687,11 +6690,6 @@ bool VulkanCommandProcessor::BeginSubmission(bool is_guest_command) {
     // through their per-submission UseSampler revalidation independently).
     current_samplers_fetch_up_to_date_vertex_ = 0;
     current_samplers_fetch_up_to_date_pixel_ = 0;
-
-    // Swap all readback buffers for delayed sync (one frame behind)
-    for (auto& pair : readback_buffers_) {
-      pair.second.current_index = 1 - pair.second.current_index;
-    }
 
     // Log guest ZPD report stats every 100 frames.
     if (GetZPDMode() != ZPDMode::kFake && cvars::occlusion_query_log &&
