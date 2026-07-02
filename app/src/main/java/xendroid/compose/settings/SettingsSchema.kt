@@ -33,7 +33,9 @@ object SettingsSchema {
             // class of Adreno GPU hangs. Applied at vkCreateInstance, so it takes effect on the
             // next game launch.
             l("Vulkan", "turnip_debug", "Turnip debug mode", "",
-                "" to "None (no TU_DEBUG flags, GMEM)", "sysmem" to "sysmem (untiled, slower)"),
+                "" to "None (no TU_DEBUG flags, GMEM)", "sysmem" to "sysmem (untiled, slower)",
+                "sysmem,nolrz" to "sysmem + nolrz (LRZ off, perf diagnostic)",
+                "sysmem,noubwc" to "sysmem + noubwc (UBWC off, perf diagnostic)"),
             // Cross-draw texture/sampler descriptor-set reuse (perf). Master toggle gates reuse
             // on/off; the edge toggle (only when reuse is on) picks edge's bitmask gate vs
             // XenDroid's content-hash gate for A/B. Three-way: off / on+hash / on+edge.
