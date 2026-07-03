@@ -20,8 +20,7 @@ object SettingsSchema {
             b("Vulkan", "vulkan_allow_present_mode_mailbox", "Allow present mode: mailbox", true),
             b("Vulkan", "vulkan_allow_present_mode_fifo_relaxed", "Allow present mode: FIFO relaxed", true),
             b("Vulkan", "vulkan_async_skip_draws", "Async skip draws", true),
-            b("Vulkan", "vulkan_extended_dynamic_state3_blend", "EDS3: blend", true),
-            b("Vulkan", "vulkan_extended_dynamic_state3_topology", "EDS3: topology", true),
+            b("Vulkan", "vulkan_dynamic_pipeline_state", "Extended dynamic state", true),
             // Numeric thread count (0 = synchronous, 1..5 = explicit) -> a slider, not a
             // dropdown. Native cvar also accepts -1 (auto = 75% of cores), but the template
             // ships 4 and a 0..5 slider is the intended UX.
@@ -33,7 +32,9 @@ object SettingsSchema {
             // class of Adreno GPU hangs. Applied at vkCreateInstance, so it takes effect on the
             // next game launch.
             l("Vulkan", "turnip_debug", "Turnip debug mode", "",
-                "" to "None (no TU_DEBUG flags, GMEM)", "sysmem" to "sysmem (untiled, slower)"),
+                "" to "None (no TU_DEBUG flags, GMEM)", "sysmem" to "sysmem (untiled, slower)",
+                "sysmem,nolrz" to "sysmem + nolrz (LRZ off, perf diagnostic)",
+                "sysmem,noubwc" to "sysmem + noubwc (UBWC off, perf diagnostic)"),
             // Cross-draw texture/sampler descriptor-set reuse (perf). Master toggle gates reuse
             // on/off; the edge toggle (only when reuse is on) picks edge's bitmask gate vs
             // XenDroid's content-hash gate for A/B. Three-way: off / on+hash / on+edge.

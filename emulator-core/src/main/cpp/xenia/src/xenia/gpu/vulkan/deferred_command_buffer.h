@@ -188,6 +188,15 @@ class DeferredCommandBuffer {
     args.query_count = query_count;
   }
 
+  void CmdVkWriteTimestamp(VkPipelineStageFlagBits pipeline_stage,
+                           VkQueryPool query_pool, uint32_t query) {
+    auto& args = *reinterpret_cast<ArgsVkWriteTimestamp*>(WriteCommand(
+        Command::kVkWriteTimestamp, sizeof(ArgsVkWriteTimestamp)));
+    args.pipeline_stage = pipeline_stage;
+    args.query_pool = query_pool;
+    args.query = query;
+  }
+
   void CmdClearAttachmentsEmplace(uint32_t attachment_count,
                                   VkClearAttachment*& attachments_out,
                                   uint32_t rect_count,
@@ -459,6 +468,127 @@ class DeferredCommandBuffer {
                 sizeof(VkViewport) * viewport_count);
   }
 
+  // Extended dynamic state (EDS1/EDS2, core in Vulkan 1.3). Each setter mirrors
+  // the value that the static pipeline would otherwise bake.
+  void CmdVkSetCullMode(VkCullModeFlags cull_mode) {
+    auto& args = *reinterpret_cast<ArgsVkSetCullMode*>(
+        WriteCommand(Command::kVkSetCullMode, sizeof(ArgsVkSetCullMode)));
+    args.cull_mode = cull_mode;
+  }
+
+  void CmdVkSetFrontFace(VkFrontFace front_face) {
+    auto& args = *reinterpret_cast<ArgsVkSetFrontFace*>(
+        WriteCommand(Command::kVkSetFrontFace, sizeof(ArgsVkSetFrontFace)));
+    args.front_face = front_face;
+  }
+
+  void CmdVkSetPrimitiveTopology(VkPrimitiveTopology primitive_topology) {
+    auto& args = *reinterpret_cast<ArgsVkSetPrimitiveTopology*>(WriteCommand(
+        Command::kVkSetPrimitiveTopology, sizeof(ArgsVkSetPrimitiveTopology)));
+    args.primitive_topology = primitive_topology;
+  }
+
+  void CmdVkSetPrimitiveRestartEnable(VkBool32 primitive_restart_enable) {
+    auto& args = *reinterpret_cast<ArgsVkSetBool*>(
+        WriteCommand(Command::kVkSetPrimitiveRestartEnable, sizeof(ArgsVkSetBool)));
+    args.value = primitive_restart_enable;
+  }
+
+  void CmdVkSetDepthTestEnable(VkBool32 depth_test_enable) {
+    auto& args = *reinterpret_cast<ArgsVkSetBool*>(
+        WriteCommand(Command::kVkSetDepthTestEnable, sizeof(ArgsVkSetBool)));
+    args.value = depth_test_enable;
+  }
+
+  void CmdVkSetDepthWriteEnable(VkBool32 depth_write_enable) {
+    auto& args = *reinterpret_cast<ArgsVkSetBool*>(
+        WriteCommand(Command::kVkSetDepthWriteEnable, sizeof(ArgsVkSetBool)));
+    args.value = depth_write_enable;
+  }
+
+  void CmdVkSetDepthCompareOp(VkCompareOp depth_compare_op) {
+    auto& args = *reinterpret_cast<ArgsVkSetDepthCompareOp*>(WriteCommand(
+        Command::kVkSetDepthCompareOp, sizeof(ArgsVkSetDepthCompareOp)));
+    args.depth_compare_op = depth_compare_op;
+  }
+
+  void CmdVkSetStencilTestEnable(VkBool32 stencil_test_enable) {
+    auto& args = *reinterpret_cast<ArgsVkSetBool*>(
+        WriteCommand(Command::kVkSetStencilTestEnable, sizeof(ArgsVkSetBool)));
+    args.value = stencil_test_enable;
+  }
+
+  void CmdVkSetStencilOp(VkStencilFaceFlags face_mask, VkStencilOp fail_op,
+                         VkStencilOp pass_op, VkStencilOp depth_fail_op,
+                         VkCompareOp compare_op) {
+    auto& args = *reinterpret_cast<ArgsVkSetStencilOp*>(
+        WriteCommand(Command::kVkSetStencilOp, sizeof(ArgsVkSetStencilOp)));
+    args.face_mask = face_mask;
+    args.fail_op = fail_op;
+    args.pass_op = pass_op;
+    args.depth_fail_op = depth_fail_op;
+    args.compare_op = compare_op;
+  }
+
+  // Extended dynamic state 3 (EDS3, VK_EXT_extended_dynamic_state3). Only
+  // recorded when the corresponding sub-feature is supported.
+  void CmdVkSetDepthClampEnableEXT(VkBool32 depth_clamp_enable) {
+    auto& args = *reinterpret_cast<ArgsVkSetBool*>(WriteCommand(
+        Command::kVkSetDepthClampEnableEXT, sizeof(ArgsVkSetBool)));
+    args.value = depth_clamp_enable;
+  }
+
+  void CmdVkSetPolygonModeEXT(VkPolygonMode polygon_mode) {
+    auto& args = *reinterpret_cast<ArgsVkSetPolygonModeEXT*>(WriteCommand(
+        Command::kVkSetPolygonModeEXT, sizeof(ArgsVkSetPolygonModeEXT)));
+    args.polygon_mode = polygon_mode;
+  }
+
+  void CmdVkSetColorBlendEnableEXT(uint32_t first_attachment,
+                                   uint32_t attachment_count,
+                                   const VkBool32* color_blend_enables) {
+    constexpr size_t header_size =
+        xe::align(sizeof(ArgsVkSetColorBlendEnableEXT), alignof(VkBool32));
+    uint8_t* args_ptr = reinterpret_cast<uint8_t*>(WriteCommand(
+        Command::kVkSetColorBlendEnableEXT,
+        header_size + sizeof(VkBool32) * attachment_count));
+    auto& args = *reinterpret_cast<ArgsVkSetColorBlendEnableEXT*>(args_ptr);
+    args.first_attachment = first_attachment;
+    args.attachment_count = attachment_count;
+    std::memcpy(args_ptr + header_size, color_blend_enables,
+                sizeof(VkBool32) * attachment_count);
+  }
+
+  void CmdVkSetColorBlendEquationEXT(
+      uint32_t first_attachment, uint32_t attachment_count,
+      const VkColorBlendEquationEXT* color_blend_equations) {
+    constexpr size_t header_size = xe::align(
+        sizeof(ArgsVkSetColorBlendEquationEXT), alignof(VkColorBlendEquationEXT));
+    uint8_t* args_ptr = reinterpret_cast<uint8_t*>(WriteCommand(
+        Command::kVkSetColorBlendEquationEXT,
+        header_size + sizeof(VkColorBlendEquationEXT) * attachment_count));
+    auto& args = *reinterpret_cast<ArgsVkSetColorBlendEquationEXT*>(args_ptr);
+    args.first_attachment = first_attachment;
+    args.attachment_count = attachment_count;
+    std::memcpy(args_ptr + header_size, color_blend_equations,
+                sizeof(VkColorBlendEquationEXT) * attachment_count);
+  }
+
+  void CmdVkSetColorWriteMaskEXT(uint32_t first_attachment,
+                                 uint32_t attachment_count,
+                                 const VkColorComponentFlags* color_write_masks) {
+    constexpr size_t header_size = xe::align(
+        sizeof(ArgsVkSetColorWriteMaskEXT), alignof(VkColorComponentFlags));
+    uint8_t* args_ptr = reinterpret_cast<uint8_t*>(WriteCommand(
+        Command::kVkSetColorWriteMaskEXT,
+        header_size + sizeof(VkColorComponentFlags) * attachment_count));
+    auto& args = *reinterpret_cast<ArgsVkSetColorWriteMaskEXT*>(args_ptr);
+    args.first_attachment = first_attachment;
+    args.attachment_count = attachment_count;
+    std::memcpy(args_ptr + header_size, color_write_masks,
+                sizeof(VkColorComponentFlags) * attachment_count);
+  }
+
   // Debug marker support for RenderDoc/debug tools annotation.
   void CmdVkBeginDebugUtilsLabelEXT(const char* label_name) {
     size_t label_len = std::strlen(label_name);
@@ -498,6 +628,7 @@ class DeferredCommandBuffer {
     kVkEndQuery,
     kVkCopyQueryPoolResults,
     kVkResetQueryPool,
+    kVkWriteTimestamp,
     kVkClearAttachments,
     kVkClearColorImage,
     kVkCopyBuffer,
@@ -519,6 +650,20 @@ class DeferredCommandBuffer {
     kVkSetStencilReference,
     kVkSetStencilWriteMask,
     kVkSetViewport,
+    kVkSetCullMode,
+    kVkSetFrontFace,
+    kVkSetPrimitiveTopology,
+    kVkSetPrimitiveRestartEnable,
+    kVkSetDepthTestEnable,
+    kVkSetDepthWriteEnable,
+    kVkSetDepthCompareOp,
+    kVkSetStencilTestEnable,
+    kVkSetStencilOp,
+    kVkSetDepthClampEnableEXT,
+    kVkSetPolygonModeEXT,
+    kVkSetColorBlendEnableEXT,
+    kVkSetColorBlendEquationEXT,
+    kVkSetColorWriteMaskEXT,
     kVkBeginDebugUtilsLabelEXT,
     kVkEndDebugUtilsLabelEXT,
     kVkInsertDebugUtilsLabelEXT,
@@ -617,6 +762,12 @@ class DeferredCommandBuffer {
     VkQueryPool query_pool;
     uint32_t first_query;
     uint32_t query_count;
+  };
+
+  struct ArgsVkWriteTimestamp {
+    VkPipelineStageFlagBits pipeline_stage;
+    VkQueryPool query_pool;
+    uint32_t query;
   };
 
   struct ArgsVkClearAttachments {
@@ -741,6 +892,60 @@ class DeferredCommandBuffer {
     uint32_t viewport_count;
     // Followed by aligned VkViewport[].
     static_assert(alignof(VkViewport) <= alignof(uintmax_t));
+  };
+
+  // Extended dynamic state argument structures.
+  struct ArgsVkSetBool {
+    VkBool32 value;
+  };
+
+  struct ArgsVkSetCullMode {
+    VkCullModeFlags cull_mode;
+  };
+
+  struct ArgsVkSetFrontFace {
+    VkFrontFace front_face;
+  };
+
+  struct ArgsVkSetPrimitiveTopology {
+    VkPrimitiveTopology primitive_topology;
+  };
+
+  struct ArgsVkSetDepthCompareOp {
+    VkCompareOp depth_compare_op;
+  };
+
+  struct ArgsVkSetStencilOp {
+    VkStencilFaceFlags face_mask;
+    VkStencilOp fail_op;
+    VkStencilOp pass_op;
+    VkStencilOp depth_fail_op;
+    VkCompareOp compare_op;
+  };
+
+  struct ArgsVkSetPolygonModeEXT {
+    VkPolygonMode polygon_mode;
+  };
+
+  struct ArgsVkSetColorBlendEnableEXT {
+    uint32_t first_attachment;
+    uint32_t attachment_count;
+    // Followed by aligned VkBool32[].
+    static_assert(alignof(VkBool32) <= alignof(uintmax_t));
+  };
+
+  struct ArgsVkSetColorBlendEquationEXT {
+    uint32_t first_attachment;
+    uint32_t attachment_count;
+    // Followed by aligned VkColorBlendEquationEXT[].
+    static_assert(alignof(VkColorBlendEquationEXT) <= alignof(uintmax_t));
+  };
+
+  struct ArgsVkSetColorWriteMaskEXT {
+    uint32_t first_attachment;
+    uint32_t attachment_count;
+    // Followed by aligned VkColorComponentFlags[].
+    static_assert(alignof(VkColorComponentFlags) <= alignof(uintmax_t));
   };
 
   struct ArgsVkDebugUtilsLabel {

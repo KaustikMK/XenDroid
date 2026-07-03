@@ -34,6 +34,65 @@ STAGES = ("vs", "hs", "ds", "gs", "ps", "cs")
 EXT_PREF = (".xesl", ".glsl", ".slang")
 
 
+def direct_host_resolve_variants():
+    """Enumerate the direct-host-resolve compute variants.
+
+    Mirrors the upstream gpu/vulkan/CMakeLists foreach loops (which can't run
+    here because they drive the host tool xenia-shader-cc). Each entry is
+    (id, entry_source_basename, [define, ...]) where id ends in "_cs" and the
+    defines select one bpp/MSAA/source-uint/scaled permutation from a shared
+    .xesli body. 24 fast-color + 60 full-color + 6 depth = 90 variants.
+    """
+    variants = []
+    for source_uint in (0, 1):
+        for bpp in (32, 64):
+            for msaa in (1, 2, 4):
+                for scaled in (0, 1):
+                    ident = "resolve_host_color"
+                    if source_uint:
+                        ident += "_uint"
+                    ident += f"_{bpp}bpp_{msaa}xmsaa"
+                    defines = [
+                        f"XE_RESOLVE_HOST_COLOR_BPP={bpp}",
+                        f"XE_RESOLVE_HOST_COLOR_MSAA_SAMPLES={msaa}",
+                        f"XE_RESOLVE_HOST_COLOR_SOURCE_UINT={source_uint}",
+                    ]
+                    if scaled:
+                        ident += "_scaled"
+                        defines.append("XE_RESOLVE_RESOLUTION_SCALED=1")
+                    ident += "_cs"
+                    variants.append(
+                        (ident, "resolve_host_color_entry.xesli", defines))
+        for bpp in (8, 16, 32, 64, 128):
+            for msaa in (1, 2, 4):
+                for scaled in (0, 1):
+                    ident = "resolve_host_color_full"
+                    if source_uint:
+                        ident += "_uint"
+                    ident += f"_{bpp}bpp_{msaa}xmsaa"
+                    defines = [
+                        f"XE_RESOLVE_HOST_COLOR_FULL_DEST_BPP={bpp}",
+                        f"XE_RESOLVE_HOST_COLOR_MSAA_SAMPLES={msaa}",
+                        f"XE_RESOLVE_HOST_COLOR_SOURCE_UINT={source_uint}",
+                    ]
+                    if scaled:
+                        ident += "_scaled"
+                        defines.append("XE_RESOLVE_RESOLUTION_SCALED=1")
+                    ident += "_cs"
+                    variants.append(
+                        (ident, "resolve_host_color_full_entry.xesli", defines))
+    for msaa in (1, 2, 4):
+        for scaled in (0, 1):
+            ident = f"resolve_host_depth_32bpp_{msaa}xmsaa"
+            defines = [f"XE_RESOLVE_HOST_DEPTH_MSAA_SAMPLES={msaa}"]
+            if scaled:
+                ident += "_scaled"
+                defines.append("XE_RESOLVE_RESOLUTION_SCALED=1")
+            ident += "_cs"
+            variants.append((ident, "resolve_host_depth_entry.xesli", defines))
+    return variants
+
+
 def stage_of(name):
     base, ext = os.path.splitext(name)  # 'foo.cs', '.slang'
     if ext not in (".xesl", ".glsl", ".slang"):
@@ -103,6 +162,56 @@ def main():
                       file=sys.stderr)
                 if strict:
                     return 1
+
+        # Direct-host-resolve variants: the 90 #define-driven permutations of
+        # the resolve_host_* entry shaders. Only attempted for the shader dir
+        # that actually contains those entry sources (gpu/shaders).
+        variants = direct_host_resolve_variants()
+        if all(os.path.isfile(os.path.join(shader_dir, v[1])) for v in variants):
+            wrapper_dir = os.path.join(out_dir, "_dhr_wrappers")
+            os.makedirs(wrapper_dir, exist_ok=True)
+            # The variants share a handful of .xesli bodies via #include; rather
+            # than track that graph, treat the newest .xesli in the dir as the
+            # source timestamp so editing any body forces a rebuild.
+            newest_src = 0.0
+            for name in os.listdir(shader_dir):
+                if name.endswith(".xesli"):
+                    newest_src = max(
+                        newest_src,
+                        os.path.getmtime(os.path.join(shader_dir, name)))
+            for ident, entry, defines in variants:
+                out = os.path.join(out_dir, ident + ".h")
+                # The wrapper's basename minus ".cs" becomes the array id, so
+                # name it "<base>.cs.xesl" where <base> = ident without "_cs".
+                base = ident[:-3] if ident.endswith("_cs") else ident
+                wrapper = os.path.join(wrapper_dir, base + ".cs.xesl")
+                # The entry (and its nested #includes) resolve against the
+                # shader dir, passed below as an extra -I. Write idempotently so
+                # the wrapper mtime stays stable across configures.
+                wrapper_contents = f'#include "{entry}"\n'
+                if (not os.path.exists(wrapper) or
+                        open(wrapper).read() != wrapper_contents):
+                    with open(wrapper, "w") as wf:
+                        wf.write(wrapper_contents)
+                if (os.path.exists(out) and
+                        os.path.getmtime(out) >= newest_src):
+                    skipped += 1
+                    continue
+                cmd = [sys.executable, COMPILE, wrapper, out]
+                cmd += ["-D" + d for d in defines]
+                cmd += ["-I" + shader_dir]
+                r = subprocess.run(cmd, stdout=subprocess.DEVNULL,
+                                   stderr=subprocess.PIPE, text=True)
+                if r.returncode == 0:
+                    generated += 1
+                else:
+                    failed += 1
+                    msg = (r.stderr or "").strip().splitlines()
+                    tail = msg[-1] if msg else "(no message)"
+                    print(f"WARN: skipped direct-host-resolve {ident}.h: {tail}",
+                          file=sys.stderr)
+                    if strict:
+                        return 1
 
     print(f"spirv bytecode: {generated} generated, {skipped} up-to-date, "
           f"{failed} skipped/failed")

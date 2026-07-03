@@ -452,6 +452,19 @@ bool VulkanCommandProcessor::SetupContext() {
         "bound to the compute shader");
     return false;
   }
+  descriptor_set_layout_binding_transient.binding = 1;
+  descriptor_set_layout_binding_transient.descriptorType =
+      VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+  if (dfn.vkCreateDescriptorSetLayout(
+          device, &descriptor_set_layout_create_info, nullptr,
+          &descriptor_set_layouts_single_transient_[size_t(
+              SingleTransientDescriptorLayout::kUniformBufferComputeB1)]) !=
+      VK_SUCCESS) {
+    XELOGE(
+        "Failed to create a Vulkan descriptor set layout for a uniform buffer "
+        "bound to binding 1 in the compute shader");
+    return false;
+  }
 
   shared_memory_ = std::make_unique<VulkanSharedMemory>(
       *this, *memory_, trace_writer_, guest_shader_pipeline_stages_);
@@ -1472,6 +1485,65 @@ bool VulkanCommandProcessor::SetupContext() {
       }
     }
   }
+  // Per-resolve GPU timestamps, ring-buffered per submission; only meaningful
+  // alongside the per-submission pair above.
+  if (frame_timestamp_mapping_) {
+    VkQueryPoolCreateInfo resolve_ts_pool_info = {
+        VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
+    resolve_ts_pool_info.queryType = VK_QUERY_TYPE_TIMESTAMP;
+    resolve_ts_pool_info.queryCount = kResolveTimestampPairsPerSubmission *
+                                      kResolveTimestampRingSubmissions * 2;
+    if (dfn.vkCreateQueryPool(device, &resolve_ts_pool_info, nullptr,
+                              &resolve_timestamp_pool_) == VK_SUCCESS) {
+      if (!ui::vulkan::util::CreateDedicatedAllocationBuffer(
+              vulkan_device, resolve_ts_pool_info.queryCount * sizeof(uint64_t),
+              VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+              ui::vulkan::util::MemoryPurpose::kReadback,
+              resolve_timestamp_buffer_, resolve_timestamp_buffer_memory_,
+              nullptr, &resolve_timestamp_buffer_size_) ||
+          dfn.vkMapMemory(device, resolve_timestamp_buffer_memory_, 0,
+                          VK_WHOLE_SIZE, 0,
+                          reinterpret_cast<void**>(
+                              &resolve_timestamp_mapping_)) != VK_SUCCESS) {
+        ui::vulkan::util::DestroyAndNullHandle(dfn.vkDestroyBuffer, device,
+                                               resolve_timestamp_buffer_);
+        ui::vulkan::util::DestroyAndNullHandle(
+            dfn.vkFreeMemory, device, resolve_timestamp_buffer_memory_);
+        ui::vulkan::util::DestroyAndNullHandle(dfn.vkDestroyQueryPool, device,
+                                               resolve_timestamp_pool_);
+        resolve_timestamp_mapping_ = nullptr;
+      }
+    }
+  }
+  // Per-render-pass timestamps, bucketed by framebuffer extent.
+  if (frame_timestamp_mapping_) {
+    VkQueryPoolCreateInfo pass_ts_pool_info = {
+        VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
+    pass_ts_pool_info.queryType = VK_QUERY_TYPE_TIMESTAMP;
+    pass_ts_pool_info.queryCount =
+        kPassTimestampPairsPerSubmission * kPassTimestampRingSubmissions * 2;
+    if (dfn.vkCreateQueryPool(device, &pass_ts_pool_info, nullptr,
+                              &pass_timestamp_pool_) == VK_SUCCESS) {
+      if (!ui::vulkan::util::CreateDedicatedAllocationBuffer(
+              vulkan_device, pass_ts_pool_info.queryCount * sizeof(uint64_t),
+              VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+              ui::vulkan::util::MemoryPurpose::kReadback,
+              pass_timestamp_buffer_, pass_timestamp_buffer_memory_, nullptr,
+              &pass_timestamp_buffer_size_) ||
+          dfn.vkMapMemory(
+              device, pass_timestamp_buffer_memory_, 0, VK_WHOLE_SIZE, 0,
+              reinterpret_cast<void**>(&pass_timestamp_mapping_)) !=
+              VK_SUCCESS) {
+        ui::vulkan::util::DestroyAndNullHandle(dfn.vkDestroyBuffer, device,
+                                               pass_timestamp_buffer_);
+        ui::vulkan::util::DestroyAndNullHandle(dfn.vkFreeMemory, device,
+                                               pass_timestamp_buffer_memory_);
+        ui::vulkan::util::DestroyAndNullHandle(dfn.vkDestroyQueryPool, device,
+                                               pass_timestamp_pool_);
+        pass_timestamp_mapping_ = nullptr;
+      }
+    }
+  }
 
   // Just not to expose uninitialized memory.
   std::memset(&system_constants_, 0, sizeof(system_constants_));
@@ -1505,6 +1577,30 @@ void VulkanCommandProcessor::ShutdownContext() {
                                          frame_timestamp_pool_);
   vk_submit_times_.clear();
   frame_timestamp_prev_end_ = 0;
+  if (resolve_timestamp_mapping_) {
+    dfn.vkUnmapMemory(device, resolve_timestamp_buffer_memory_);
+    resolve_timestamp_mapping_ = nullptr;
+  }
+  ui::vulkan::util::DestroyAndNullHandle(dfn.vkDestroyBuffer, device,
+                                         resolve_timestamp_buffer_);
+  ui::vulkan::util::DestroyAndNullHandle(dfn.vkFreeMemory, device,
+                                         resolve_timestamp_buffer_memory_);
+  ui::vulkan::util::DestroyAndNullHandle(dfn.vkDestroyQueryPool, device,
+                                         resolve_timestamp_pool_);
+  resolve_ts_count_ = 0;
+  if (pass_timestamp_mapping_) {
+    dfn.vkUnmapMemory(device, pass_timestamp_buffer_memory_);
+    pass_timestamp_mapping_ = nullptr;
+  }
+  ui::vulkan::util::DestroyAndNullHandle(dfn.vkDestroyBuffer, device,
+                                         pass_timestamp_buffer_);
+  ui::vulkan::util::DestroyAndNullHandle(dfn.vkFreeMemory, device,
+                                         pass_timestamp_buffer_memory_);
+  ui::vulkan::util::DestroyAndNullHandle(dfn.vkDestroyQueryPool, device,
+                                         pass_timestamp_pool_);
+  pass_ts_count_ = 0;
+  pass_ts_open_pair_ = UINT32_MAX;
+  pass_bucket_stats_.clear();
 
   DestroyScratchBuffer();
 
@@ -2118,6 +2214,10 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
   // stats (the game's real frame rate, independent of the host present path).
   xe::RecordGuestPresent();
 
+  if (render_target_cache_) {
+    render_target_cache_->LogResolveDetailsOnFrameEnd();
+  }
+
   if (cvars::log_gpu_frame_time_breakdown) {
     auto& s = vk_frame_sync_stats_;
     s.frames++;
@@ -2128,12 +2228,14 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
       const double f = static_cast<double>(s.frames);
       XELOGI(
           "VkFrameSync: {} frames | per frame: awaits={:.1f} await={:.1f}ms "
-          "submissions={:.1f} memexport_awaits={:.1f} readback_awaits={:.1f} "
+          "submissions={:.1f} resolves={:.1f} memexport_awaits={:.1f} "
+          "readback_awaits={:.1f} "
           "| submit->fence avg={:.1f}ms max={:.1f}ms | blocking={:.1f} "
           "delta avg={:.2f} | gpu exec avg={:.1f}ms max={:.1f}ms "
-          "gap avg={:.1f}ms",
+          "gap avg={:.1f}ms | resolve_ms={:.2f} avg={:.3f} max={:.2f} "
+          "dropped={} | draws={:.0f} rp_begins={:.0f} splits={:.1f}",
           s.frames, s.awaits / f, s.await_ns / f / 1e6, s.submissions / f,
-          s.memexport_awaits / f, s.readback_awaits / f,
+          s.resolves / f, s.memexport_awaits / f, s.readback_awaits / f,
           s.sub_completions
               ? s.sub_latency_ns / static_cast<double>(s.sub_completions) / 1e6
               : 0.0,
@@ -2147,7 +2249,35 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
           s.gpu_exec_max_ns / 1e6,
           s.gpu_samples
               ? s.gpu_gap_ns / static_cast<double>(s.gpu_samples) / 1e6
-              : 0.0);
+              : 0.0,
+          s.resolve_gpu_ns / f / 1e6,
+          s.resolve_gpu_samples
+              ? s.resolve_gpu_ns /
+                    static_cast<double>(s.resolve_gpu_samples) / 1e6
+              : 0.0,
+          s.resolve_gpu_max_ns / 1e6, s.resolve_ts_dropped, s.draws / f,
+          s.render_pass_begins / f, s.primary_buffer_splits / f);
+      // Per-render-pass-bucket GPU time (key: WxH, bit31 = ownership transfer).
+      if (!pass_bucket_stats_.empty()) {
+        for (const auto& kv : pass_bucket_stats_) {
+          const uint32_t key = kv.first;
+          const bool transfer = (key & 0x80000000u) != 0;
+          XELOGI(
+              "VkPassTime: {}{}x{} : {:.2f}ms/fr ({:.1f}pass {:.0f}draw/fr, "
+              "{:.3f}ms ea)",
+              transfer ? "xfer " : "", (key >> 16) & 0x7FFF, key & 0xFFFF,
+              kv.second.ns / f / 1e6, kv.second.passes / f, kv.second.draws / f,
+              kv.second.passes
+                  ? kv.second.ns / static_cast<double>(kv.second.passes) / 1e6
+                  : 0.0);
+        }
+        pass_bucket_stats_.clear();
+      }
+      if (pass_ts_dropped_) {
+        XELOGI("VkPassTime: {} pass pairs dropped (raise pool)",
+               pass_ts_dropped_);
+        pass_ts_dropped_ = 0;
+      }
       s = VkFrameSyncStats();
       s.last_report_ns = now;
     }
@@ -2743,6 +2873,7 @@ void VulkanCommandProcessor::OnPrimaryBufferEnd() {
 
   if (cvars::submit_on_primary_buffer_end && submission_open_ &&
       !scratch_buffer_used_ && CanEndSubmissionImmediately()) {
+    ++vk_frame_sync_stats_.primary_buffer_splits;
     EndSubmission(false);
   }
 }
@@ -2929,6 +3060,50 @@ bool VulkanCommandProcessor::SubmitBarriers(bool force_end_render_pass) {
   return true;
 }
 
+void VulkanCommandProcessor::OpenPassTimestamp(uint32_t bucket_key) {
+  if (!pass_timestamp_mapping_) {
+    return;
+  }
+  if (pass_ts_submission_ != GetCurrentSubmission()) {
+    pass_ts_submission_ = GetCurrentSubmission();
+    pass_ts_count_ = 0;
+  }
+  if (pass_ts_count_ >= kPassTimestampPairsPerSubmission) {
+    ++pass_ts_dropped_;
+    return;
+  }
+  const uint32_t pair =
+      uint32_t(pass_ts_submission_ % kPassTimestampRingSubmissions) *
+          kPassTimestampPairsPerSubmission +
+      pass_ts_count_;
+  pass_ts_keys_[pair] = bucket_key;
+  deferred_command_buffer_.CmdVkWriteTimestamp(
+      VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, pass_timestamp_pool_, pair * 2);
+  pass_ts_open_pair_ = pair;
+  pass_ts_open_submission_ = pass_ts_submission_;
+  pass_open_draws_ = 0;
+}
+
+void VulkanCommandProcessor::ClosePassTimestamp() {
+  if (pass_ts_open_pair_ == UINT32_MAX) {
+    return;
+  }
+  // A pass that spanned a submission split has its begin in a prior
+  // submission's already-copied range; abandon it rather than corrupt this
+  // submission's pair count (its begin query is simply never copied).
+  if (pass_ts_open_submission_ != GetCurrentSubmission()) {
+    pass_ts_open_pair_ = UINT32_MAX;
+    ++pass_ts_dropped_;
+    return;
+  }
+  deferred_command_buffer_.CmdVkWriteTimestamp(
+      VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, pass_timestamp_pool_,
+      pass_ts_open_pair_ * 2 + 1);
+  pass_ts_draws_[pass_ts_open_pair_] = pass_open_draws_;
+  ++pass_ts_count_;
+  pass_ts_open_pair_ = UINT32_MAX;
+}
+
 void VulkanCommandProcessor::SubmitBarriersAndEnterRenderTargetCacheRenderPass(
     VkRenderPass render_pass,
     const VulkanRenderTargetCache::Framebuffer* framebuffer) {
@@ -2960,10 +3135,14 @@ void VulkanCommandProcessor::SubmitBarriersAndEnterRenderTargetCacheRenderPass(
       deferred_command_buffer_.CmdVkEndRenderPass();
     }
     in_render_pass_ = false;
+    ClosePassTimestamp();
   }
 
   current_render_pass_ = use_dynamic_rendering ? VK_NULL_HANDLE : render_pass;
   current_framebuffer_ = framebuffer;
+  ++vk_frame_sync_stats_.render_pass_begins;
+  OpenPassTimestamp((uint32_t(framebuffer->host_extent.width) << 16) |
+                    framebuffer->host_extent.height);
 
   if (use_dynamic_rendering) {
     // Use dynamic rendering - construct VkRenderingInfo from render targets.
@@ -3056,10 +3235,16 @@ void VulkanCommandProcessor::SubmitBarriersAndEnterRenderTargetCacheRenderPass(
       deferred_command_buffer_.CmdVkEndRenderPass();
     }
     in_render_pass_ = false;
+    ClosePassTimestamp();
   }
 
   current_render_pass_ = use_dynamic_rendering ? VK_NULL_HANDLE : render_pass;
   current_framebuffer_ = framebuffer;
+  ++vk_frame_sync_stats_.render_pass_begins;
+  // Bit 31 tags EDRAM ownership-transfer passes.
+  OpenPassTimestamp(0x80000000u |
+                    (uint32_t(framebuffer->host_extent.width) << 16) |
+                    framebuffer->host_extent.height);
 
   if (use_dynamic_rendering) {
     // Use dynamic rendering for transfers - construct VkRenderingInfo from
@@ -3155,6 +3340,7 @@ void VulkanCommandProcessor::EndRenderPass() {
   current_render_pass_ = VK_NULL_HANDLE;
   current_framebuffer_ = nullptr;
   in_render_pass_ = false;
+  ClosePassTimestamp();
 }
 
 VkDescriptorSet VulkanCommandProcessor::AllocateSingleTransientDescriptor(
@@ -3436,6 +3622,25 @@ void VulkanCommandProcessor::BindExternalGraphicsPipeline(
     dynamic_stencil_reference_front_update_needed_ = true;
     dynamic_stencil_reference_back_update_needed_ = true;
   }
+  // External (transfer/resolve) pipelines bake all extended dynamic state
+  // statically, invalidating the guest draw's dynamic EDS state. Re-dirty every
+  // EDS flag so the next guest draw re-emits it (UpdateDynamicState only emits
+  // when the matching capability is active, so this is inert when EDS is off).
+  dynamic_cull_mode_update_needed_ = true;
+  dynamic_front_face_update_needed_ = true;
+  dynamic_primitive_topology_update_needed_ = true;
+  dynamic_primitive_restart_enable_update_needed_ = true;
+  dynamic_depth_test_enable_update_needed_ = true;
+  dynamic_depth_write_enable_update_needed_ = true;
+  dynamic_depth_compare_op_update_needed_ = true;
+  dynamic_stencil_test_enable_update_needed_ = true;
+  dynamic_stencil_op_front_update_needed_ = true;
+  dynamic_stencil_op_back_update_needed_ = true;
+  dynamic_depth_clamp_enable_update_needed_ = true;
+  dynamic_polygon_mode_update_needed_ = true;
+  dynamic_color_blend_enable_update_needed_ = true;
+  dynamic_color_blend_equation_update_needed_ = true;
+  dynamic_color_write_mask_update_needed_ = true;
   if (current_external_graphics_pipeline_ == pipeline) {
     return;
   }
@@ -3894,6 +4099,8 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
            : 0);
   texture_cache_->RequestTextures(used_texture_mask);
 
+  auto pipeline_layout =
+      static_cast<const PipelineLayout*>(pipeline->pipeline_layout);
   // Update the graphics pipeline, and if the new graphics pipeline has a
   // different layout, invalidate incompatible descriptor sets before updating
   // current_guest_graphics_pipeline_layout_.
@@ -3903,14 +4110,16 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
   // either waits for creation to complete (default) or lets the replay drop
   // the draws of still-unready pipelines (vulkan_async_skip_draws). The
   // de-dup compares slot POINTERS, not handle values.
+  // Wrapped in a lambda so the same (EDS-aware) bind and descriptor-set
+  // invalidation can be re-run after in-pass transfers replace the bound
+  // pipeline (see below, after entering the render pass).
+  auto bind_guest_graphics_pipeline = [&]() {
   if (current_guest_graphics_pipeline_ != &pipeline->pipeline) {
     deferred_command_buffer_.CmdVkBindPipelineDeferred(
         VK_PIPELINE_BIND_POINT_GRAPHICS, &pipeline->pipeline);
     current_guest_graphics_pipeline_ = &pipeline->pipeline;
     current_external_graphics_pipeline_ = VK_NULL_HANDLE;
   }
-  auto pipeline_layout =
-      static_cast<const PipelineLayout*>(pipeline->pipeline_layout);
   if (current_guest_graphics_pipeline_layout_ != pipeline_layout) {
     if (current_guest_graphics_pipeline_layout_) {
       // Keep descriptor set layouts for which the new pipeline layout is
@@ -3977,6 +4186,8 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
     }
     current_guest_graphics_pipeline_layout_ = pipeline_layout;
   }
+  };
+  bind_guest_graphics_pipeline();
 
   bool host_render_targets_used = render_target_cache_->GetPath() ==
                                   RenderTargetCache::Path::kHostRenderTargets;
@@ -4019,7 +4230,8 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
   // Update dynamic graphics pipeline state.
   UpdateDynamicState(viewport_info, primitive_polygonal,
                      normalized_depth_control, draw_resolution_scale_x,
-                     draw_resolution_scale_y, apply_host_depth_polygon_offset);
+                     draw_resolution_scale_y, apply_host_depth_polygon_offset,
+                     pipeline->dynamic_state);
 
   auto vgt_draw_initiator = regs.Get<reg::VGT_DRAW_INITIATOR>();
 
@@ -4175,6 +4387,34 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
       render_target_cache_->last_update_render_pass(),
       render_target_cache_->last_update_framebuffer());
 
+  // Encode render-target transfers that the render target cache queued for
+  // execution inside this draw's render pass (avoids breaking the pass on
+  // tile-based GPUs). If they can't be merged into the active pass, fall back
+  // to performing them in a separate pass and re-enter the guest pass. Either
+  // way the transfers change pipeline / dynamic / binding state, so re-emit it
+  // before the actual guest draw below.
+  if (render_target_cache_->HasPendingDrawPassTransfers()) {
+    if (!render_target_cache_->EncodePendingDrawPassTransfers()) {
+      if (!render_target_cache_->FlushPendingDrawPassTransfers()) {
+        return false;
+      }
+      SubmitBarriersAndEnterRenderTargetCacheRenderPass(
+          render_target_cache_->last_update_render_pass(),
+          render_target_cache_->last_update_framebuffer());
+    }
+    // Re-bind the guest pipeline (deferred, EDS-aware, with descriptor-set
+    // invalidation) - the transfer draws bound their own external pipelines and
+    // cleared the guest pipeline/layout state.
+    bind_guest_graphics_pipeline();
+    UpdateDynamicState(viewport_info, primitive_polygonal,
+                       normalized_depth_control, draw_resolution_scale_x,
+                       draw_resolution_scale_y, apply_host_depth_polygon_offset,
+                       pipeline->dynamic_state);
+    if (!UpdateBindings(vertex_shader, pixel_shader)) {
+      return false;
+    }
+  }
+
   // Track for device-lost diagnostics.
   ++submission_in_progress_.draw_count;
   submission_in_progress_.last_vs_hash = vertex_shader->ucode_data_hash();
@@ -4258,6 +4498,10 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
   // IssueDraw's BeginSubmission(true) reopens the submission, and the same call
   // resets draws_since_submission_ to 0. Guard mirrors OnPrimaryBufferEnd().
   ++draws_since_submission_;
+  ++vk_frame_sync_stats_.draws;
+  if (pass_ts_open_pair_ != UINT32_MAX) {
+    ++pass_open_draws_;
+  }
   if (cvars::vulkan_mid_frame_submission_draws > 0 &&
       draws_since_submission_ >=
           uint32_t(cvars::vulkan_mid_frame_submission_draws) &&
@@ -4700,15 +4944,48 @@ bool VulkanCommandProcessor::IssueCopy() {
     PushDebugMarker("IssueCopy (Resolve)");
   }
 
+  // Bracket the resolve emission region with GPU timestamps (BOTTOM_OF_PIPE:
+  // the region begins and ends at full barriers already, so the wait-for-idle
+  // Turnip implies is ~free here).
+  uint32_t resolve_ts_pair = UINT32_MAX;
+  if (resolve_timestamp_mapping_) {
+    if (resolve_ts_submission_ != GetCurrentSubmission()) {
+      resolve_ts_submission_ = GetCurrentSubmission();
+      resolve_ts_count_ = 0;
+    }
+    if (resolve_ts_count_ < kResolveTimestampPairsPerSubmission) {
+      resolve_ts_pair =
+          uint32_t(resolve_ts_submission_ % kResolveTimestampRingSubmissions) *
+              kResolveTimestampPairsPerSubmission +
+          resolve_ts_count_;
+      deferred_command_buffer_.CmdVkWriteTimestamp(
+          VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, resolve_timestamp_pool_,
+          resolve_ts_pair * 2);
+    } else {
+      ++vk_frame_sync_stats_.resolve_ts_dropped;
+    }
+  }
+
   uint32_t written_address, written_length;
-  if (!render_target_cache_->Resolve(*memory_, *shared_memory_, *texture_cache_,
-                                     written_address, written_length)) {
+  const bool resolve_succeeded = render_target_cache_->Resolve(
+      *memory_, *shared_memory_, *texture_cache_, written_address,
+      written_length);
+  if (resolve_ts_pair != UINT32_MAX) {
+    // Always close an opened pair - a WAIT_BIT results copy over a written
+    // begin with no end would hang the GPU.
+    deferred_command_buffer_.CmdVkWriteTimestamp(
+        VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, resolve_timestamp_pool_,
+        resolve_ts_pair * 2 + 1);
+    ++resolve_ts_count_;
+  }
+  if (!resolve_succeeded) {
     if (debug_markers_enabled_) {
       PopDebugMarker();
     }
     return false;
   }
   ++submission_in_progress_.resolve_count;
+  ++vk_frame_sync_stats_.resolves;
 
   // CPU readback resolve path (if not disabled).
   ReadbackResolveMode readback_mode = GetReadbackResolveMode();
@@ -6154,6 +6431,49 @@ void VulkanCommandProcessor::CheckSubmissionCompletionAndDeviceLoss(
               uint64_t((ts_top - frame_timestamp_prev_end_) * period_ns);
         }
         frame_timestamp_prev_end_ = ts_bottom;
+        if (record.resolve_pair_count && resolve_timestamp_mapping_) {
+          VkMappedMemoryRange resolve_invalidate_range = {
+              VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE};
+          resolve_invalidate_range.memory = resolve_timestamp_buffer_memory_;
+          resolve_invalidate_range.offset = 0;
+          resolve_invalidate_range.size = VK_WHOLE_SIZE;
+          GetVulkanDevice()->functions().vkInvalidateMappedMemoryRanges(
+              GetVulkanDevice()->device(), 1, &resolve_invalidate_range);
+          for (uint32_t i = 0; i < record.resolve_pair_count; ++i) {
+            const uint64_t r0 =
+                resolve_timestamp_mapping_[(record.resolve_slot_base + i) * 2];
+            const uint64_t r1 =
+                resolve_timestamp_mapping_[(record.resolve_slot_base + i) * 2 +
+                                           1];
+            if (r1 > r0) {
+              const uint64_t resolve_ns = uint64_t((r1 - r0) * period_ns);
+              vk_frame_sync_stats_.resolve_gpu_ns += resolve_ns;
+              vk_frame_sync_stats_.resolve_gpu_max_ns = std::max(
+                  vk_frame_sync_stats_.resolve_gpu_max_ns, resolve_ns);
+              vk_frame_sync_stats_.resolve_gpu_samples++;
+            }
+          }
+        }
+        if (record.pass_pair_count && pass_timestamp_mapping_) {
+          VkMappedMemoryRange pass_invalidate_range = {
+              VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE};
+          pass_invalidate_range.memory = pass_timestamp_buffer_memory_;
+          pass_invalidate_range.offset = 0;
+          pass_invalidate_range.size = VK_WHOLE_SIZE;
+          GetVulkanDevice()->functions().vkInvalidateMappedMemoryRanges(
+              GetVulkanDevice()->device(), 1, &pass_invalidate_range);
+          for (uint32_t i = 0; i < record.pass_pair_count; ++i) {
+            const uint32_t pair = record.pass_slot_base + i;
+            const uint64_t p0 = pass_timestamp_mapping_[pair * 2];
+            const uint64_t p1 = pass_timestamp_mapping_[pair * 2 + 1];
+            if (p1 > p0) {
+              auto& bucket = pass_bucket_stats_[pass_ts_keys_[pair]];
+              bucket.ns += uint64_t((p1 - p0) * period_ns);
+              bucket.passes++;
+              bucket.draws += pass_ts_draws_[pair];
+            }
+          }
+        }
       }
       vk_submit_times_.pop_front();
     }
@@ -6327,9 +6647,27 @@ bool VulkanCommandProcessor::BeginSubmission(bool is_guest_command) {
     dynamic_stencil_write_mask_back_update_needed_ = true;
     dynamic_stencil_reference_front_update_needed_ = true;
     dynamic_stencil_reference_back_update_needed_ = true;
+    dynamic_primitive_topology_update_needed_ = true;
+    dynamic_primitive_restart_enable_update_needed_ = true;
+    dynamic_cull_mode_update_needed_ = true;
+    dynamic_front_face_update_needed_ = true;
+    dynamic_depth_test_enable_update_needed_ = true;
+    dynamic_depth_write_enable_update_needed_ = true;
+    dynamic_depth_compare_op_update_needed_ = true;
+    dynamic_stencil_test_enable_update_needed_ = true;
+    dynamic_stencil_op_front_update_needed_ = true;
+    dynamic_stencil_op_back_update_needed_ = true;
+    dynamic_depth_clamp_enable_update_needed_ = true;
+    dynamic_polygon_mode_update_needed_ = true;
+    dynamic_color_blend_enable_update_needed_ = true;
+    dynamic_color_blend_equation_update_needed_ = true;
+    dynamic_color_write_mask_update_needed_ = true;
     current_render_pass_ = VK_NULL_HANDLE;
     current_framebuffer_ = nullptr;
     in_render_pass_ = false;
+    // Fresh deferred command buffer: abandon any open pass-timestamp pair
+    // without emitting an end (it would land in the new, unrelated buffer).
+    pass_ts_open_pair_ = UINT32_MAX;
     current_guest_graphics_pipeline_ = nullptr;
     current_external_graphics_pipeline_ = VK_NULL_HANDLE;
     current_external_compute_pipeline_ = VK_NULL_HANDLE;
@@ -6614,6 +6952,22 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
       dfn.vkCmdWriteTimestamp(command_buffer.buffer,
                               VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
                               frame_timestamp_pool_, fs_timestamp_slot * 2);
+      if (resolve_timestamp_mapping_) {
+        // Reset this submission's resolve-pair range before the deferred
+        // buffer (which contains the writes) replays.
+        dfn.vkCmdResetQueryPool(
+            command_buffer.buffer, resolve_timestamp_pool_,
+            uint32_t(GetCurrentSubmission() % kResolveTimestampRingSubmissions) *
+                kResolveTimestampPairsPerSubmission * 2,
+            kResolveTimestampPairsPerSubmission * 2);
+      }
+      if (pass_timestamp_mapping_) {
+        dfn.vkCmdResetQueryPool(
+            command_buffer.buffer, pass_timestamp_pool_,
+            uint32_t(GetCurrentSubmission() % kPassTimestampRingSubmissions) *
+                kPassTimestampPairsPerSubmission * 2,
+            kPassTimestampPairsPerSubmission * 2);
+      }
     }
     // Submission boundary for asynchronously created pipelines: by default
     // this waits until every pipeline referenced by the recorded deferred
@@ -6639,6 +6993,33 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
           2, frame_timestamp_buffer_,
           fs_timestamp_slot * 2 * sizeof(uint64_t), sizeof(uint64_t),
           VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT);
+      if (resolve_timestamp_mapping_ &&
+          resolve_ts_submission_ == GetCurrentSubmission() &&
+          resolve_ts_count_) {
+        // Copy only the pairs actually written this submission - reset-but-
+        // unwritten queries under WAIT_BIT would hang the GPU.
+        const uint32_t resolve_ts_base =
+            uint32_t(GetCurrentSubmission() % kResolveTimestampRingSubmissions) *
+            kResolveTimestampPairsPerSubmission;
+        dfn.vkCmdCopyQueryPoolResults(
+            command_buffer.buffer, resolve_timestamp_pool_, resolve_ts_base * 2,
+            resolve_ts_count_ * 2, resolve_timestamp_buffer_,
+            resolve_ts_base * 2 * sizeof(uint64_t), sizeof(uint64_t),
+            VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT);
+      }
+      if (pass_timestamp_mapping_ &&
+          pass_ts_submission_ == GetCurrentSubmission() && pass_ts_count_) {
+        // Only fully-closed pairs are counted in pass_ts_count_; a pass still
+        // open across the split keeps its begin query but is not copied here.
+        const uint32_t pass_ts_base =
+            uint32_t(GetCurrentSubmission() % kPassTimestampRingSubmissions) *
+            kPassTimestampPairsPerSubmission;
+        dfn.vkCmdCopyQueryPoolResults(
+            command_buffer.buffer, pass_timestamp_pool_, pass_ts_base * 2,
+            pass_ts_count_ * 2, pass_timestamp_buffer_,
+            pass_ts_base * 2 * sizeof(uint64_t), sizeof(uint64_t),
+            VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT);
+      }
       VkMemoryBarrier fs_timestamp_barrier = {VK_STRUCTURE_TYPE_MEMORY_BARRIER};
       fs_timestamp_barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
       fs_timestamp_barrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
@@ -6760,8 +7141,28 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
     draws_since_submission_ = 0;
     vk_frame_sync_stats_.submissions++;
     if (cvars::log_gpu_frame_time_breakdown) {
-      vk_submit_times_.push_back(
-          {submission_index, FrameStatsNow(), fs_timestamp_slot});
+      uint32_t resolve_base = 0;
+      uint32_t resolve_pairs = 0;
+      if (resolve_timestamp_mapping_ &&
+          resolve_ts_submission_ == submission_index) {
+        resolve_pairs = resolve_ts_count_;
+        resolve_base =
+            uint32_t(submission_index % kResolveTimestampRingSubmissions) *
+            kResolveTimestampPairsPerSubmission;
+      }
+      uint32_t pass_base = 0;
+      uint32_t pass_pairs = 0;
+      if (pass_timestamp_mapping_ && pass_ts_submission_ == submission_index) {
+        pass_pairs = pass_ts_count_;
+        pass_base =
+            uint32_t(submission_index % kPassTimestampRingSubmissions) *
+            kPassTimestampPairsPerSubmission;
+      }
+      vk_submit_times_.push_back({submission_index, FrameStatsNow(),
+                                  fs_timestamp_slot, resolve_base,
+                                  resolve_pairs, pass_base, pass_pairs});
+      resolve_ts_count_ = 0;
+      pass_ts_count_ = 0;
     }
 
     // Process any ZPD resolves that completed with this submission.
@@ -6883,7 +7284,8 @@ void VulkanCommandProcessor::UpdateDynamicState(
     const draw_util::ViewportInfo& viewport_info, bool primitive_polygonal,
     reg::RB_DEPTHCONTROL normalized_depth_control,
     uint32_t draw_resolution_scale_x, uint32_t draw_resolution_scale_y,
-    bool depth_bias_in_pixel_shader) {
+    bool depth_bias_in_pixel_shader,
+    const VulkanPipelineCache::DynamicState& pipeline_dynamic_state) {
 #if XE_GPU_FINE_GRAINED_DRAW_SCOPES
   SCOPE_profile_cpu_f("gpu");
 #endif  // XE_GPU_FINE_GRAINED_DRAW_SCOPES
@@ -7108,8 +7510,198 @@ void VulkanCommandProcessor::UpdateDynamicState(
     }
   }
 
-  // TODO(Triang3l): VK_EXT_extended_dynamic_state and
-  // VK_EXT_extended_dynamic_state2.
+  // Extended dynamic state (VK_EXT_extended_dynamic_state / state2 / state3).
+  // The pipeline cache resolved the exact Vulkan values these draw must use
+  // (matching what a static pipeline would have baked) into
+  // pipeline_dynamic_state; emit only the fields whose capability bit is set,
+  // with dirty tracking so redundant setters aren't recorded.
+  const VulkanPipelineCache::DynamicStateCapabilities& eds_caps =
+      pipeline_cache_->dynamic_state_capabilities();
+  if (eds_caps.extended_dynamic_state) {
+    const VulkanPipelineCache::DynamicState& ds = pipeline_dynamic_state;
+
+    // Primitive topology (EDS1 core).
+    dynamic_primitive_topology_update_needed_ |=
+        dynamic_primitive_topology_ != ds.primitive_topology;
+    if (dynamic_primitive_topology_update_needed_) {
+      dynamic_primitive_topology_ = ds.primitive_topology;
+      deferred_command_buffer_.CmdVkSetPrimitiveTopology(
+          dynamic_primitive_topology_);
+      dynamic_primitive_topology_update_needed_ = false;
+    }
+    // Primitive restart enable (EDS2 core).
+    dynamic_primitive_restart_enable_update_needed_ |=
+        dynamic_primitive_restart_enable_ != ds.primitive_restart_enable;
+    if (dynamic_primitive_restart_enable_update_needed_) {
+      dynamic_primitive_restart_enable_ = ds.primitive_restart_enable;
+      deferred_command_buffer_.CmdVkSetPrimitiveRestartEnable(
+          dynamic_primitive_restart_enable_);
+      dynamic_primitive_restart_enable_update_needed_ = false;
+    }
+    // Cull mode (EDS1 core).
+    dynamic_cull_mode_update_needed_ |= dynamic_cull_mode_ != ds.cull_mode;
+    if (dynamic_cull_mode_update_needed_) {
+      dynamic_cull_mode_ = ds.cull_mode;
+      deferred_command_buffer_.CmdVkSetCullMode(dynamic_cull_mode_);
+      dynamic_cull_mode_update_needed_ = false;
+    }
+    // Front face (EDS1 core).
+    dynamic_front_face_update_needed_ |= dynamic_front_face_ != ds.front_face;
+    if (dynamic_front_face_update_needed_) {
+      dynamic_front_face_ = ds.front_face;
+      deferred_command_buffer_.CmdVkSetFrontFace(dynamic_front_face_);
+      dynamic_front_face_update_needed_ = false;
+    }
+
+    // Depth / stencil dynamic state. The pipeline cache disables the whole
+    // extended-dynamic-state capability on the fragment-shader-interlock path
+    // (where these aren't fixed-function), so reaching here implies a render
+    // pass with real depth / stencil state.
+    {
+      // Depth test enable (EDS1 core).
+      dynamic_depth_test_enable_update_needed_ |=
+          dynamic_depth_test_enable_ != ds.depth_test_enable;
+      if (dynamic_depth_test_enable_update_needed_) {
+        dynamic_depth_test_enable_ = ds.depth_test_enable;
+        deferred_command_buffer_.CmdVkSetDepthTestEnable(
+            dynamic_depth_test_enable_);
+        dynamic_depth_test_enable_update_needed_ = false;
+      }
+      // Depth write enable (EDS1 core).
+      dynamic_depth_write_enable_update_needed_ |=
+          dynamic_depth_write_enable_ != ds.depth_write_enable;
+      if (dynamic_depth_write_enable_update_needed_) {
+        dynamic_depth_write_enable_ = ds.depth_write_enable;
+        deferred_command_buffer_.CmdVkSetDepthWriteEnable(
+            dynamic_depth_write_enable_);
+        dynamic_depth_write_enable_update_needed_ = false;
+      }
+      // Depth compare op (EDS1 core).
+      dynamic_depth_compare_op_update_needed_ |=
+          dynamic_depth_compare_op_ != ds.depth_compare_op;
+      if (dynamic_depth_compare_op_update_needed_) {
+        dynamic_depth_compare_op_ = ds.depth_compare_op;
+        deferred_command_buffer_.CmdVkSetDepthCompareOp(
+            dynamic_depth_compare_op_);
+        dynamic_depth_compare_op_update_needed_ = false;
+      }
+      // Stencil test enable (EDS1 core).
+      dynamic_stencil_test_enable_update_needed_ |=
+          dynamic_stencil_test_enable_ != ds.stencil_test_enable;
+      if (dynamic_stencil_test_enable_update_needed_) {
+        dynamic_stencil_test_enable_ = ds.stencil_test_enable;
+        deferred_command_buffer_.CmdVkSetStencilTestEnable(
+            dynamic_stencil_test_enable_);
+        dynamic_stencil_test_enable_update_needed_ = false;
+      }
+      // Stencil ops (EDS1 core), tracked per face. memcmp because
+      // VkStencilOpState bundles the (dynamic) compare/write masks and
+      // reference, which are set separately and must be ignored here.
+      auto stencil_ops_equal = [](const VkStencilOpState& a,
+                                  const VkStencilOpState& b) {
+        return a.failOp == b.failOp && a.passOp == b.passOp &&
+               a.depthFailOp == b.depthFailOp && a.compareOp == b.compareOp;
+      };
+      dynamic_stencil_op_front_update_needed_ |=
+          !stencil_ops_equal(dynamic_stencil_op_front_, ds.stencil_front);
+      if (dynamic_stencil_op_front_update_needed_) {
+        dynamic_stencil_op_front_ = ds.stencil_front;
+        deferred_command_buffer_.CmdVkSetStencilOp(
+            VK_STENCIL_FACE_FRONT_BIT, ds.stencil_front.failOp,
+            ds.stencil_front.passOp, ds.stencil_front.depthFailOp,
+            ds.stencil_front.compareOp);
+        dynamic_stencil_op_front_update_needed_ = false;
+      }
+      dynamic_stencil_op_back_update_needed_ |=
+          !stencil_ops_equal(dynamic_stencil_op_back_, ds.stencil_back);
+      if (dynamic_stencil_op_back_update_needed_) {
+        dynamic_stencil_op_back_ = ds.stencil_back;
+        deferred_command_buffer_.CmdVkSetStencilOp(
+            VK_STENCIL_FACE_BACK_BIT, ds.stencil_back.failOp,
+            ds.stencil_back.passOp, ds.stencil_back.depthFailOp,
+            ds.stencil_back.compareOp);
+        dynamic_stencil_op_back_update_needed_ = false;
+      }
+    }
+
+    // EDS3 sub-features.
+    if (eds_caps.depth_clamp_enable) {
+      dynamic_depth_clamp_enable_update_needed_ |=
+          dynamic_depth_clamp_enable_ != ds.depth_clamp_enable;
+      if (dynamic_depth_clamp_enable_update_needed_) {
+        dynamic_depth_clamp_enable_ = ds.depth_clamp_enable;
+        deferred_command_buffer_.CmdVkSetDepthClampEnableEXT(
+            dynamic_depth_clamp_enable_);
+        dynamic_depth_clamp_enable_update_needed_ = false;
+      }
+    }
+    if (eds_caps.polygon_mode) {
+      dynamic_polygon_mode_update_needed_ |=
+          dynamic_polygon_mode_ != ds.polygon_mode;
+      if (dynamic_polygon_mode_update_needed_) {
+        dynamic_polygon_mode_ = ds.polygon_mode;
+        deferred_command_buffer_.CmdVkSetPolygonModeEXT(dynamic_polygon_mode_);
+        dynamic_polygon_mode_update_needed_ = false;
+      }
+    }
+    {
+      // Per-render-target blend state. Emit only for the attachments present in
+      // the render pass (ds.color_rts_used), as a single contiguous range
+      // covering [0, highest used] so the array is dense for the setter.
+      uint32_t color_rts_used = ds.color_rts_used;
+      uint32_t attachment_count =
+          color_rts_used ? (32 - xe::lzcnt(color_rts_used)) : 0;
+      if (attachment_count) {
+        if (eds_caps.color_blend_enable) {
+          bool changed = false;
+          for (uint32_t i = 0; i < attachment_count; ++i) {
+            if (dynamic_color_blend_enable_[i] != ds.color_blend_enable[i]) {
+              dynamic_color_blend_enable_[i] = ds.color_blend_enable[i];
+              changed = true;
+            }
+          }
+          dynamic_color_blend_enable_update_needed_ |= changed;
+          if (dynamic_color_blend_enable_update_needed_) {
+            deferred_command_buffer_.CmdVkSetColorBlendEnableEXT(
+                0, attachment_count, dynamic_color_blend_enable_);
+            dynamic_color_blend_enable_update_needed_ = false;
+          }
+        }
+        if (eds_caps.color_blend_equation) {
+          bool changed = false;
+          for (uint32_t i = 0; i < attachment_count; ++i) {
+            if (std::memcmp(&dynamic_color_blend_equation_[i],
+                            &ds.color_blend_equation[i],
+                            sizeof(VkColorBlendEquationEXT)) != 0) {
+              dynamic_color_blend_equation_[i] = ds.color_blend_equation[i];
+              changed = true;
+            }
+          }
+          dynamic_color_blend_equation_update_needed_ |= changed;
+          if (dynamic_color_blend_equation_update_needed_) {
+            deferred_command_buffer_.CmdVkSetColorBlendEquationEXT(
+                0, attachment_count, dynamic_color_blend_equation_);
+            dynamic_color_blend_equation_update_needed_ = false;
+          }
+        }
+        if (eds_caps.color_write_mask) {
+          bool changed = false;
+          for (uint32_t i = 0; i < attachment_count; ++i) {
+            if (dynamic_color_write_mask_[i] != ds.color_write_mask[i]) {
+              dynamic_color_write_mask_[i] = ds.color_write_mask[i];
+              changed = true;
+            }
+          }
+          dynamic_color_write_mask_update_needed_ |= changed;
+          if (dynamic_color_write_mask_update_needed_) {
+            deferred_command_buffer_.CmdVkSetColorWriteMaskEXT(
+                0, attachment_count, dynamic_color_write_mask_);
+            dynamic_color_write_mask_update_needed_ = false;
+          }
+        }
+      }
+    }
+  }
 }
 
 void VulkanCommandProcessor::UpdateSystemConstantValues(

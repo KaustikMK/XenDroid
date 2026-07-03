@@ -69,6 +69,15 @@ DEFINE_bool(
     "draw is ever lost.",
     "Vulkan");
 
+DEFINE_bool(
+    vulkan_dynamic_pipeline_state, true,
+    "Use VK_EXT_extended_dynamic_state (and state 2/3 where available) to move "
+    "cull/front-face/topology/depth/stencil/blend out of the baked pipeline "
+    "key into dynamic state, collapsing pipeline permutations and reducing "
+    "shader compilation stutter. Disable to fall back to fully static "
+    "pipelines.",
+    "Vulkan");
+
 DECLARE_bool(vulkan_dynamic_rendering);
 DECLARE_bool(spirv_disable_rounding_mode_rte);
 
@@ -104,6 +113,35 @@ bool VulkanPipelineCache::Initialize() {
   bool edram_fragment_shader_interlock =
       render_target_cache_.GetPath() ==
       RenderTargetCache::Path::kPixelShaderInterlock;
+
+  // Resolve the extended-dynamic-state capabilities once. The fragment shader
+  // interlock (FSI) render path configures depth / stencil / color blend in the
+  // shader rather than via fixed-function state, so the dynamic state would
+  // have no effect there - disable the feature entirely on that path so the
+  // baked key and the dynamic emission can never disagree.
+  {
+    const ui::vulkan::VulkanDevice::Properties& device_properties =
+        vulkan_device->properties();
+    DynamicStateCapabilities& caps = dynamic_state_capabilities_;
+    caps = DynamicStateCapabilities();
+    if (cvars::vulkan_dynamic_pipeline_state &&
+        !edram_fragment_shader_interlock &&
+        device_properties.extendedDynamicState) {
+      caps.extended_dynamic_state = true;
+      caps.depth_clamp_enable =
+          device_properties.extendedDynamicState3DepthClampEnable;
+      caps.polygon_mode = device_properties.extendedDynamicState3PolygonMode;
+      caps.color_blend_enable =
+          device_properties.extendedDynamicState3ColorBlendEnable;
+      caps.color_blend_equation =
+          device_properties.extendedDynamicState3ColorBlendEquation;
+      caps.color_write_mask =
+          device_properties.extendedDynamicState3ColorWriteMask;
+      caps.primitive_topology_unrestricted =
+          device_properties
+              .extendedDynamicState3PrimitiveTopologyUnrestricted;
+    }
+  }
 
   shader_translator_ = std::make_unique<SpirvShaderTranslator>(
       SpirvShaderTranslator::Features(vulkan_device),
@@ -601,12 +639,28 @@ bool VulkanPipelineCache::ConfigurePipeline(
           description)) {
     return false;
   }
+  // Device feature requirements (triangle fans, depth clamp, polygon mode, ...)
+  // hinge on description fields that CanonicalizePipelineDescription normalizes
+  // away when they are dynamic, so the post-canonicalization check inside
+  // EnsurePipelineCreated would no longer see them. Validate against the real
+  // (non-canonicalized) description here.
+  if (!ArePipelineRequirementsMet(description)) {
+    return false;
+  }
+  // Resolve the per-draw dynamic state from the non-canonicalized description
+  // (the exact values the static pipeline would have baked), then canonicalize
+  // the description so draws differing only in dynamic state share one pipeline.
+  DynamicState dynamic_state;
+  FillDynamicState(description, dynamic_state);
+  CanonicalizePipelineDescription(description);
   if (last_pipeline_ && last_pipeline_->first == description) {
+    last_pipeline_->second.dynamic_state = dynamic_state;
     *pipeline_out = &last_pipeline_->second;
     return true;
   }
   auto it = pipelines_.find(description);
   if (it != pipelines_.end()) {
+    it->second.dynamic_state = dynamic_state;
     last_pipeline_ = &*it;
     *pipeline_out = &it->second;
     return true;
@@ -662,6 +716,7 @@ bool VulkanPipelineCache::ConfigurePipeline(
 
   auto& pipeline_pair =
       *pipelines_.emplace(description, Pipeline(pipeline_layout)).first;
+  pipeline_pair.second.dynamic_state = dynamic_state;
 
   if (storage_writer_.is_active()) {
     VulkanShader& vs = static_cast<VulkanShader&>(vertex_shader->shader());
@@ -1392,6 +1447,268 @@ bool VulkanPipelineCache::GetCurrentStateDescription(
   }
 
   return true;
+}
+
+void VulkanPipelineCache::CanonicalizePipelineDescription(
+    PipelineDescription& description) const {
+  const DynamicStateCapabilities& caps = dynamic_state_capabilities_;
+  if (!caps.extended_dynamic_state) {
+    return;
+  }
+
+  // Input assembly (EDS1/EDS2 core).
+  if (caps.primitive_topology_unrestricted) {
+    description.primitive_topology = PipelinePrimitiveTopology::kPointList;
+  } else {
+    // Keep only the topology class (0=point, 1=line, 2=triangle, 3=patch) so
+    // pipelines of different classes don't collapse together (dynamic topology
+    // can't cross the class baked into the pipeline). The concrete topology
+    // within the class is set dynamically.
+    uint32_t topology_class;
+    switch (description.primitive_topology) {
+      case PipelinePrimitiveTopology::kPointList:
+        topology_class = 0;
+        break;
+      case PipelinePrimitiveTopology::kLineList:
+      case PipelinePrimitiveTopology::kLineStrip:
+      case PipelinePrimitiveTopology::kLineListWithAdjacency:
+        topology_class = 1;
+        break;
+      case PipelinePrimitiveTopology::kPatchList:
+        topology_class = 3;
+        break;
+      default:
+        topology_class = 2;
+        break;
+    }
+    description.topology_class = topology_class;
+    description.primitive_topology = PipelinePrimitiveTopology::kPointList;
+  }
+  description.primitive_restart = 0;
+
+  // Rasterization (EDS1/EDS2 core).
+  description.cull_front = 0;
+  description.cull_back = 0;
+  description.front_face_clockwise = 0;
+
+  // Depth / stencil (EDS1/EDS2 core).
+  description.depth_write_enable = 0;
+  description.depth_compare_op = xenos::CompareFunction::kNever;
+  description.stencil_test_enable = 0;
+  description.stencil_front_fail_op = xenos::StencilOp::kKeep;
+  description.stencil_front_pass_op = xenos::StencilOp::kKeep;
+  description.stencil_front_depth_fail_op = xenos::StencilOp::kKeep;
+  description.stencil_front_compare_op = xenos::CompareFunction::kNever;
+  description.stencil_back_fail_op = xenos::StencilOp::kKeep;
+  description.stencil_back_pass_op = xenos::StencilOp::kKeep;
+  description.stencil_back_depth_fail_op = xenos::StencilOp::kKeep;
+  description.stencil_back_compare_op = xenos::CompareFunction::kNever;
+
+  // EDS3 sub-features (conditional - only zero a field when it's actually made
+  // dynamic; otherwise keep it baked so differently-baked pipelines don't
+  // collide).
+  if (caps.depth_clamp_enable) {
+    description.depth_clamp_enable = 0;
+  }
+  if (caps.polygon_mode) {
+    description.polygon_mode = PipelinePolygonMode::kFill;
+  }
+  for (uint32_t i = 0; i < xenos::kMaxColorRenderTargets; ++i) {
+    PipelineRenderTarget& rt = description.render_targets[i];
+    // Blend enable is derived from the equation, so zeroing the equation also
+    // collapses the enable. Only zero the equation when both enable and
+    // equation are dynamic (the static pipeline needs a valid equation when
+    // enable is baked-on but equation is dynamic, and vice versa).
+    if (caps.color_blend_enable && caps.color_blend_equation) {
+      rt.src_color_blend_factor = PipelineBlendFactor::kOne;
+      rt.dst_color_blend_factor = PipelineBlendFactor::kZero;
+      rt.color_blend_op = xenos::BlendOp::kAdd;
+      rt.src_alpha_blend_factor = PipelineBlendFactor::kOne;
+      rt.dst_alpha_blend_factor = PipelineBlendFactor::kZero;
+      rt.alpha_blend_op = xenos::BlendOp::kAdd;
+    }
+    if (caps.color_write_mask) {
+      rt.color_write_mask = 0;
+    }
+  }
+}
+
+void VulkanPipelineCache::FillDynamicState(
+    const PipelineDescription& description, DynamicState& dynamic_state) const {
+  static constexpr VkBlendFactor kBlendFactorMap[] = {
+      VK_BLEND_FACTOR_ZERO,
+      VK_BLEND_FACTOR_ONE,
+      VK_BLEND_FACTOR_SRC_COLOR,
+      VK_BLEND_FACTOR_ONE_MINUS_SRC_COLOR,
+      VK_BLEND_FACTOR_DST_COLOR,
+      VK_BLEND_FACTOR_ONE_MINUS_DST_COLOR,
+      VK_BLEND_FACTOR_SRC_ALPHA,
+      VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+      VK_BLEND_FACTOR_DST_ALPHA,
+      VK_BLEND_FACTOR_ONE_MINUS_DST_ALPHA,
+      VK_BLEND_FACTOR_CONSTANT_COLOR,
+      VK_BLEND_FACTOR_ONE_MINUS_CONSTANT_COLOR,
+      VK_BLEND_FACTOR_CONSTANT_ALPHA,
+      VK_BLEND_FACTOR_ONE_MINUS_CONSTANT_ALPHA,
+      VK_BLEND_FACTOR_SRC_ALPHA_SATURATE,
+  };
+  static constexpr VkBlendOp kBlendOpMap[] = {
+      VK_BLEND_OP_ADD,           VK_BLEND_OP_SUBTRACT,
+      VK_BLEND_OP_MIN,           VK_BLEND_OP_MAX,
+      VK_BLEND_OP_REVERSE_SUBTRACT, VK_BLEND_OP_ADD,
+      VK_BLEND_OP_ADD,           VK_BLEND_OP_ADD};
+
+  // Input assembly.
+  switch (description.primitive_topology) {
+    case PipelinePrimitiveTopology::kPointList:
+      dynamic_state.primitive_topology = VK_PRIMITIVE_TOPOLOGY_POINT_LIST;
+      break;
+    case PipelinePrimitiveTopology::kLineList:
+      dynamic_state.primitive_topology = VK_PRIMITIVE_TOPOLOGY_LINE_LIST;
+      break;
+    case PipelinePrimitiveTopology::kLineStrip:
+      dynamic_state.primitive_topology = VK_PRIMITIVE_TOPOLOGY_LINE_STRIP;
+      break;
+    case PipelinePrimitiveTopology::kTriangleList:
+      dynamic_state.primitive_topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+      break;
+    case PipelinePrimitiveTopology::kTriangleStrip:
+      dynamic_state.primitive_topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;
+      break;
+    case PipelinePrimitiveTopology::kTriangleFan:
+      dynamic_state.primitive_topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN;
+      break;
+    case PipelinePrimitiveTopology::kLineListWithAdjacency:
+      dynamic_state.primitive_topology =
+          VK_PRIMITIVE_TOPOLOGY_LINE_LIST_WITH_ADJACENCY;
+      break;
+    case PipelinePrimitiveTopology::kPatchList:
+      dynamic_state.primitive_topology = VK_PRIMITIVE_TOPOLOGY_PATCH_LIST;
+      break;
+    default:
+      dynamic_state.primitive_topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+      break;
+  }
+  dynamic_state.primitive_restart_enable =
+      description.primitive_restart ? VK_TRUE : VK_FALSE;
+
+  // Rasterization.
+  dynamic_state.cull_mode = VK_CULL_MODE_NONE;
+  if (description.cull_front) {
+    dynamic_state.cull_mode |= VK_CULL_MODE_FRONT_BIT;
+  }
+  if (description.cull_back) {
+    dynamic_state.cull_mode |= VK_CULL_MODE_BACK_BIT;
+  }
+  dynamic_state.front_face = description.front_face_clockwise
+                                 ? VK_FRONT_FACE_CLOCKWISE
+                                 : VK_FRONT_FACE_COUNTER_CLOCKWISE;
+  dynamic_state.depth_clamp_enable =
+      description.depth_clamp_enable ? VK_TRUE : VK_FALSE;
+  switch (description.polygon_mode) {
+    case PipelinePolygonMode::kLine:
+      dynamic_state.polygon_mode = VK_POLYGON_MODE_LINE;
+      break;
+    case PipelinePolygonMode::kPoint:
+      dynamic_state.polygon_mode = VK_POLYGON_MODE_POINT;
+      break;
+    default:
+      dynamic_state.polygon_mode = VK_POLYGON_MODE_FILL;
+      break;
+  }
+
+  // Depth / stencil. Mirror the static path's implicit depth-test-enable
+  // (enabled when writing or comparing with anything other than Always).
+  bool depth_test_enable =
+      description.depth_write_enable ||
+      description.depth_compare_op != xenos::CompareFunction::kAlways;
+  dynamic_state.depth_test_enable = depth_test_enable ? VK_TRUE : VK_FALSE;
+  dynamic_state.depth_write_enable =
+      description.depth_write_enable ? VK_TRUE : VK_FALSE;
+  dynamic_state.depth_compare_op =
+      VkCompareOp(uint32_t(VK_COMPARE_OP_NEVER) +
+                  uint32_t(description.depth_compare_op));
+  dynamic_state.stencil_test_enable =
+      description.stencil_test_enable ? VK_TRUE : VK_FALSE;
+  dynamic_state.stencil_front.failOp =
+      VkStencilOp(uint32_t(VK_STENCIL_OP_KEEP) +
+                  uint32_t(description.stencil_front_fail_op));
+  dynamic_state.stencil_front.passOp =
+      VkStencilOp(uint32_t(VK_STENCIL_OP_KEEP) +
+                  uint32_t(description.stencil_front_pass_op));
+  dynamic_state.stencil_front.depthFailOp =
+      VkStencilOp(uint32_t(VK_STENCIL_OP_KEEP) +
+                  uint32_t(description.stencil_front_depth_fail_op));
+  dynamic_state.stencil_front.compareOp =
+      VkCompareOp(uint32_t(VK_COMPARE_OP_NEVER) +
+                  uint32_t(description.stencil_front_compare_op));
+  dynamic_state.stencil_front.compareMask = 0;
+  dynamic_state.stencil_front.writeMask = 0;
+  dynamic_state.stencil_front.reference = 0;
+  dynamic_state.stencil_back.failOp =
+      VkStencilOp(uint32_t(VK_STENCIL_OP_KEEP) +
+                  uint32_t(description.stencil_back_fail_op));
+  dynamic_state.stencil_back.passOp =
+      VkStencilOp(uint32_t(VK_STENCIL_OP_KEEP) +
+                  uint32_t(description.stencil_back_pass_op));
+  dynamic_state.stencil_back.depthFailOp =
+      VkStencilOp(uint32_t(VK_STENCIL_OP_KEEP) +
+                  uint32_t(description.stencil_back_depth_fail_op));
+  dynamic_state.stencil_back.compareOp =
+      VkCompareOp(uint32_t(VK_COMPARE_OP_NEVER) +
+                  uint32_t(description.stencil_back_compare_op));
+  dynamic_state.stencil_back.compareMask = 0;
+  dynamic_state.stencil_back.writeMask = 0;
+  dynamic_state.stencil_back.reference = 0;
+
+  // Color blend (per render target).
+  uint32_t color_rts_used = description.render_pass_key.depth_and_color_used >> 1;
+  dynamic_state.color_rts_used = color_rts_used;
+  bool rt0_rgb_premult = false;
+  bool rt0_a_premult = false;
+  {
+    SpirvShaderTranslator::Modification pixel_shader_modification(
+        description.pixel_shader_modification);
+    rt0_rgb_premult =
+        pixel_shader_modification.pixel.rt0_blend_rgb_factor_for_premult !=
+        xenos::BlendFactor::kOne;
+    rt0_a_premult =
+        pixel_shader_modification.pixel.rt0_blend_a_factor_for_premult !=
+        xenos::BlendFactor::kOne;
+  }
+  for (uint32_t i = 0; i < xenos::kMaxColorRenderTargets; ++i) {
+    const PipelineRenderTarget& rt = description.render_targets[i];
+    bool blend_enable =
+        rt.src_color_blend_factor != PipelineBlendFactor::kOne ||
+        rt.dst_color_blend_factor != PipelineBlendFactor::kZero ||
+        rt.color_blend_op != xenos::BlendOp::kAdd ||
+        rt.src_alpha_blend_factor != PipelineBlendFactor::kOne ||
+        rt.dst_alpha_blend_factor != PipelineBlendFactor::kZero ||
+        rt.alpha_blend_op != xenos::BlendOp::kAdd;
+    dynamic_state.color_blend_enable[i] = blend_enable ? VK_TRUE : VK_FALSE;
+    VkColorBlendEquationEXT& equation = dynamic_state.color_blend_equation[i];
+    equation.srcColorBlendFactor =
+        kBlendFactorMap[uint32_t(rt.src_color_blend_factor)];
+    equation.dstColorBlendFactor =
+        kBlendFactorMap[uint32_t(rt.dst_color_blend_factor)];
+    equation.colorBlendOp = kBlendOpMap[uint32_t(rt.color_blend_op)];
+    equation.srcAlphaBlendFactor =
+        kBlendFactorMap[uint32_t(rt.src_alpha_blend_factor)];
+    equation.dstAlphaBlendFactor =
+        kBlendFactorMap[uint32_t(rt.dst_alpha_blend_factor)];
+    equation.alphaBlendOp = kBlendOpMap[uint32_t(rt.alpha_blend_op)];
+    // Mirror the static path's premultiplied-source-factor fixup for RT0.
+    if (i == 0 && blend_enable) {
+      if (rt0_rgb_premult) {
+        equation.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
+      }
+      if (rt0_a_premult) {
+        equation.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+      }
+    }
+    dynamic_state.color_write_mask[i] =
+        VkColorComponentFlags(rt.color_write_mask);
+  }
 }
 
 bool VulkanPipelineCache::ArePipelineRequirementsMet(
@@ -2789,6 +3106,28 @@ bool VulkanPipelineCache::EnsurePipelineCreated(
   }
   input_assembly_state.primitiveRestartEnable =
       description.primitive_restart ? VK_TRUE : VK_FALSE;
+  // When topology is dynamic but may not cross its class, the description was
+  // canonicalized to kPointList with the real class kept in topology_class.
+  // The pipeline must be baked with a topology of that class so dynamic
+  // topology stays within it (Vulkan ignores the concrete value otherwise).
+  const DynamicStateCapabilities& dyn_caps = dynamic_state_capabilities_;
+  if (dyn_caps.extended_dynamic_state &&
+      !dyn_caps.primitive_topology_unrestricted) {
+    switch (description.topology_class) {
+      case 0:
+        input_assembly_state.topology = VK_PRIMITIVE_TOPOLOGY_POINT_LIST;
+        break;
+      case 1:
+        input_assembly_state.topology = VK_PRIMITIVE_TOPOLOGY_LINE_LIST;
+        break;
+      case 3:
+        input_assembly_state.topology = VK_PRIMITIVE_TOPOLOGY_PATCH_LIST;
+        break;
+      default:
+        input_assembly_state.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+        break;
+    }
+  }
 
   VkPipelineViewportStateCreateInfo viewport_state;
   viewport_state.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
@@ -2998,7 +3337,7 @@ bool VulkanPipelineCache::EnsurePipelineCreated(
     color_blend_state.pAttachments = color_blend_attachments;
   }
 
-  std::array<VkDynamicState, 7> dynamic_states;
+  std::array<VkDynamicState, 24> dynamic_states;
   VkPipelineDynamicStateCreateInfo dynamic_state;
   dynamic_state.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
   dynamic_state.pNext = nullptr;
@@ -3023,6 +3362,56 @@ bool VulkanPipelineCache::EnsurePipelineCreated(
     dynamic_states[dynamic_state.dynamicStateCount++] =
         VK_DYNAMIC_STATE_STENCIL_REFERENCE;
   }
+  // Extended dynamic state - must exactly match the fields canonicalized out of
+  // the pipeline key (see CanonicalizePipelineDescription) and emitted per draw
+  // by VulkanCommandProcessor::UpdateDynamicState.
+  if (dyn_caps.extended_dynamic_state) {
+    // EDS1 / EDS2 (core in Vulkan 1.3).
+    dynamic_states[dynamic_state.dynamicStateCount++] =
+        VK_DYNAMIC_STATE_PRIMITIVE_TOPOLOGY;
+    dynamic_states[dynamic_state.dynamicStateCount++] =
+        VK_DYNAMIC_STATE_PRIMITIVE_RESTART_ENABLE;
+    dynamic_states[dynamic_state.dynamicStateCount++] =
+        VK_DYNAMIC_STATE_CULL_MODE;
+    dynamic_states[dynamic_state.dynamicStateCount++] =
+        VK_DYNAMIC_STATE_FRONT_FACE;
+    if (!edram_fragment_shader_interlock) {
+      dynamic_states[dynamic_state.dynamicStateCount++] =
+          VK_DYNAMIC_STATE_DEPTH_TEST_ENABLE;
+      dynamic_states[dynamic_state.dynamicStateCount++] =
+          VK_DYNAMIC_STATE_DEPTH_WRITE_ENABLE;
+      dynamic_states[dynamic_state.dynamicStateCount++] =
+          VK_DYNAMIC_STATE_DEPTH_COMPARE_OP;
+      dynamic_states[dynamic_state.dynamicStateCount++] =
+          VK_DYNAMIC_STATE_STENCIL_TEST_ENABLE;
+      dynamic_states[dynamic_state.dynamicStateCount++] =
+          VK_DYNAMIC_STATE_STENCIL_OP;
+    }
+    // EDS3 sub-features (each gated separately).
+    if (dyn_caps.depth_clamp_enable) {
+      dynamic_states[dynamic_state.dynamicStateCount++] =
+          VK_DYNAMIC_STATE_DEPTH_CLAMP_ENABLE_EXT;
+    }
+    if (dyn_caps.polygon_mode) {
+      dynamic_states[dynamic_state.dynamicStateCount++] =
+          VK_DYNAMIC_STATE_POLYGON_MODE_EXT;
+    }
+    if (!edram_fragment_shader_interlock) {
+      if (dyn_caps.color_blend_enable) {
+        dynamic_states[dynamic_state.dynamicStateCount++] =
+            VK_DYNAMIC_STATE_COLOR_BLEND_ENABLE_EXT;
+      }
+      if (dyn_caps.color_blend_equation) {
+        dynamic_states[dynamic_state.dynamicStateCount++] =
+            VK_DYNAMIC_STATE_COLOR_BLEND_EQUATION_EXT;
+      }
+      if (dyn_caps.color_write_mask) {
+        dynamic_states[dynamic_state.dynamicStateCount++] =
+            VK_DYNAMIC_STATE_COLOR_WRITE_MASK_EXT;
+      }
+    }
+  }
+  assert_true(dynamic_state.dynamicStateCount <= dynamic_states.size());
 
   // Tessellation state (only used when tessellation is active).
   VkPipelineTessellationStateCreateInfo tessellation_state = {};

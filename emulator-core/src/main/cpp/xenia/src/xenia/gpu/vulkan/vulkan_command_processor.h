@@ -16,6 +16,7 @@
 #include <cstdint>
 #include <deque>
 #include <functional>
+#include <map>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -60,6 +61,9 @@ class VulkanCommandProcessor final : public CommandProcessor {
   // Single-descriptor layouts for use within a single frame.
   enum class SingleTransientDescriptorLayout {
     kStorageBufferCompute,
+    // Uniform buffer at binding 1 for shaders that keep binding 0 as push
+    // constants for D3D-style root constants.
+    kUniformBufferComputeB1,
     kCount,
   };
 
@@ -516,12 +520,12 @@ class VulkanCommandProcessor final : public CommandProcessor {
   bool AwaitQueryResolve(ReportHandle report_handle,
                          uint64_t wait_for_submission) override;
 
-  void UpdateDynamicState(const draw_util::ViewportInfo& viewport_info,
-                          bool primitive_polygonal,
-                          reg::RB_DEPTHCONTROL normalized_depth_control,
-                          uint32_t draw_resolution_scale_x,
-                          uint32_t draw_resolution_scale_y,
-                          bool depth_bias_in_pixel_shader);
+  void UpdateDynamicState(
+      const draw_util::ViewportInfo& viewport_info, bool primitive_polygonal,
+      reg::RB_DEPTHCONTROL normalized_depth_control,
+      uint32_t draw_resolution_scale_x, uint32_t draw_resolution_scale_y,
+      bool depth_bias_in_pixel_shader,
+      const VulkanPipelineCache::DynamicState& pipeline_dynamic_state);
   void UpdateSystemConstantValues(
       bool primitive_polygonal,
       const PrimitiveProcessor::ProcessingResult& primitive_processing_result,
@@ -605,6 +609,7 @@ class VulkanCommandProcessor final : public CommandProcessor {
     uint64_t awaits = 0;    // blocking waits for own submissions
     uint64_t await_ns = 0;  // time inside those waits
     uint64_t submissions = 0;
+    uint64_t resolves = 0;  // EDRAM resolves issued (churn magnitude)
     uint64_t memexport_awaits = 0;
     uint64_t readback_awaits = 0;
     // Host-side latency from vkQueueSubmit to the fence being observed
@@ -623,6 +628,15 @@ class VulkanCommandProcessor final : public CommandProcessor {
     uint64_t gpu_exec_max_ns = 0;
     uint64_t gpu_gap_ns = 0;
     uint64_t gpu_samples = 0;
+    // GPU time inside resolve emission regions (see the pairs in IssueCopy).
+    uint64_t resolve_gpu_ns = 0;
+    uint64_t resolve_gpu_max_ns = 0;
+    uint64_t resolve_gpu_samples = 0;
+    uint64_t resolve_ts_dropped = 0;
+    // Draw/pass structure counters.
+    uint64_t draws = 0;
+    uint64_t render_pass_begins = 0;
+    uint64_t primary_buffer_splits = 0;
     uint64_t last_report_ns = 0;
   };
   VkFrameSyncStats vk_frame_sync_stats_;
@@ -631,6 +645,12 @@ class VulkanCommandProcessor final : public CommandProcessor {
     uint64_t submit_ns;
     // Slot in frame_timestamp_pool_, UINT32_MAX if timestamps unavailable.
     uint32_t timestamp_slot;
+    // Resolve timestamp pairs recorded in this submission.
+    uint32_t resolve_slot_base;
+    uint32_t resolve_pair_count;
+    // Render-pass timestamp pairs recorded in this submission.
+    uint32_t pass_slot_base;
+    uint32_t pass_pair_count;
   };
   std::deque<SubmitTimeRecord> vk_submit_times_;
   // GPU timestamps around each submission (2 per slot), copied in-buffer to
@@ -647,6 +667,48 @@ class VulkanCommandProcessor final : public CommandProcessor {
   VkDeviceSize frame_timestamp_buffer_size_ = 0;
   uint64_t* frame_timestamp_mapping_ = nullptr;
   uint64_t frame_timestamp_prev_end_ = 0;
+  // GPU timestamps bracketing each resolve region, ring-buffered per
+  // submission like the per-submission pair above (same no-host-query rule).
+  static constexpr uint32_t kResolveTimestampPairsPerSubmission = 48;
+  static constexpr uint32_t kResolveTimestampRingSubmissions = 32;
+  VkQueryPool resolve_timestamp_pool_ = VK_NULL_HANDLE;
+  VkBuffer resolve_timestamp_buffer_ = VK_NULL_HANDLE;
+  VkDeviceMemory resolve_timestamp_buffer_memory_ = VK_NULL_HANDLE;
+  VkDeviceSize resolve_timestamp_buffer_size_ = 0;
+  uint64_t* resolve_timestamp_mapping_ = nullptr;
+  uint64_t resolve_ts_submission_ = 0;
+  uint32_t resolve_ts_count_ = 0;
+  // GPU timestamps bracketing each render pass, bucketed CPU-side by
+  // framebuffer extent (bit 31 = ownership-transfer pass). Same ring/readback
+  // pattern; timestamps written OUTSIDE the pass (before begin / after end).
+  static constexpr uint32_t kPassTimestampPairsPerSubmission = 96;
+  static constexpr uint32_t kPassTimestampRingSubmissions = 32;
+  VkQueryPool pass_timestamp_pool_ = VK_NULL_HANDLE;
+  VkBuffer pass_timestamp_buffer_ = VK_NULL_HANDLE;
+  VkDeviceMemory pass_timestamp_buffer_memory_ = VK_NULL_HANDLE;
+  VkDeviceSize pass_timestamp_buffer_size_ = 0;
+  uint64_t* pass_timestamp_mapping_ = nullptr;
+  uint64_t pass_ts_submission_ = 0;
+  uint32_t pass_ts_count_ = 0;
+  uint32_t pass_ts_open_pair_ = UINT32_MAX;
+  uint64_t pass_ts_open_submission_ = 0;
+  uint64_t pass_ts_dropped_ = 0;
+  std::array<uint32_t, size_t(kPassTimestampPairsPerSubmission) *
+                           kPassTimestampRingSubmissions>
+      pass_ts_keys_{};
+  std::array<uint32_t, size_t(kPassTimestampPairsPerSubmission) *
+                           kPassTimestampRingSubmissions>
+      pass_ts_draws_{};
+  uint32_t pass_open_draws_ = 0;
+  struct PassBucketStat {
+    uint64_t ns = 0;
+    uint64_t passes = 0;
+    uint64_t draws = 0;
+  };
+  // Accumulated per bucket key since the last report.
+  std::map<uint32_t, PassBucketStat> pass_bucket_stats_;
+  void OpenPassTimestamp(uint32_t bucket_key);
+  void ClosePassTimestamp();
   // Completion of resolve readback copies on the dedicated transfer queue.
   ui::vulkan::VulkanGPUCompletionTimeline transfer_completion_timeline_;
   bool submission_open_ = false;
@@ -927,6 +989,44 @@ class VulkanCommandProcessor final : public CommandProcessor {
   bool dynamic_stencil_write_mask_back_update_needed_;
   bool dynamic_stencil_reference_front_update_needed_;
   bool dynamic_stencil_reference_back_update_needed_;
+
+  // Extended dynamic state (VK_EXT_extended_dynamic_state / state2 / state3).
+  // Cached last-emitted values + dirty flags, mirroring the existing dynamic
+  // state idiom. Initialized to invalid sentinels so the first draw of each
+  // submission always emits. Only emitted when the matching capability bit in
+  // the pipeline cache is set.
+  VkPrimitiveTopology dynamic_primitive_topology_ = VK_PRIMITIVE_TOPOLOGY_MAX_ENUM;
+  VkBool32 dynamic_primitive_restart_enable_ = VK_FALSE;
+  VkCullModeFlags dynamic_cull_mode_ = VK_CULL_MODE_FLAG_BITS_MAX_ENUM;
+  VkFrontFace dynamic_front_face_ = VK_FRONT_FACE_MAX_ENUM;
+  VkBool32 dynamic_depth_test_enable_ = VK_FALSE;
+  VkBool32 dynamic_depth_write_enable_ = VK_FALSE;
+  VkCompareOp dynamic_depth_compare_op_ = VK_COMPARE_OP_MAX_ENUM;
+  VkBool32 dynamic_stencil_test_enable_ = VK_FALSE;
+  VkStencilOpState dynamic_stencil_op_front_ = {};
+  VkStencilOpState dynamic_stencil_op_back_ = {};
+  VkBool32 dynamic_depth_clamp_enable_ = VK_FALSE;
+  VkPolygonMode dynamic_polygon_mode_ = VK_POLYGON_MODE_MAX_ENUM;
+  VkBool32 dynamic_color_blend_enable_[xenos::kMaxColorRenderTargets] = {};
+  VkColorBlendEquationEXT
+      dynamic_color_blend_equation_[xenos::kMaxColorRenderTargets] = {};
+  VkColorComponentFlags
+      dynamic_color_write_mask_[xenos::kMaxColorRenderTargets] = {};
+  bool dynamic_primitive_topology_update_needed_;
+  bool dynamic_primitive_restart_enable_update_needed_;
+  bool dynamic_cull_mode_update_needed_;
+  bool dynamic_front_face_update_needed_;
+  bool dynamic_depth_test_enable_update_needed_;
+  bool dynamic_depth_write_enable_update_needed_;
+  bool dynamic_depth_compare_op_update_needed_;
+  bool dynamic_stencil_test_enable_update_needed_;
+  bool dynamic_stencil_op_front_update_needed_;
+  bool dynamic_stencil_op_back_update_needed_;
+  bool dynamic_depth_clamp_enable_update_needed_;
+  bool dynamic_polygon_mode_update_needed_;
+  bool dynamic_color_blend_enable_update_needed_;
+  bool dynamic_color_blend_equation_update_needed_;
+  bool dynamic_color_write_mask_update_needed_;
 
   // Currently used samplers.
   std::vector<std::pair<VulkanTextureCache::SamplerParameters, VkSampler>>
