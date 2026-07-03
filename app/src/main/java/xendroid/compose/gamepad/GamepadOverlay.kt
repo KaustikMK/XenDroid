@@ -356,6 +356,9 @@ private val XBOX_BLUE = Color(0xFF3E78C2)
 private val XBOX_YELLOW = Color(0xFFD8A21E)
 private val PILL_IDS = setOf(ControlId.LB, ControlId.RB, ControlId.LT, ControlId.RT)
 
+// Optical (not geometric) centering, as a fraction of the button radius; + = right.
+private const val ABXY_LABEL_NUDGE_X = 0.02f
+
 private fun DrawScope.drawControl(
     c: OnScreenControl, opacity: Float, size: IntSize, density: Density,
     pressed: Boolean, dpadDirs: Set<Int>, activePos: Offset?,
@@ -515,8 +518,9 @@ private fun DrawScope.drawLabel(
             "▶" -> bounds.width() / 6f
             else -> 0f
         }
-        val baseline = center.y - bounds.exactCenterY()      // center the glyph itself, not the font line
-        val x = if (fill != null) center.x else center.x - bounds.exactCenterX() + opticalDx
+        val nudgeX = if (fill != null) ABXY_LABEL_NUDGE_X * radius else 0f
+        val baseline = center.y - bounds.exactCenterY()   // center the glyph itself, not the font line
+        val x = (if (fill != null) center.x else center.x - bounds.exactCenterX() + opticalDx) + nudgeX
         canvas.nativeCanvas.drawText(label, x, baseline, paint)
     }
 }
