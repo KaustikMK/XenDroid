@@ -1,32 +1,66 @@
 package xendroid.compose.gamepad
 
-fun defaultLayout(landscape: Boolean): List<OnScreenControl> {
-    // Controls sit in a vertical band; t in [0,1] maps top->bottom of that band.
-    val yTop = if (landscape) 0.12f else 0.50f
-    val ySpan = if (landscape) 0.81f else 0.45f
-    fun y(t: Float) = yTop + ySpan * t
+fun defaultLayout(landscape: Boolean): List<OnScreenControl> =
+    if (landscape) landscapeDefault() else portraitDefault()
 
-    // Xbox 360 grouping; primary controls (sticks/face) sit low where the thumbs rest.
+// Hand-tuned on-device layout, baked in; positions are absolute screen fractions.
+private fun landscapeDefault(): List<OnScreenControl> = listOf(
+    // Left column.
+    OnScreenControl.Button(ControlId.LT, Kc.TRIGGER_L, "LT", 0.0556f, 0.10f),
+    OnScreenControl.Button(ControlId.LB, Kc.SHOULDER_L, "LB", 0.1389f, 0.10f),
+    OnScreenControl.Dpad(ControlId.DPAD, xFraction = 0.1111f, yFraction = 0.40f),
+    OnScreenControl.AnalogStick(
+        ControlId.LEFT_STICK, isLeft = true, xFraction = 0.1389f, yFraction = 0.75f
+    ),
+    OnScreenControl.Button(
+        ControlId.LS_CLICK, Kc.THUMB_PRESS_L, "L3", 0.0556f, 0.90f, baseSizeDp = 52f
+    ),
+    // Right column.
+    OnScreenControl.Button(ControlId.RT, Kc.TRIGGER_R, "RT", 0.9444f, 0.10f),
+    OnScreenControl.Button(ControlId.RB, Kc.SHOULDER_R, "RB", 0.8611f, 0.10f),
+    OnScreenControl.AnalogStick(
+        ControlId.RIGHT_STICK, isLeft = false, xFraction = 0.8611f, yFraction = 0.40f
+    ),
+    OnScreenControl.Button(
+        ControlId.RS_CLICK, Kc.THUMB_PRESS_R, "R3", 0.9444f, 0.50f, baseSizeDp = 52f
+    ),
+    // Face diamond (A bottom, B right, X left, Y top).
+    OnScreenControl.Button(ControlId.Y, Kc.Y, "Y", 0.86f, 0.6708f),
+    OnScreenControl.Button(ControlId.X, Kc.X, "X", 0.80f, 0.7842f),
+    OnScreenControl.Button(ControlId.B, Kc.B, "B", 0.92f, 0.7842f),
+    OnScreenControl.Button(ControlId.A, Kc.A, "A", 0.86f, 0.8976f),
+    // Back / Start center.
+    OnScreenControl.Button(ControlId.BACK, Kc.BACK, "◀", 0.44f, 0.93f, baseSizeDp = 48f),
+    OnScreenControl.Button(ControlId.START, Kc.START, "▶", 0.56f, 0.93f, baseSizeDp = 48f),
+).map { c ->
+    c.withLayout(s = if (c.id == ControlId.LS_CLICK || c.id == ControlId.RS_CLICK) 0.80f else 0.75f)
+}
+
+private fun portraitDefault(): List<OnScreenControl> {
+    // Controls sit in a lower band; t in [0,1] maps top->bottom of that band, thumbs at bottom.
+    val yTop = 0.50f
+    val ySpan = 0.45f
+    fun y(t: Float) = yTop + ySpan * t
     val fx = 0.86f  // face cluster center x
     return listOf(
-        // Left column.
-        OnScreenControl.Button(ControlId.LB, Kc.SHOULDER_L, "LB", 0.06f, y(0f)),
-        OnScreenControl.Button(ControlId.LT, Kc.TRIGGER_L, "LT", 0.15f, y(0f)),
+        // Left column: trigger outside, bumper inside.
+        OnScreenControl.Button(ControlId.LT, Kc.TRIGGER_L, "LT", 0.06f, y(0f)),
+        OnScreenControl.Button(ControlId.LB, Kc.SHOULDER_L, "LB", 0.15f, y(0f)),
         OnScreenControl.Dpad(ControlId.DPAD, xFraction = 0.13f, yFraction = y(0.40f)),
         OnScreenControl.AnalogStick(
             ControlId.LEFT_STICK, isLeft = true, xFraction = 0.14f, yFraction = y(0.82f)
         ),
         OnScreenControl.Button(
-            ControlId.LS_CLICK, Kc.THUMB_PRESS_L, "L3", 0.045f, y(0.82f), baseSizeDp = 40f
+            ControlId.LS_CLICK, Kc.THUMB_PRESS_L, "L3", 0.045f, y(0.82f), baseSizeDp = 52f
         ),
         // Right column.
-        OnScreenControl.Button(ControlId.RB, Kc.SHOULDER_R, "RB", 0.94f, y(0f)),
-        OnScreenControl.Button(ControlId.RT, Kc.TRIGGER_R, "RT", 0.85f, y(0f)),
+        OnScreenControl.Button(ControlId.RT, Kc.TRIGGER_R, "RT", 0.94f, y(0f)),
+        OnScreenControl.Button(ControlId.RB, Kc.SHOULDER_R, "RB", 0.85f, y(0f)),
         OnScreenControl.AnalogStick(
             ControlId.RIGHT_STICK, isLeft = false, xFraction = fx, yFraction = y(0.40f)
         ),
         OnScreenControl.Button(
-            ControlId.RS_CLICK, Kc.THUMB_PRESS_R, "R3", 0.955f, y(0.40f), baseSizeDp = 40f
+            ControlId.RS_CLICK, Kc.THUMB_PRESS_R, "R3", 0.955f, y(0.40f), baseSizeDp = 52f
         ),
         // Face diamond (A bottom, B right, X left, Y top), bottom-right.
         OnScreenControl.Button(ControlId.Y, Kc.Y, "Y", fx, y(0.68f)),
