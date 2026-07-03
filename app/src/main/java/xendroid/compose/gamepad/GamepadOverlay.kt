@@ -17,8 +17,10 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -384,8 +386,32 @@ private fun DrawScope.drawButton(
         else -> null
     }
     when {
-        face != null -> {                                   // round colour face button + letter
-            drawCircle(face.copy(alpha = (if (pressed) 1f else 0.82f) * opacity), radius, center)
+        face != null -> {                                   // glossy convex colour face button + letter
+            val a = (if (pressed) 1f else 0.82f) * opacity
+            // Convex base: lit from above so the disc reads domed.
+            drawCircle(
+                brush = Brush.radialGradient(
+                    colors = listOf(
+                        lerp(face, Color.White, 0.35f).copy(alpha = a),
+                        face.copy(alpha = a),
+                        lerp(face, Color.Black, 0.28f).copy(alpha = a),
+                    ),
+                    center = Offset(center.x, center.y - radius * 0.35f),
+                    radius = radius * 1.35f,
+                ),
+                radius = radius, center = center,
+            )
+            clipPath(Path().apply { addOval(Rect(center, radius)) }) {
+                val gTop = center.y - radius * 0.78f
+                val gBot = center.y - radius * 0.02f
+                drawOval(
+                    brush = Brush.verticalGradient(
+                        colors = listOf(white(0.5f), white(0f)), startY = gTop, endY = gBot,
+                    ),
+                    topLeft = Offset(center.x - radius * 0.6f, gTop),
+                    size = Size(radius * 1.2f, gBot - gTop),
+                )
+            }
             drawCircle(white(0.55f), radius, center, style = Stroke(strokeW))
             if (pressed) drawCircle(white(0.9f), radius + strokeW, center, style = Stroke(strokeW))
             drawLabel(c.label, center, radius, white(0.95f), bold = true, fill = 0.68f)
@@ -418,16 +444,19 @@ private fun DrawScope.drawDpad(
     clipPath(Path().apply { addOval(Rect(center, radius)) }) {                             // cut by the disc
         drawPath(cross, Color.White.copy(alpha = 0.16f * opacity))                        // cross fill
         drawPath(cross, Color.White.copy(alpha = 0.5f * opacity), style = Stroke(strokeW))// cross outline
-        // Pressed-arm highlight: the cross clipped to that arm's diagonal wedge.
+        // Pressed-arm highlight: the cross clipped to that arm's wedge, tapering to the center.
         val b = radius * 2f
         val tl = Offset(center.x - b, center.y - b); val tr = Offset(center.x + b, center.y - b)
         val bl = Offset(center.x - b, center.y + b); val br = Offset(center.x + b, center.y + b)
-        val hi = Color.White.copy(alpha = 0.85f * opacity)
+        val hiBrush = Brush.radialGradient(
+            colors = listOf(Color.Transparent, Color.White.copy(alpha = 0.85f * opacity)),
+            center = center, radius = radius,
+        )
         fun litArm(code: Int, p1: Offset, p2: Offset) {
             if (code !in dirs) return
             clipPath(Path().apply {
                 moveTo(center.x, center.y); lineTo(p1.x, p1.y); lineTo(p2.x, p2.y); close()
-            }) { drawPath(cross, hi) }
+            }) { drawPath(cross, brush = hiBrush) }
         }
         litArm(Kc.DPAD_UP, tl, tr); litArm(Kc.DPAD_DOWN, bl, br)
         litArm(Kc.DPAD_LEFT, tl, bl); litArm(Kc.DPAD_RIGHT, tr, br)
