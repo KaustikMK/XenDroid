@@ -67,6 +67,12 @@ DEFINE_bool(wfe_yield, true,
             "Avoids the syscall and lets the core idle in low power between "
             "polls (~10 kHz).",
             "CPU");
+DEFINE_bool(wfe_precise_sleep, false,
+            "ARM64: busy-wait PreciseSleep's sub-millisecond tail on the "
+            "generic-timer event stream (WFE) for exact deadlines. Off by "
+            "default: the spin holds threads on-CPU (~18% in profiling) for "
+            "frame-pacing precision that plain nanosleep matches in practice.",
+            "CPU");
 #endif
 
 #if XE_PLATFORM_LINUX
@@ -258,7 +264,7 @@ void PreciseSleep(std::chrono::nanoseconds duration) {
   }
 #if defined(__aarch64__) && defined(__linux__)
   static const bool use_wfe =
-      cvars::wfe_yield && (getauxval(AT_HWCAP) & HWCAP_EVTSTRM) != 0;
+      cvars::wfe_precise_sleep && (getauxval(AT_HWCAP) & HWCAP_EVTSTRM) != 0;
   if (use_wfe) {
     uint64_t freq, now;
     __asm__ __volatile__("mrs %0, cntfrq_el0" : "=r"(freq));

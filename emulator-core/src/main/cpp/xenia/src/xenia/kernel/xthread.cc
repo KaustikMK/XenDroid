@@ -50,6 +50,14 @@ DEFINE_int64(main_xthread_stack_size_multiplier_hack, 1,
              "A hack for games with setjmp/longjmp issues.", "Kernel");
 #endif
 
+DEFINE_bool(
+    fiber_reentry_longjmp, true,
+    "POSIX: reenter guest fiber stacks (KeSetCurrentStackPointers) with "
+    "setjmp/longjmp instead of a C++ exception, avoiding a full DWARF unwind "
+    "per fiber switch (~10% CPU in fiber-heavy guest job systems). Plain host "
+    "threads only; the cooperative scheduler keeps the exception path.",
+    "Kernel");
+
 namespace xe {
 namespace kernel {
 
@@ -706,24 +714,36 @@ void XThread::Execute() {
   // stack unwinding which already calls destructors.
   uint32_t next_address;
 #if !XE_PLATFORM_WIN32
-  try {
-    exit_code = static_cast<int>(kernel_state()->processor()->Execute(
-        thread_state_, address, args.data(), args.size()));
-    next_address = 0;
-  } catch (const FiberReentryException& e) {
+  // setjmp is always armed; Reenter() picks longjmp or the exception path.
+  // bionic setjmp saves the signal mask, so longjmp restores SIGRTMIN itself.
+  reentry_armed_ = true;
+  if (setjmp(reentry_jmp_buf_) != 0) {
+    next_address = reentry_address_;
+  } else {
+    try {
+      exit_code = static_cast<int>(kernel_state()->processor()->Execute(
+          thread_state_, address, args.data(), args.size()));
+      next_address = 0;
+    } catch (const FiberReentryException& e) {
 #if XE_PLATFORM_LINUX
-    // Ensure SIGRTMIN (used for thread suspend) is not left blocked.
-    sigset_t set;
-    sigemptyset(&set);
-    sigaddset(&set, SIGRTMIN);
-    pthread_sigmask(SIG_UNBLOCK, &set, nullptr);
+      // Ensure SIGRTMIN (used for thread suspend) is not left blocked.
+      sigset_t set;
+      sigemptyset(&set);
+      sigaddset(&set, SIGRTMIN);
+      pthread_sigmask(SIG_UNBLOCK, &set, nullptr);
 #endif
-    next_address = e.address;
+      next_address = e.address;
+    }
   }
 
   while (next_address != 0) {
+    uint32_t reenter_address = next_address;
+    if (setjmp(reentry_jmp_buf_) != 0) {
+      next_address = reentry_address_;
+      continue;
+    }
     try {
-      kernel_state()->processor()->ExecuteRaw(thread_state_, next_address);
+      kernel_state()->processor()->ExecuteRaw(thread_state_, reenter_address);
       next_address = 0;
       if (want_exit_code) {
         exit_code = static_cast<int>(thread_state_->context()->r[3]);
@@ -762,6 +782,9 @@ void XThread::Execute() {
 
   // If we got here it means the execute completed without an exit being called.
   // Treat the return code as an implicit exit code (if desired).
+  // Disarm first: exit rundown routines run guest code, and a fiber switch
+  // from there must take the exception path, not jump back into these loops.
+  reentry_armed_ = false;
   Exit(!want_exit_code ? 0 : exit_code);
 }
 
@@ -770,9 +793,19 @@ void XThread::Reenter(uint32_t address) {
   // KeSetCurrentStackPointers in games like Forza Horizon 2).
   // Must unwind through all frames between here and Execute().
 #if !XE_PLATFORM_WIN32
+  if (cvars::fiber_reentry_longjmp && !fiber_ && reentry_armed_ &&
+      !reentry_nested_guest_depth_) {
+    // Abandon the frames directly instead of the exception path's per-switch
+    // DWARF unwind (see the cvar rationale). Unarmed (pre-Execute APC delivery,
+    // XHostThread callbacks, exit rundown) and nested-guest (user APC routines)
+    // reentries take the throw below.
+    reentry_address_ = address;
+    std::longjmp(reentry_jmp_buf_, 1);
+  }
   // Throw a C++ exception that unwinds through JIT frames (using DWARF
   // .eh_frame info) and host frames (using compiler-generated DWARF),
-  // calling destructors properly along the way.
+  // calling destructors properly. Also the only correct path on the
+  // cooperative scheduler, whose catch lives on the fiber's own stack.
   throw FiberReentryException{address};
 #else
   reentry_address_ = address;

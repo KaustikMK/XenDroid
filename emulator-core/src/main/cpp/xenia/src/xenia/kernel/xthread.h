@@ -20,9 +20,7 @@
 #include <csignal>
 #include <mutex>
 #endif
-#if XE_PLATFORM_WIN32
 #include <csetjmp>
-#endif
 #include "xenia/base/threading.h"
 #include "xenia/cpu/thread.h"
 #include "xenia/cpu/thread_state.h"
@@ -574,14 +572,26 @@ class XThread : public XObject, public cpu::Thread {
   std::condition_variable suspend_cv_;
 #endif
 
-  // Reentry mechanism for fiber-based stack switching.
-  // On Linux, C++ exceptions are used instead of setjmp/longjmp so that
-  // destructors and RAII guards in host C++ frames are properly unwound.
-  // JIT code has DWARF .eh_frame unwind info registered via __register_frame.
-#if XE_PLATFORM_WIN32
+  // Reentry mechanism for fiber-based stack switching: setjmp/longjmp on
+  // Windows, and on POSIX when fiber_reentry_longjmp is set (else a C++
+  // exception; see the cvar in xthread.cc).
   std::jmp_buf reentry_jmp_buf_;
   uint32_t reentry_address_ = 0;
-#endif
+  // longjmp is legal only when Execute() has armed the buffer and there is no
+  // nested guest call (e.g. a user APC routine running inside host frames that
+  // hold object_refs); excluded cases fall back to the exception throw.
+  bool reentry_armed_ = false;
+  uint32_t reentry_nested_guest_depth_ = 0;
+
+ public:
+  void EnterNestedGuestCall() { ++reentry_nested_guest_depth_; }
+  void LeaveNestedGuestCall() {
+    if (reentry_nested_guest_depth_) {
+      --reentry_nested_guest_depth_;
+    }
+  }
+
+ private:
 
   // When the cooperative scheduler is active, the guest thread runs on this
   // fiber instead of its own host thread (cpu::Thread::thread_).

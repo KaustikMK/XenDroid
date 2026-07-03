@@ -7,11 +7,17 @@
  ******************************************************************************
  */
 
+#include <atomic>
+#include <chrono>
+#include <cstdio>
+
 #include "xenia/cpu/backend/a64/a64_sequences.h"
 
 #include "xenia/base/clock.h"
 #include "xenia/base/cvar.h"
+#include "xenia/base/logging.h"
 #include "xenia/base/memory.h"
+#include "xenia/base/threading.h"
 #include "xenia/cpu/backend/a64/a64_backend.h"
 #include "xenia/cpu/backend/a64/a64_emitter.h"
 #include "xenia/cpu/backend/a64/a64_op.h"
@@ -25,6 +31,33 @@
 
 DECLARE_bool(emit_mmio_aware_stores_for_recorded_exception_addresses);
 DECLARE_bool(emit_inline_mmio_checks);
+
+DEFINE_bool(a64_native_reserved_ops, true,
+            "Compile guest lwarx/stwcx. to inline native atomics (LSE CASAL) "
+            "instead of the software-reservation thunk: lwarx captures the word "
+            "and arms a per-thread flag; stwcx. validates with one CAS. The "
+            "single atomic has no LDXR->STXR window, avoiding the monitor-loss "
+            "livelock of a spanning ldaxr/stlxr (which hung Forza Horizon). "
+            "Requires FEAT_LSE.",
+            "CPU");
+
+DECLARE_bool(guest_scheduler);
+
+DEFINE_bool(a64_park_spin_backoff, true,
+            "For collapsed guest spin-backoff loops, spin cheaply for the first "
+            "few iterations then park the thread with a short real sleep "
+            "(adaptive) instead of the fixed isb sled - reclaims CPU on long "
+            "guest spin-waits while short waits (resolved during the cheap "
+            "spin) stay latency-unaffected. Falls back to a cheap spin under "
+            "the cooperative guest scheduler, where host-blocking a fiber could "
+            "stall its producer.",
+            "CPU");
+
+DEFINE_bool(
+    log_spin_wait_histogram, false,
+    "Bucket the wall-clock length of every collapsed guest spin-wait episode "
+    "and dump the distribution once per second. Requires a64_park_spin_backoff.",
+    "CPU");
 
 namespace xe {
 namespace cpu {
@@ -55,9 +88,131 @@ static bool IsPossibleMMIOInstruction(A64Emitter& e, const hir::Instr* i) {
 // ============================================================================
 struct DELAY_EXECUTION
     : Sequence<DELAY_EXECUTION, I<OPCODE_DELAY_EXECUTION, VoidOp>> {
-  static void Emit(A64Emitter& e, const EmitArgType& i) { e.yield(); }
+  static void Emit(A64Emitter& e, const EmitArgType& i) {
+    // Coalesce consecutive yields (pure SMT hints) to shrink hot guest spin loops.
+    if (e.getSize() >= sizeof(uint32_t) &&
+        *reinterpret_cast<const uint32_t*>(e.getCurr() - sizeof(uint32_t)) ==
+            0xD503203Fu) {
+      return;
+    }
+    e.yield();
+  }
 };
 EMITTER_OPCODE_TABLE(OPCODE_DELAY_EXECUTION, DELAY_EXECUTION);
+
+// Spin-wait-length histogram (log_spin_wait_histogram): eight wall-clock
+// duration buckets, dumping both the ~1s interval delta and cumulative totals.
+namespace {
+constexpr size_t kSpinHistBuckets = 8;
+// Upper edges (ns) for buckets 0..6; bucket 7 (>10ms) is everything larger.
+constexpr int64_t kSpinHistEdgesNs[kSpinHistBuckets - 1] = {
+    1000, 3000, 10000, 30000, 100000, 1000000, 10000000};
+const char* const kSpinHistLabels[kSpinHistBuckets] = {
+    "<1us",     "1-3us", "3-10us", "10-30us",
+    "30-100us", "100us-1ms",  "1-10ms",  ">10ms"};
+std::atomic<uint64_t> g_spin_hist_count[kSpinHistBuckets];
+std::atomic<uint64_t> g_spin_hist_time_ns[kSpinHistBuckets];
+// Snapshot at the previous dump; written only by the dump-winning thread.
+uint64_t g_spin_hist_prev_count[kSpinHistBuckets];
+uint64_t g_spin_hist_prev_time_ns[kSpinHistBuckets];
+std::atomic<int64_t> g_spin_hist_last_dump_ns{0};
+
+void FormatSpinHistLine(const char* tag, const uint64_t* cc, const uint64_t* tt,
+                        uint64_t ctot, uint64_t ttot) {
+  const double td = ttot ? static_cast<double>(ttot) : 1.0;
+  char line[512];
+  int off = 0;
+  for (size_t i = 0; i < kSpinHistBuckets; ++i) {
+    off += std::snprintf(line + off, sizeof(line) - off, "%s:%llu(%.0f%%t) ",
+                         kSpinHistLabels[i],
+                         static_cast<unsigned long long>(cc[i]),
+                         100.0 * static_cast<double>(tt[i]) / td);
+    if (off < 0 || off >= static_cast<int>(sizeof(line))) {
+      break;
+    }
+  }
+  XELOGI("SpinWaitHist[{}]: episodes={} spin={:.1f}ms | {}", tag, ctot,
+         static_cast<double>(ttot) / 1.0e6, line);
+}
+
+void RecordSpinEpisode(int64_t dur_ns, int64_t now_ns) {
+  if (dur_ns < 0) {
+    dur_ns = 0;
+  }
+  size_t b = kSpinHistBuckets - 1;
+  for (size_t i = 0; i < kSpinHistBuckets - 1; ++i) {
+    if (dur_ns < kSpinHistEdgesNs[i]) {
+      b = i;
+      break;
+    }
+  }
+  g_spin_hist_count[b].fetch_add(1, std::memory_order_relaxed);
+  g_spin_hist_time_ns[b].fetch_add(static_cast<uint64_t>(dur_ns),
+                                   std::memory_order_relaxed);
+
+  int64_t last = g_spin_hist_last_dump_ns.load(std::memory_order_relaxed);
+  if (now_ns - last <= 1000000000LL) {
+    return;  // <1s since last dump
+  }
+  if (!g_spin_hist_last_dump_ns.compare_exchange_strong(
+          last, now_ns, std::memory_order_relaxed)) {
+    return;  // another thread is dumping this second
+  }
+  uint64_t c[kSpinHistBuckets], t[kSpinHistBuckets], ctot = 0, ttot = 0;
+  uint64_t ic[kSpinHistBuckets], it[kSpinHistBuckets], ictot = 0, ittot = 0;
+  for (size_t i = 0; i < kSpinHistBuckets; ++i) {
+    c[i] = g_spin_hist_count[i].load(std::memory_order_relaxed);
+    t[i] = g_spin_hist_time_ns[i].load(std::memory_order_relaxed);
+    ic[i] = c[i] - g_spin_hist_prev_count[i];
+    it[i] = t[i] - g_spin_hist_prev_time_ns[i];
+    g_spin_hist_prev_count[i] = c[i];
+    g_spin_hist_prev_time_ns[i] = t[i];
+    ctot += c[i];
+    ttot += t[i];
+    ictot += ic[i];
+    ittot += it[i];
+  }
+  FormatSpinHistLine("interval~1s", ic, it, ictot, ittot);
+  FormatSpinHistLine("cumulative", c, t, ctot, ttot);
+}
+}  // namespace
+
+// Adaptive park helper for OPCODE_SPIN_BACKOFF (a64_park_spin_backoff), called
+// once per outer poll iteration of a collapsed guest spin-wait. A young wait
+// spins cheap (a few isb); once it proves long it sleeps briefly so the core
+// stops burning cycles. A gap since the previous call starts a fresh episode so
+// an unrelated later wait spins cheap again. Never host-blocks under the
+// cooperative scheduler - blocking a dispatch thread there can stall the
+// sibling fiber that releases the polled word (raw-jit-spin-path.md Blocker 2).
+// The sleep timeout guarantees forward progress, so no wake plumbing is needed.
+static void SpinBackoffParkThunk(void* /*ppc_context*/) {
+  static constexpr uint32_t kSpinIters = 24;
+  static constexpr int64_t kParkNs = 30000;  // 30us bounded park
+  static constexpr int64_t kGapNs = 200000;  // >200us idle -> new episode
+  thread_local uint32_t consec = 0;
+  thread_local int64_t last_ns = 0;
+  thread_local int64_t ep_start_ns = 0;
+  const int64_t now_ns =
+      std::chrono::duration_cast<std::chrono::nanoseconds>(
+          std::chrono::steady_clock::now().time_since_epoch())
+          .count();
+  if (now_ns - last_ns > kGapNs) {
+    // A gap since the last poll ends the previous episode; record its duration.
+    if (cvars::log_spin_wait_histogram && last_ns != 0) {
+      RecordSpinEpisode(last_ns - ep_start_ns, now_ns);
+    }
+    consec = 0;
+    ep_start_ns = now_ns;
+  }
+  last_ns = now_ns;
+  if (cvars::guest_scheduler || ++consec < kSpinIters) {
+    for (uint32_t n = 0; n < 8; ++n) {
+      __asm__ __volatile__("isb sy" ::: "memory");
+    }
+    return;
+  }
+  xe::threading::NanoSleep(kParkNs);
+}
 
 // ============================================================================
 // OPCODE_SPIN_BACKOFF
@@ -76,6 +231,13 @@ struct SPIN_BACKOFF
   static void Emit(A64Emitter& e, const EmitArgType& i) {
     const uint32_t count = static_cast<uint32_t>(i.src1.value);
     if (!count) {
+      return;
+    }
+    if (cvars::a64_park_spin_backoff) {
+      // Adaptive spin-then-park (see SpinBackoffParkThunk): cheap for short
+      // waits, a real short sleep for long ones. CallNativeSafe preserves guest
+      // context across the (possibly sleeping) helper.
+      e.CallNativeSafe(reinterpret_cast<void*>(&SpinBackoffParkThunk));
       return;
     }
     Xbyak_aarch64::Label loop;
@@ -1183,14 +1345,39 @@ static const Xbyak_aarch64::XReg& LoadBackendCtxPtr(A64Emitter& e) {
   return e.GetBackendCtxReg();
 }
 
-// RESERVED_LOAD/STORE call out to host helpers in a64_backend.cc. The helpers
-// share a global per-cache-line bitmap so a stwcx. on one thread invalidates
-// concurrent lwarx reservations on others (PPC semantics). Doing this purely
-// inline with ldaxr/stlxr would only protect against contention on the same
-// host cache line; ABA on the cached value would silently succeed.
+// Two paths, selected by a64_native_reserved_ops:
+//  - Software (cvar off): RESERVED_LOAD/STORE call host helpers that keep a
+//    global per-block bitmap, so a stwcx. on one thread invalidates concurrent
+//    lwarx reservations on others.
+//  - Native (cvar on, default): inline, no thunk. lwarx plain-loads the word,
+//    stashes it in cached_reserve_value_, and arms a per-thread reserve flag;
+//    stwcx. validates with one LSE CASAL. An EARLIER native design armed the
+//    hardware exclusive monitor at lwarx and consumed it with a bare stlxr at
+//    stwcx., but that monitor only survives a window with no intervening memory
+//    access - a register spill or context/guest load-store between the (far
+//    apart) guest lwarx and stwcx. clears it every iteration, so stlxr never
+//    succeeds and the guest retry loop livelocks (hung Forza Horizon). The CAS
+//    is a single atomic with no such window. The guest byte-swap is a separate
+//    HIR op on both paths, so the captured/compared value is the raw word.
 struct RESERVED_LOAD_I32
     : Sequence<RESERVED_LOAD_I32, I<OPCODE_RESERVED_LOAD, I32Op, I64Op>> {
   static void Emit(A64Emitter& e, const EmitArgType& i) {
+    if (cvars::a64_native_reserved_ops && !IsPossibleMMIOInstruction(e, i.instr)) {
+      // Plain load + capture (value, reserve flag). The matching stwcx.
+      // validates with one CASAL; no hardware monitor spans the window.
+      auto addr = ComputeMemoryAddress(e, i.src1);
+      e.add(e.x16, e.GetMembaseReg(), addr);
+      e.ldr(i.dest, ptr(e.x16));
+      auto bctx = LoadBackendCtxPtr(e);
+      e.str(i.dest, ptr(bctx, static_cast<uint32_t>(offsetof(
+                                A64BackendContext, cached_reserve_value_))));
+      const uint32_t kFlagsOff =
+          static_cast<uint32_t>(offsetof(A64BackendContext, flags));
+      e.ldr(e.w0, ptr(bctx, kFlagsOff));
+      e.orr(e.w0, e.w0, uint64_t(1) << kA64BackendHasReserveBit);
+      e.str(e.w0, ptr(bctx, kFlagsOff));
+      return;
+    }
     if (i.src1.is_constant) {
       e.mov(e.w1, static_cast<uint32_t>(i.src1.constant()));
     } else {
@@ -1208,6 +1395,22 @@ struct RESERVED_LOAD_I32
 struct RESERVED_LOAD_I64
     : Sequence<RESERVED_LOAD_I64, I<OPCODE_RESERVED_LOAD, I64Op, I64Op>> {
   static void Emit(A64Emitter& e, const EmitArgType& i) {
+    if (cvars::a64_native_reserved_ops && !IsPossibleMMIOInstruction(e, i.instr)) {
+      // Plain load + capture (value, reserve flag). The matching stwcx.
+      // validates with one CASAL; no hardware monitor spans the window.
+      auto addr = ComputeMemoryAddress(e, i.src1);
+      e.add(e.x16, e.GetMembaseReg(), addr);
+      e.ldr(i.dest, ptr(e.x16));
+      auto bctx = LoadBackendCtxPtr(e);
+      e.str(i.dest, ptr(bctx, static_cast<uint32_t>(offsetof(
+                                A64BackendContext, cached_reserve_value_))));
+      const uint32_t kFlagsOff =
+          static_cast<uint32_t>(offsetof(A64BackendContext, flags));
+      e.ldr(e.w0, ptr(bctx, kFlagsOff));
+      e.orr(e.w0, e.w0, uint64_t(1) << kA64BackendHasReserveBit);
+      e.str(e.w0, ptr(bctx, kFlagsOff));
+      return;
+    }
     if (i.src1.is_constant) {
       e.mov(e.w1, static_cast<uint32_t>(i.src1.constant()));
     } else {
@@ -1224,10 +1427,56 @@ struct RESERVED_LOAD_I64
 EMITTER_OPCODE_TABLE(OPCODE_RESERVED_LOAD, RESERVED_LOAD_I32,
                      RESERVED_LOAD_I64);
 
+// Native SC: fail if no matching lwarx armed the per-thread flag (and always
+// clear it - PPC stwcx. unconditionally releases). Otherwise one LSE CASAL
+// against the value captured at lwarx: if memory still holds it, swap in the
+// new (already HIR-byte-swapped) value and report success; otherwise a store
+// landed since lwarx, so fail. CR0.eq (i.dest) = compare matched. The CAS is a
+// single atomic instruction, so unlike a spanning ldaxr/stlxr there is no
+// window for a spill/context access to clear and no possibility of livelock.
+// Value-CAS carries the same (rare, benign) ABA characteristic as the software
+// path; it does not need that path's contended global bitmap.
 struct RESERVED_STORE_I32
     : Sequence<RESERVED_STORE_I32,
                I<OPCODE_RESERVED_STORE, I8Op, I64Op, I32Op>> {
   static void Emit(A64Emitter& e, const EmitArgType& i) {
+    if (cvars::a64_native_reserved_ops && !IsPossibleMMIOInstruction(e, i.instr)) {
+      // Stage the value before clobbering w0 via ComputeMemoryAddress.
+      if (i.src2.is_constant) {
+        e.mov(e.w3, static_cast<uint32_t>(i.src2.constant()));
+      } else {
+        e.mov(e.w3, WReg(i.src2.reg().getIdx()));
+      }
+      auto addr = ComputeMemoryAddress(e, i.src1);
+      e.add(e.x16, e.GetMembaseReg(), addr);
+      auto bctx = LoadBackendCtxPtr(e);
+      // Consume the per-thread reservation (stwcx. always clears it); no
+      // matching lwarx -> fail, exactly like PPC.
+      const uint32_t kFlagsOff =
+          static_cast<uint32_t>(offsetof(A64BackendContext, flags));
+      e.ldr(e.w0, ptr(bctx, kFlagsOff));
+      e.and_(e.w1, e.w0, uint64_t(1) << kA64BackendHasReserveBit);
+      e.eor(e.w0, e.w0, e.w1);  // clear reserve flag (w1 = mask if set, else 0)
+      e.str(e.w0, ptr(bctx, kFlagsOff));
+      auto& sc_fail = e.NewCachedLabel();
+      auto& sc_done = e.NewCachedLabel();
+      e.cbz(e.w1, sc_fail);
+      // Single-instruction CAS vs the value captured at lwarx: succeeds iff
+      // memory is unchanged. Atomic, so there is no LDXR->STXR window to lose
+      // and it cannot livelock. CR0.eq = compare matched.
+      e.ldr(e.w1, ptr(bctx, static_cast<uint32_t>(offsetof(
+                                A64BackendContext, cached_reserve_value_))));
+      e.mov(e.w2, e.w1);
+      e.casal(e.w1, e.w3, ptr(e.x16));
+      e.cmp(e.w1, e.w2);
+      e.bne(sc_fail);
+      e.mov(i.dest, 1);
+      e.b(sc_done);
+      e.L(sc_fail);
+      e.mov(i.dest, 0);
+      e.L(sc_done);
+      return;
+    }
     // Compute host address into x2 first; ComputeMemoryAddress writes w0
     // and CallNativeSafe will clobber x0-x18 anyway, so x2 must be set up
     // before populating other arg regs (and before the call).
@@ -1251,6 +1500,41 @@ struct RESERVED_STORE_I64
     : Sequence<RESERVED_STORE_I64,
                I<OPCODE_RESERVED_STORE, I8Op, I64Op, I64Op>> {
   static void Emit(A64Emitter& e, const EmitArgType& i) {
+    if (cvars::a64_native_reserved_ops && !IsPossibleMMIOInstruction(e, i.instr)) {
+      if (i.src2.is_constant) {
+        e.mov(e.x3, static_cast<uint64_t>(i.src2.constant()));
+      } else {
+        e.mov(e.x3, XReg(i.src2.reg().getIdx()));
+      }
+      auto addr = ComputeMemoryAddress(e, i.src1);
+      e.add(e.x16, e.GetMembaseReg(), addr);
+      auto bctx = LoadBackendCtxPtr(e);
+      // Consume the per-thread reservation (stwcx. always clears it); no
+      // matching lwarx -> fail, exactly like PPC.
+      const uint32_t kFlagsOff =
+          static_cast<uint32_t>(offsetof(A64BackendContext, flags));
+      e.ldr(e.w0, ptr(bctx, kFlagsOff));
+      e.and_(e.w1, e.w0, uint64_t(1) << kA64BackendHasReserveBit);
+      e.eor(e.w0, e.w0, e.w1);  // clear reserve flag (w1 = mask if set, else 0)
+      e.str(e.w0, ptr(bctx, kFlagsOff));
+      auto& sc_fail = e.NewCachedLabel();
+      auto& sc_done = e.NewCachedLabel();
+      e.cbz(e.w1, sc_fail);
+      // Single-instruction CAS vs the value captured at lwarx (see I32): one
+      // atomic, no LDXR->STXR window, cannot livelock. CR0.eq = compare matched.
+      e.ldr(e.x1, ptr(bctx, static_cast<uint32_t>(offsetof(
+                                A64BackendContext, cached_reserve_value_))));
+      e.mov(e.x2, e.x1);
+      e.casal(e.x1, e.x3, ptr(e.x16));
+      e.cmp(e.x1, e.x2);
+      e.bne(sc_fail);
+      e.mov(i.dest, 1);
+      e.b(sc_done);
+      e.L(sc_fail);
+      e.mov(i.dest, 0);
+      e.L(sc_done);
+      return;
+    }
     auto addr = ComputeMemoryAddress(e, i.src1);
     e.add(e.x2, e.GetMembaseReg(), addr);
     if (i.src2.is_constant) {
