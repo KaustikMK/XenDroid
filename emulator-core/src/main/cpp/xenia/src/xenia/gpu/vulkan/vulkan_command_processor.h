@@ -1191,6 +1191,10 @@ class VulkanCommandProcessor final : public CommandProcessor {
     void* mapped_data[2] = {nullptr, nullptr};  // Persistent mappings
     uint32_t current_index = 0;
     uint64_t last_used_frame = 0;
+    // uma mode only: the submission index that last resolved this destination.
+    // The direct read waits for it to retire before reading shared memory so it
+    // never races an in-flight GPU write. 0 means never resolved.
+    uint64_t last_write_submission = 0;
   };
 
   // A resolve readback copy deferred to the transfer queue (DMA engine),

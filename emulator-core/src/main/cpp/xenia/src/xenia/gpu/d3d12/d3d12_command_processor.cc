@@ -3578,8 +3578,10 @@ bool D3D12CommandProcessor::IssueCopy_ReadbackResolvePath() {
 
   // Handle sync and copy to guest memory
   ReadbackResolveMode readback_mode = GetReadbackResolveMode();
+  // "uma" (direct mapped-buffer readback) is Vulkan-only; behave like "fast".
   bool use_delayed_sync = (readback_mode == ReadbackResolveMode::kFast ||
-                           readback_mode == ReadbackResolveMode::kSome);
+                           readback_mode == ReadbackResolveMode::kSome ||
+                           readback_mode == ReadbackResolveMode::kUma);
   uint32_t read_index = write_index;
 
   if (use_delayed_sync) {

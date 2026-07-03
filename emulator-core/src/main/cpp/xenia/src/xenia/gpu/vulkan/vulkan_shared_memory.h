@@ -55,6 +55,19 @@ class VulkanSharedMemory : public SharedMemory {
 
   VkBuffer buffer() const { return buffer_; }
 
+  // Whether the shared-memory buffer is persistently host-mapped so guest
+  // physical memory can be read directly by the CPU (readback_resolve=uma).
+  // True only for a dense, host-visible allocation.
+  bool IsHostMapped() const { return host_mapped_data_ != nullptr; }
+  // Copies `length` bytes of guest physical memory at `guest_address` out of
+  // the mapped shared-memory buffer into `dest`. Invalidates the CPU cache
+  // first when the memory type is not host-coherent. The caller is responsible
+  // for GPU/CPU ordering; this is the approximate (fast-class) readback path.
+  // Returns false if the buffer is not host-mapped or the range is out of
+  // bounds.
+  bool ReadHostMapped(uint32_t guest_address, uint32_t length,
+                      void* dest) const;
+
   // Returns true if any downloads were submitted to the command processor.
   bool InitializeTraceSubmitDownloads();
   void InitializeTraceCompleteDownloads();
@@ -78,6 +91,12 @@ class VulkanSharedMemory : public SharedMemory {
   uint32_t buffer_memory_type_;
   // Single for non-sparse, every allocation so far for sparse.
   std::vector<VkDeviceMemory> buffer_memory_;
+
+  // Persistent host mapping of the dense buffer for direct CPU readback
+  // (readback_resolve=uma). Null unless the buffer is a single host-visible
+  // allocation.
+  uint8_t* host_mapped_data_ = nullptr;
+  bool host_mapped_coherent_ = false;
 
   Usage last_usage_;
   std::pair<uint32_t, uint32_t> last_written_range_;

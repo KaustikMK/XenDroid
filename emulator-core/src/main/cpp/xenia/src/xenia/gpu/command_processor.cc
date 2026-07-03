@@ -84,9 +84,12 @@ DEFINE_string(
     "GPU");
 
 DEFINE_string(
-    readback_resolve, "fast",
+    readback_resolve, "uma",
     "Controls CPU readback of render-to-texture resolve results.\n"
-    " fast: Read from previous frame, copy every frame (default)\n"
+    " uma: Read the mapped shared-memory buffer directly on unified-memory\n"
+    "      GPUs (Adreno etc.) - no GPU staging copy; falls back to fast when\n"
+    "      the buffer is not host-visible (default)\n"
+    " fast: Read from previous frame, copy every frame\n"
     " some: Read from previous frame, skip copy on cache hit\n"
     " full: Wait for GPU to finish (accurate but slow, GPU-CPU sync stall)\n"
     " none: Disable readback completely (some games render better without it)",
@@ -165,11 +168,16 @@ ReadbackResolveMode ParseReadbackResolveMode(const std::string& mode) {
     return ReadbackResolveMode::kFull;
   } else if (mode == "some") {
     return ReadbackResolveMode::kSome;
+  } else if (mode == "uma") {
+    return ReadbackResolveMode::kUma;
+  } else if (mode == "fast") {
+    return ReadbackResolveMode::kFast;
   } else if (mode == "none") {
     return ReadbackResolveMode::kDisabled;
   } else {
-    // Default to "fast" for any unrecognized value
-    return ReadbackResolveMode::kFast;
+    // Default to "uma" for any unrecognized value (falls back to fast when the
+    // shared-memory buffer is not host-mapped).
+    return ReadbackResolveMode::kUma;
   }
 }
 
@@ -430,6 +438,9 @@ void CommandProcessor::SetReadbackResolveMode(ReadbackResolveMode mode) {
       break;
     case ReadbackResolveMode::kFull:
       mode_str = "full";
+      break;
+    case ReadbackResolveMode::kUma:
+      mode_str = "uma";
       break;
     default:
       break;

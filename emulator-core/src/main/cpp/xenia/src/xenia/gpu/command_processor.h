@@ -47,7 +47,8 @@ enum class ReadbackResolveMode {
   kDisabled,  // No readback (none)
   kSome,      // Delayed sync, skip copy on cache hit (some)
   kFast,      // Delayed sync, copy every frame (fast)
-  kFull       // Immediate sync with GPU stall (full)
+  kFull,      // Immediate sync with GPU stall (full)
+  kUma        // Read the mapped shared-memory buffer directly, no GPU copy (uma)
 };
 
 // Occlusion queries - ZPD report mode.
@@ -611,7 +612,7 @@ class CommandProcessor {
 
   // Cached readback resolve mode (parsed once from string cvar)
   ReadbackResolveMode cached_readback_resolve_mode_ =
-      ReadbackResolveMode::kFast;
+      ReadbackResolveMode::kUma;
 
   // Cached ZPD occlusion query mode (defaults to fake)
   ZPDMode cached_zpd_mode_ = ZPDMode::kFake;
