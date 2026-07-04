@@ -18,7 +18,7 @@ The Gradle build produces two modules:
 |-------------|--------------------|-------|
 | JDK         | 21                 | `JAVA_HOME` must point at a JDK 21. Android Studio's bundled JBR (recent Studio = JBR 21) qualifies. |
 | Android SDK | platform 35        | `sdk.dir` in `local.properties`. |
-| Android NDK | 27.2.12479018      | Pinned in `emulator-core/build.gradle` (`ndkVersion`). |
+| Android NDK | 29.0.14206865      | Pinned in `emulator-core/build.gradle` (`ndkVersion`). |
 | CMake       | 3.30.3             | Pinned in `emulator-core/build.gradle` (`cmake { version '3.30.3' }`) and selected via `cmake.dir`. Uses Ninja. |
 | Gradle      | 8.11.1             | Provided by the wrapper (`./gradlew` / `gradlew.bat`); the distribution is SHA-256 pinned in `gradle/wrapper/gradle-wrapper.properties`. |
 | Python      | 3.x                | Runs on the **build host**; drives the shader compile step. |
@@ -34,7 +34,7 @@ sudo apt install openjdk-21-jdk python3 glslang-tools spirv-tools
 export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64   # adjust to your distro
 
 # Android SDK pieces (via Android Studio, or cmdline-tools' sdkmanager):
-sdkmanager "platform-tools" "platforms;android-35" "ndk;27.2.12479018" "cmake;3.30.3"
+sdkmanager "platform-tools" "platforms;android-35" "ndk;29.0.14206865" "cmake;3.30.3"
 ```
 
 ### Windows host

@@ -8,13 +8,21 @@
 ## History
 XenDroid was initially forked form xa360e, which was based off [Xenia Canary](https://github.com/xenia-canary/xenia-canary).
 However, a complete rebase was made on [Xenia Edge](https://github.com/has207/xenia-edge) with a new Kotlin backend.
-
 We are looking foward to keep the project updated alongside the Edge fork,
 and keep the code compatible with Xenia licenses.
 
 ## Be aware of scams
 XenDroid is a free project. If you paid for this, then you got scammed.
-The apk is available under the releases section, along with the distributed source code.
+The apk is available under the [releases](https://github.com/rfandango/XenDroid/releases/latest) section, along with the distributed source code.
+
+## Issue Policy
+To avoid unnecessary toxicity, issues have been limited to contributors only. If you want to report issues,
+you can use the `xenia-android` channel on Xenia's discord and reach us out. Only detailed reports will be
+taken in consideration. Generic and repeated complaints will be ignored. 
+
+In order to give detailed reports, you must compare the android port with `Xenia Edge` using `Vulkan` as a backend. Make sure that the
+issues can be reproduced only on Android. If the issues are on Edge too, then we wait for the developers to fix
+them, and align the port as a consequence.
 
 
 ## Building
@@ -35,6 +43,8 @@ Please check the LICENSE file under the appropriate file header and directory fo
 - [Adreno 7xx](https://github.com/StevenMXZ/Adreno-Tools-Drivers/releases/tag/v26.2.0-R6) Turnip drivers
 
 You can check your device specs with [CPU X](https://play.google.com/store/apps/details?id=com.abs.cpu_z_advance&hl=it) to get the matching driver.
+
+To apply the drivers go to **Settings** > **Vulkan** > **Custom Vulkan Driver**, then select the zip file.
 
 ## About Donations
 I would like to take this opportunity to help a friend out. If you are willing to make donations, please consider donating to
