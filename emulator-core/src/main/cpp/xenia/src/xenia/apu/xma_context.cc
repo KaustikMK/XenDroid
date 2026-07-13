@@ -116,9 +116,12 @@ void XmaContext::ConvertFrame(const uint8_t** samples, bool is_two_channel,
     }
   }
 #else
+  // Match the AMD64 path: a frame flagged two-channel whose second channel
+  // buffer is absent is emitted as mono rather than dereferencing null.
+  const bool interleave_two = is_two_channel && samples[1] != nullptr;
   uint32_t o = 0;
   for (uint32_t i = 0; i < kSamplesPerFrame; i++) {
-    for (uint32_t j = 0; j <= uint32_t(is_two_channel); j++) {
+    for (uint32_t j = 0; j <= uint32_t(interleave_two); j++) {
       // Select the appropriate array based on the current channel.
       auto in = reinterpret_cast<const float*>(samples[j]);
 
