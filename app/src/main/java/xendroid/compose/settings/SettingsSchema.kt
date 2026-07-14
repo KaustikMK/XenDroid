@@ -16,6 +16,7 @@ object SettingsSchema {
             b("Vulkan", "vulkan_sparse_shared_memory", "Sparse shared memory", true),
             b("Vulkan", "vulkan_log_debug_messages", "Log debug messages", false),
             b("Vulkan", "vulkan_validation", "Validation layers", false),
+            b("Vulkan", "vulkan_renderdoc_capture", "RenderDoc capture layer", false),
             b("Vulkan", "vulkan_allow_present_mode_immediate", "Allow present mode: immediate", true),
             b("Vulkan", "vulkan_allow_present_mode_mailbox", "Allow present mode: mailbox", true),
             b("Vulkan", "vulkan_allow_present_mode_fifo_relaxed", "Allow present mode: FIFO relaxed", true),

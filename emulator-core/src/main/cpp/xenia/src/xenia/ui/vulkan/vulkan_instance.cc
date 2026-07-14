@@ -9,7 +9,9 @@
 
 #include "xenia/ui/vulkan/vulkan_instance.h"
 
+#include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <sstream>
 #include <string>
 #include <unordered_map>
@@ -336,13 +338,32 @@ std::unique_ptr<VulkanInstance> VulkanInstance::Create(
   // vector.
   std::unordered_map<std::string, bool*> requested_layers;
   bool layer_renderdoc_capture = false;
+  // Only load the capture layer in the emulator render process (":emu"). The
+  // main UI process also creates xenia Vulkan instances (presenter / library
+  // metadata probes) that init before the game launches; both present, so
+  // with_surface can't tell them apart. If a main-process instance loads the
+  // layer it grabs RenderDoc's default target-control port (38920) first, so
+  // qrenderdoc's "Attach to Running Instance" lands on the wrong process (shows
+  // "API: None") while the real renderer is bumped to 38921. Gate on the
+  // process name so the port stays with the process that renders the game.
   if (cvars::vulkan_renderdoc_capture) {
-    // The layer library (libVkLayer_GLES_RenderDoc.so) must be present in the
-    // APK's native library directory - the Android loader only searches there
-    // for app-bundled layers. Once active, attach from qrenderdoc via
-    // File > Attach to Running Instance.
-    requested_layers.emplace("VK_LAYER_RENDERDOC_Capture",
-                             &layer_renderdoc_capture);
+    bool is_render_process = false;
+    if (FILE* cmdline = std::fopen("/proc/self/cmdline", "rb")) {
+      char name[256] = {0};
+      std::fread(name, 1, sizeof(name) - 1, cmdline);
+      std::fclose(cmdline);
+      // cmdline is NUL-separated argv; argv[0] is "<package>:emu" for the
+      // emulator process, "<package>" for the main UI process.
+      is_render_process = std::strstr(name, ":emu") != nullptr;
+    }
+    if (is_render_process) {
+      // The layer library (libVkLayer_GLES_RenderDoc.so) must be present in the
+      // APK's native library directory - the Android loader only searches there
+      // for app-bundled layers. Once active, attach from qrenderdoc via
+      // File > Attach to Running Instance.
+      requested_layers.emplace("VK_LAYER_RENDERDOC_Capture",
+                               &layer_renderdoc_capture);
+    }
   }
   bool layer_khronos_validation = false;
   // VK_EXT_validation_features (#248) is provided by the validation layer;
