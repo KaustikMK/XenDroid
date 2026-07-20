@@ -1,6 +1,7 @@
 package xendroid.compose.ui.settings
 
 import android.app.Activity
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
@@ -16,16 +17,22 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import xendroid.compose.Utils
+import xendroid.compose.core.SessionLogs
 import xendroid.compose.settings.Setting
 import xendroid.compose.settings.SettingsHost
 
 @Composable
-fun SettingRow(host: SettingsHost, s: Setting, modified: Boolean) = when (s) {
+fun SettingRow(host: SettingsHost, s: Setting, modified: Boolean, raw: String? = null) = when (s) {
     is Setting.Bool       -> BoolRow(host, s, modified)
     is Setting.IntRange   -> IntRow(host, s, modified)
     is Setting.ListChoice -> ListRow(host, s, modified)
-    is Setting.Action     -> DriverActionRow(host, s, modified)
+    is Setting.Action     ->
+        if (s.name == "dump_session_logs") ExportLogsRow(s)
+        else DriverActionRow(host, s, modified, raw)
 }
 
 @Composable
@@ -33,12 +40,22 @@ private fun titleColor(modified: Boolean) =
     if (modified) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.onSurface
 
 @Composable
-private fun RowTitle(text: String, modified: Boolean, sub: String? = null) {
+private fun RowTitle(text: String, modified: Boolean, sub: String? = null, desc: String = "") {
     Column {
         Text(text, color = titleColor(modified), style = MaterialTheme.typography.bodyLarge)
-        if (sub != null) Text(sub, style = MaterialTheme.typography.bodySmall,
+        if (desc.isNotEmpty()) Text(desc, style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant)
+        if (sub != null) Text(sub, style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.primary)
     }
+}
+
+/** Current-value summary shown at the trailing edge of a value row. */
+@Composable
+private fun RowValue(value: String) {
+    Text(value, style = MaterialTheme.typography.bodyMedium,
+        color = MaterialTheme.colorScheme.primary,
+        modifier = Modifier.padding(start = 12.dp))
 }
 
 @Composable
@@ -50,7 +67,7 @@ private fun BoolRow(host: SettingsHost, s: Setting.Bool, modified: Boolean) {
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Box(Modifier.weight(1f)) { RowTitle(s.title, modified) }
+        Box(Modifier.weight(1f)) { RowTitle(s.title, modified, desc = s.desc) }
         Switch(checked = local, onCheckedChange = { local = it; host.onBoolChanged(s, it) })
     }
 }
@@ -63,7 +80,8 @@ private fun IntRow(host: SettingsHost, s: Setting.IntRange, modified: Boolean) {
     val current = host.currentInt(s)
     Row(Modifier.fillMaxWidth().clickable { showDialog = true }
         .padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-        Box(Modifier.weight(1f)) { RowTitle(s.title, modified, sub = current.toString()) }
+        Box(Modifier.weight(1f)) { RowTitle(s.title, modified, desc = s.desc) }
+        RowValue(current.toString())
     }
     if (showDialog) {
         var slider by remember { mutableFloatStateOf(current.coerceIn(s.min, s.max).toFloat()) }
@@ -94,7 +112,8 @@ private fun ListRow(host: SettingsHost, s: Setting.ListChoice, modified: Boolean
         ?: if (currentValue.isEmpty()) "(default)" else currentValue
     Row(Modifier.fillMaxWidth().clickable { showDialog = true }
         .padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-        Box(Modifier.weight(1f)) { RowTitle(s.title, modified, sub = currentLabel) }
+        Box(Modifier.weight(1f)) { RowTitle(s.title, modified, desc = s.desc) }
+        RowValue(currentLabel)
     }
     if (showDialog) {
         val listState = rememberLazyListState()
@@ -124,10 +143,39 @@ private fun ListRow(host: SettingsHost, s: Setting.ListChoice, modified: Boolean
 }
 
 @Composable
-private fun DriverActionRow(host: SettingsHost, s: Setting.Action, modified: Boolean) {
+private fun ExportLogsRow(s: Setting.Action) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var busy by remember { mutableStateOf(false) }
+    Row(
+        Modifier.fillMaxWidth().clickable(enabled = !busy) {
+            busy = true
+            scope.launch {
+                val dest = withContext(Dispatchers.IO) {
+                    runCatching { SessionLogs.exportAll() }.getOrNull()
+                }
+                Toast.makeText(context,
+                    dest?.let { "Logs exported to ${it.name} in Downloads" }
+                        ?: "No logs to export",
+                    Toast.LENGTH_LONG).show()
+                busy = false
+            }
+        }.padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(Modifier.weight(1f)) {
+            RowTitle(s.title, false,
+                sub = if (busy) "Exporting..." else "Shelved sessions + current run",
+                desc = s.desc)
+        }
+    }
+}
+
+@Composable
+private fun DriverActionRow(host: SettingsHost, s: Setting.Action, modified: Boolean, raw: String?) {
     if (!host.isCustomDriverSupported) return  // gated: not an Adreno/kgsl device
     val context = LocalContext.current
-    val current = host.currentDriverPath(s)   // read live (see IntRow)
+    val current = raw ?: host.currentDriverPath(s)   // snapshot-backed; recomposes on change
     // .zip picker -> install via Utils on the host Activity (see note below).
     val pickZip = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument()
@@ -144,7 +192,7 @@ private fun DriverActionRow(host: SettingsHost, s: Setting.Action, modified: Boo
             .padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
             Box(Modifier.weight(1f)) {
                 RowTitle(s.title, modified,
-                    sub = current.ifEmpty { "Default" })
+                    sub = current.ifEmpty { "Default" }, desc = s.desc)
             }
         }
         // "" clears vulkan_lib_path -> native falls back to the system driver. (Writing a
@@ -189,26 +237,30 @@ private fun InheritedPreview(host: SettingsHost, s: Setting) {
             Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text(s.title, color = grey, style = MaterialTheme.typography.bodyLarge,
-                modifier = Modifier.weight(1f))
+            Column(Modifier.weight(1f)) {
+                Text(s.title, color = grey, style = MaterialTheme.typography.bodyLarge)
+                if (s.desc.isNotEmpty()) Text(s.desc, color = grey,
+                    style = MaterialTheme.typography.bodySmall)
+            }
             Switch(checked = host.currentBool(s), onCheckedChange = null, enabled = false)
         }
-        is Setting.IntRange   -> InheritedTextRow(s.title, host.currentInt(s).toString(), grey)
+        is Setting.IntRange   -> InheritedTextRow(s.title, host.currentInt(s).toString(), s.desc, grey)
         is Setting.ListChoice -> {
             val v = host.currentListValue(s)
             val label = s.options.firstOrNull { it.value == v }?.label
                 ?: v.ifEmpty { "(default)" }
-            InheritedTextRow(s.title, label, grey)
+            InheritedTextRow(s.title, label, s.desc, grey)
         }
         is Setting.Action ->
-            InheritedTextRow(s.title, host.currentDriverPath(s).ifEmpty { "Default" }, grey)
+            InheritedTextRow(s.title, host.currentDriverPath(s).ifEmpty { "Default" }, s.desc, grey)
     }
 }
 
 @Composable
-private fun InheritedTextRow(title: String, value: String, grey: Color) {
+private fun InheritedTextRow(title: String, value: String, desc: String, grey: Color) {
     Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp)) {
         Text(title, color = grey, style = MaterialTheme.typography.bodyLarge)
+        if (desc.isNotEmpty()) Text(desc, color = grey, style = MaterialTheme.typography.bodySmall)
         Text(value, color = grey, style = MaterialTheme.typography.bodySmall)
     }
 }
