@@ -12,8 +12,9 @@ We are looking foward to keep the project updated alongside the Edge fork,
 and keep the code compatible with Xenia licenses.
 
 ## Be aware of scams
-XenDroid is a free project. If you paid for this, then you got scammed.
-The apk is available under the [releases](https://github.com/rfandango/XenDroid/releases/latest) section, along with the distributed source code.
+- XenDroid is a free project. If you paid for this, then you got scammed.
+- The ONLY reliable source for the apk is in the [releases](https://github.com/rfandango/XenDroid/releases/latest) section, along with the distributed source code.
+  - We cannot be held responsible for edited apks by unkown users, you have been warned.
 
 ## Issue Policy
 To avoid unnecessary toxicity, issues have been limited to contributors only. If you want to report issues,
