@@ -19,6 +19,7 @@ import androidx.core.view.WindowInsetsControllerCompat
 import xendroid.compose.core.EmuProcessLink
 import xendroid.compose.core.EmulatorRuntime
 import xendroid.compose.core.EmulatorSession
+import xendroid.compose.core.ScreenBrightnessSampler
 import xendroid.compose.core.SessionLogs
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -41,6 +42,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Text
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -97,6 +99,8 @@ class EmulatorHostActivity : ComponentActivity(), SurfaceHolder.Callback {
 
     // SP4 on-screen touch gamepad.
     private val gamepad by lazy { GamepadController(applicationContext) }
+    private val brightnessSampler = ScreenBrightnessSampler()
+    @Volatile private var overlayWantsBrightness = false   // sampler should run while visible
     private var hapticsEnabled = false
     private val bootedState = mutableStateOf(false)   // gates the overlay (post-boot only)
     private val showFpsOverlay = mutableStateOf(false) // Display|show_debug_overlay (native TOML config)
@@ -240,6 +244,19 @@ class EmulatorHostActivity : ComponentActivity(), SurfaceHolder.Callback {
                 val alpha by animateFloatAsState(
                     if (visible) cfg.globals.opacity else 0f, tween(500), label = "padAlpha")
 
+                // Adaptive contrast: on bright scenes the overlay tints toward grey so it stays visible.
+                val overlayActive = booted && cfg.globals.enabled
+                // onStart/onStop co-own the sampler thread: no PixelCopy polling while backgrounded.
+                DisposableEffect(overlayActive) {
+                    overlayWantsBrightness = overlayActive
+                    if (overlayActive) brightnessSampler.start(sv)
+                    onDispose { brightnessSampler.stop() }
+                }
+                val brightness by brightnessSampler.brightness.collectAsState()
+                val contrast by animateFloatAsState(
+                    // Below ~0.5 luminance the plain overlay reads fine; ramp to full by ~0.9.
+                    ((brightness - 0.5f) / 0.4f).coerceIn(0f, 1f), tween(400), label = "padContrast")
+
                 // Apply haptics pref each composition (cheap; reads cached field).
                 LaunchedEffect(cfg.globals.hapticsEnabled) {
                     configureHaptics(cfg.globals.hapticsEnabled)
@@ -253,6 +270,7 @@ class EmulatorHostActivity : ComponentActivity(), SurfaceHolder.Callback {
                         GamepadOverlay(
                             controls = controls,
                             opacity = alpha,
+                            contrast = contrast,
                             onUserInteraction = poke,
                             onKeyEvent = { kc, pressed, v ->
                                 if (pressed && v == Kc.VALUE_UNUSED) maybeVibrate()
@@ -369,10 +387,12 @@ class EmulatorHostActivity : ComponentActivity(), SurfaceHolder.Callback {
         // pausing BEFORE the swapchain teardown means no guest/GPU frames race the drain.
         mainHandler.removeCallbacks(pauseOnFocusLost)
         if (session.booted) session.pause()
+        brightnessSampler.stop()                          // no PixelCopy polling while stopped
     }
 
     override fun onStart() {
         super.onStart()
+        if (overlayWantsBrightness) surfaceView?.let { brightnessSampler.start(it) }
         // Mirror of onStop. resumeIfPaused() (not bare resume) stays idempotent: the
         // swapchain-recreate path already calls resumeIfPaused() in surfaceCreated
         // (line 246), so this second call is a no-op there; onStart additionally covers

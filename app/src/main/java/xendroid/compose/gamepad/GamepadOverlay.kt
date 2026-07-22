@@ -66,6 +66,7 @@ fun GamepadOverlay(
     opacity: Float,
     onKeyEvent: (Int, Boolean, Int) -> Unit,
     modifier: Modifier = Modifier,
+    contrast: Float = 0f,                  // 0 = dark scene, 1 = white scene: tints controls grey
     onUserInteraction: () -> Unit = {},   // resets auto-hide timer
     editMode: Boolean = false,
     gridStepsX: Int = 0,                  // editor: snap-grid cell count per axis (0 = no grid).
@@ -203,7 +204,7 @@ fun GamepadOverlay(
         val claimedIds = claims.values.toSet()
         controls.filter { it.visible }.forEach { c ->
             drawControl(
-                c, opacity, sizePx, density,
+                c, opacity, contrast, sizePx, density,
                 pressed = c.id in claimedIds,
                 dpadDirs = if (c is OnScreenControl.Dpad) dpadState[c.id] ?: emptySet() else emptySet(),
                 activePos = activePos(c.id),
@@ -362,25 +363,30 @@ private val TRIGGER_IDS = setOf(ControlId.LT, ControlId.RT)
 // Optical (not geometric) centering, as a fraction of the button radius; + = right.
 private const val ABXY_LABEL_NUDGE_X = 0.02f
 
+// Bright-scene ink: white-on-white vanishes, so controls lerp from white toward this grey.
+private val OVERLAY_INK_BRIGHT = Color(0xFF8A8A8A)
+
 private fun DrawScope.drawControl(
-    c: OnScreenControl, opacity: Float, size: IntSize, density: Density,
+    c: OnScreenControl, opacity: Float, contrast: Float, size: IntSize, density: Density,
     pressed: Boolean, dpadDirs: Set<Int>, activePos: Offset?,
 ) {
     val center = controlCenterPx(c, size)
     val radius = with(density) { c.baseSizeDp.dp.toPx() } / 2f * c.scale
     val strokeW = with(density) { 2.dp.toPx() }
+    // Coloured face buttons keep their face colour; only their light accents follow the ink.
+    val ink = lerp(Color.White, OVERLAY_INK_BRIGHT, contrast)
     when (c) {
-        is OnScreenControl.Button -> drawButton(c, center, radius, strokeW, opacity, pressed)
-        is OnScreenControl.Dpad -> drawDpad(center, radius, strokeW, opacity, dpadDirs)
-        is OnScreenControl.AnalogStick -> drawStick(center, radius, strokeW, opacity, activePos)
+        is OnScreenControl.Button -> drawButton(c, center, radius, strokeW, opacity, pressed, ink)
+        is OnScreenControl.Dpad -> drawDpad(center, radius, strokeW, opacity, dpadDirs, ink)
+        is OnScreenControl.AnalogStick -> drawStick(center, radius, strokeW, opacity, activePos, ink)
     }
 }
 
 private fun DrawScope.drawButton(
     c: OnScreenControl.Button, center: Offset, radius: Float, strokeW: Float,
-    opacity: Float, pressed: Boolean,
+    opacity: Float, pressed: Boolean, ink: Color,
 ) {
-    fun white(a: Float) = Color.White.copy(alpha = a * opacity)
+    fun white(a: Float) = ink.copy(alpha = a * opacity)
     val face = when (c.id) {
         ControlId.A -> XBOX_GREEN; ControlId.B -> XBOX_RED
         ControlId.X -> XBOX_BLUE; ControlId.Y -> XBOX_YELLOW
@@ -444,21 +450,21 @@ private fun DrawScope.drawButton(
 
 /** Xbox 360-style d-pad: a round disc with a raised plus/cross; the pressed arm lights up. */
 private fun DrawScope.drawDpad(
-    center: Offset, radius: Float, strokeW: Float, opacity: Float, dirs: Set<Int>,
+    center: Offset, radius: Float, strokeW: Float, opacity: Float, dirs: Set<Int>, ink: Color,
 ) {
-    drawCircle(Color.White.copy(alpha = 0.08f * opacity), radius, center)                 // disc
+    drawCircle(ink.copy(alpha = 0.08f * opacity), radius, center)                          // disc
     val reach = radius * 1.2f           // overshoot the disc; the clip below truncates the tips
     val hw = radius * 0.324f            // arm half-width
     val cross = dpadCrossPath(center, reach, hw)
     clipPath(Path().apply { addOval(Rect(center, radius)) }) {                             // cut by the disc
-        drawPath(cross, Color.White.copy(alpha = 0.16f * opacity))                        // cross fill
-        drawPath(cross, Color.White.copy(alpha = 0.5f * opacity), style = Stroke(strokeW))// cross outline
+        drawPath(cross, ink.copy(alpha = 0.16f * opacity))                                // cross fill
+        drawPath(cross, ink.copy(alpha = 0.5f * opacity), style = Stroke(strokeW))        // cross outline
         // Pressed-arm highlight: the cross clipped to that arm's wedge, tapering to the center.
         val b = radius * 2f
         val tl = Offset(center.x - b, center.y - b); val tr = Offset(center.x + b, center.y - b)
         val bl = Offset(center.x - b, center.y + b); val br = Offset(center.x + b, center.y + b)
         val hiBrush = Brush.radialGradient(
-            colors = listOf(Color.Transparent, Color.White.copy(alpha = 0.85f * opacity)),
+            colors = listOf(Color.Transparent, ink.copy(alpha = 0.85f * opacity)),
             center = center, radius = radius,
         )
         fun litArm(code: Int, p1: Offset, p2: Offset) {
@@ -470,7 +476,7 @@ private fun DrawScope.drawDpad(
         litArm(Kc.DPAD_UP, tl, tr); litArm(Kc.DPAD_DOWN, bl, br)
         litArm(Kc.DPAD_LEFT, tl, bl); litArm(Kc.DPAD_RIGHT, tr, br)
     }
-    drawCircle(Color.White.copy(alpha = 0.40f * opacity), radius, center, style = Stroke(strokeW)) // ring on top
+    drawCircle(ink.copy(alpha = 0.40f * opacity), radius, center, style = Stroke(strokeW)) // ring on top
 }
 
 /** A plus/cross outline with concave armpits (Xbox 360 look): arms extend |reach|
@@ -494,10 +500,10 @@ private fun dpadCrossPath(center: Offset, reach: Float, hw: Float): Path {
 }
 
 private fun DrawScope.drawStick(
-    center: Offset, radius: Float, strokeW: Float, opacity: Float, activePos: Offset?,
+    center: Offset, radius: Float, strokeW: Float, opacity: Float, activePos: Offset?, ink: Color,
 ) {
-    drawCircle(Color.White.copy(alpha = 0.10f * opacity), radius, center)                 // dish
-    drawCircle(Color.White.copy(alpha = 0.45f * opacity), radius, center, style = Stroke(strokeW)) // range ring
+    drawCircle(ink.copy(alpha = 0.10f * opacity), radius, center)                          // dish
+    drawCircle(ink.copy(alpha = 0.45f * opacity), radius, center, style = Stroke(strokeW)) // range ring
     val knob = activePos?.let { p ->
         var dx = p.x - center.x; var dy = p.y - center.y
         val len = hypot(dx, dy)
@@ -506,11 +512,11 @@ private fun DrawScope.drawStick(
     } ?: center
     val active = activePos != null
     val knobR = radius * 0.58f
-    drawCircle(Color.White.copy(alpha = (if (active) 0.5f else 0.32f) * opacity), knobR, knob)
-    drawCircle(Color.White.copy(alpha = 0.7f * opacity), knobR, knob, style = Stroke(strokeW))
+    drawCircle(ink.copy(alpha = (if (active) 0.5f else 0.32f) * opacity), knobR, knob)
+    drawCircle(ink.copy(alpha = 0.7f * opacity), knobR, knob, style = Stroke(strokeW))
     // Cardinal cap markers (Xbox 360 stick).
     val dotD = knobR * 0.6f; val dotR = radius * 0.018f
-    val dot = Color.White.copy(alpha = 0.6f * opacity)
+    val dot = ink.copy(alpha = 0.6f * opacity)
     for (p in listOf(
         Offset(knob.x, knob.y - dotD), Offset(knob.x, knob.y + dotD),
         Offset(knob.x - dotD, knob.y), Offset(knob.x + dotD, knob.y),
