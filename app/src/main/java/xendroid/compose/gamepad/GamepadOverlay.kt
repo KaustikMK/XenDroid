@@ -417,18 +417,18 @@ private fun DrawScope.drawButton(
             if (pressed) drawCircle(white(0.9f), radius + strokeW, center, style = Stroke(strokeW))
             drawLabel(c.label, center, radius, white(0.95f), bold = true, fill = 0.68f)
         }
-        c.id in TRIGGER_IDS -> {                            // trigger: ~2x-long, thicker straight pill
+        c.id in TRIGGER_IDS -> {                            // trigger: ~2x-long, thicker bar with softened corners
             val w = radius * 4.2f; val h = radius * 1.625f
             val tl = Offset(center.x - w / 2f, center.y - h / 2f)
-            val cr = CornerRadius(h / 2f, h / 2f)
+            val cr = CornerRadius(radius * 0.42f, radius * 0.42f)
             drawRoundRect(white(if (pressed) 0.42f else 0.18f), tl, Size(w, h), cr)
             drawRoundRect(white(0.5f), tl, Size(w, h), cr, style = Stroke(strokeW))
             drawLabel(c.label, center, radius, white(0.85f))
         }
-        c.id in PILL_IDS -> {                               // bumper: straight rounded pill
+        c.id in PILL_IDS -> {                               // bumper: straight bar with softened corners
             val w = radius * 3.15f; val h = radius * 1.15f
             val tl = Offset(center.x - w / 2f, center.y - h / 2f)
-            val cr = CornerRadius(h / 2f, h / 2f)
+            val cr = CornerRadius(radius * 0.42f, radius * 0.42f)
             drawRoundRect(white(if (pressed) 0.42f else 0.18f), tl, Size(w, h), cr)
             drawRoundRect(white(0.5f), tl, Size(w, h), cr, style = Stroke(strokeW))
             drawLabel(c.label, center, radius, white(0.85f))
