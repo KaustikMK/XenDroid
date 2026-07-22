@@ -21,6 +21,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -66,7 +67,8 @@ fun GamepadOverlay(
     opacity: Float,
     onKeyEvent: (Int, Boolean, Int) -> Unit,
     modifier: Modifier = Modifier,
-    contrast: Float = 0f,                  // 0 = dark scene, 1 = white scene: tints controls grey
+    contrast: () -> Float = { 0f },        // 0 = dark, 1 = white scene: tints controls grey. A lambda
+                                           // so the draw phase reads it: redraws without recomposing.
     onUserInteraction: () -> Unit = {},   // resets auto-hide timer
     editMode: Boolean = false,
     gridStepsX: Int = 0,                  // editor: snap-grid cell count per axis (0 = no grid).
@@ -88,6 +90,8 @@ fun GamepadOverlay(
     // claim change -- plain maps record no snapshot read, so the knob would sit frozen.
     val claims = remember { mutableStateMapOf<Long, ControlId>() }
     val pointerPos = remember { mutableStateMapOf<Long, Offset>() }
+    // Rebuilding these per draw pass (display-refresh rate during a drag) was a GC-pause stutter storm.
+    val drawCache = remember { GamepadDrawCache() }
     // per-dpad last-pressed sector set, for diffing.
     val dpadState = remember { mutableMapOf<ControlId, Set<Int>>() }
     val density = LocalDensity.current
@@ -201,11 +205,12 @@ fun GamepadOverlay(
         val activePos: (ControlId) -> Offset? = { id ->
             claims.entries.lastOrNull { it.value == id }?.key?.let { pointerPos[it] }
         }
-        val claimedIds = claims.values.toSet()
-        controls.filter { it.visible }.forEach { c ->
+        val contrastNow = contrast()   // draw-phase read: animation frames only re-draw
+        for (c in controls) {
+            if (!c.visible) continue
             drawControl(
-                c, opacity, contrast, sizePx, density,
-                pressed = c.id in claimedIds,
+                c, opacity, contrastNow, sizePx, density, drawCache,
+                pressed = claims.containsValue(c.id),
                 dpadDirs = if (c is OnScreenControl.Dpad) dpadState[c.id] ?: emptySet() else emptySet(),
                 activePos = activePos(c.id),
             )
@@ -366,8 +371,116 @@ private const val ABXY_LABEL_NUDGE_X = 0.02f
 // Bright-scene ink: white-on-white vanishes, so controls lerp from white toward this grey.
 private val OVERLAY_INK_BRIGHT = Color(0xFF8A8A8A)
 
+/** Cache of draw objects invariant per (control, layout). Brushes are built at full alpha and
+ *  modulated by the draw call's alpha (mathematically identical). Geometry changes only in the
+ *  editor (drag/pinch), where the size-capped clear()s bound the maps. */
+private class GamepadDrawCache {
+    class Label(val paint: Paint, val cx: Float, val cy: Float, val opticalDx: Float)
+    private data class LabelKey(val text: String, val r: Int, val bold: Boolean, val fill: Int)
+    private val labels = HashMap<LabelKey, Label>()
+    fun label(text: String, radius: Float, bold: Boolean, fill: Float?): Label {
+        if (labels.size > 64) labels.clear()
+        return labels.getOrPut(
+            LabelKey(text, radius.toRawBits(), bold, (fill ?: -1f).toRawBits())
+        ) {
+            val paint = Paint().apply {
+                isAntiAlias = true
+                isFakeBoldText = bold
+                color = android.graphics.Color.WHITE   // RGB fixed; alpha set per draw
+                textAlign = if (fill != null) Paint.Align.CENTER else Paint.Align.LEFT
+                textSize = radius * 0.7f
+            }
+            val bounds = android.graphics.Rect()
+            paint.getTextBounds(text, 0, text.length, bounds)
+            if (fill != null) {                                  // size the glyph's extent to fill * button
+                val diag = hypot(bounds.width().toFloat(), bounds.height().toFloat())
+                if (diag > 0) {
+                    paint.textSize = paint.textSize * (fill * 2f * radius) / diag
+                    paint.getTextBounds(text, 0, text.length, bounds)
+                }
+            }
+            if (bold) {                                          // extra weight for the face-button letters
+                paint.style = Paint.Style.FILL_AND_STROKE
+                paint.strokeWidth = paint.textSize * 0.05f
+            }
+            val opticalDx = when (text) {
+                "◀" -> -bounds.width() / 6f
+                "▶" -> bounds.width() / 6f
+                else -> 0f
+            }
+            Label(paint, bounds.exactCenterX(), bounds.exactCenterY(), opticalDx)
+        }
+    }
+
+    class Geom(center: Offset, radius: Float) {
+        val clipOval: Path = Path().apply { addOval(Rect(center, radius)) }
+        val cross: Path by lazy(LazyThreadSafetyMode.NONE) {
+            dpadCrossPath(center, radius * 1.2f, radius * 0.324f)
+        }
+        // Indexed by Kc.DPAD_LEFT/UP/RIGHT/DOWN (0..3).
+        val armClips: Array<Path> by lazy(LazyThreadSafetyMode.NONE) {
+            val b = radius * 2f
+            val tl = Offset(center.x - b, center.y - b); val tr = Offset(center.x + b, center.y - b)
+            val bl = Offset(center.x - b, center.y + b); val br = Offset(center.x + b, center.y + b)
+            fun wedge(p1: Offset, p2: Offset) = Path().apply {
+                moveTo(center.x, center.y); lineTo(p1.x, p1.y); lineTo(p2.x, p2.y); close()
+            }
+            arrayOf(wedge(tl, bl), wedge(tl, tr), wedge(tr, br), wedge(bl, br))
+        }
+    }
+    private data class GeomKey(val x: Int, val y: Int, val r: Int)
+    private val geoms = HashMap<GeomKey, Geom>()
+    fun geom(center: Offset, radius: Float): Geom {
+        if (geoms.size > 64) geoms.clear()
+        return geoms.getOrPut(
+            GeomKey(center.x.toRawBits(), center.y.toRawBits(), radius.toRawBits())
+        ) { Geom(center, radius) }
+    }
+
+    private data class BrushKey(val kind: Int, val color: Int, val x: Int, val y: Int, val r: Int)
+    private val brushes = HashMap<BrushKey, Brush>()
+    private inline fun brush(key: BrushKey, build: () -> Brush): Brush {
+        if (brushes.size > 128) brushes.clear()
+        return brushes.getOrPut(key) { build() }
+    }
+    /** Face-button convex base at full alpha; draw with alpha = pressed/opacity factor. */
+    fun faceBrush(face: Color, center: Offset, radius: Float): Brush = brush(
+        BrushKey(0, face.toArgb(), center.x.toRawBits(), center.y.toRawBits(), radius.toRawBits())
+    ) {
+        Brush.radialGradient(
+            colors = listOf(
+                lerp(face, Color.White, 0.35f), face, lerp(face, Color.Black, 0.28f),
+            ),
+            center = Offset(center.x, center.y - radius * 0.35f),
+            radius = radius * 1.35f,
+        )
+    }
+    /** Glossy specular at base alpha 0.5 -> 0; draw with alpha = opacity. */
+    fun specularBrush(ink: Color, center: Offset, radius: Float): Brush = brush(
+        BrushKey(1, ink.toArgb(), center.x.toRawBits(), center.y.toRawBits(), radius.toRawBits())
+    ) {
+        Brush.verticalGradient(
+            colors = listOf(ink.copy(alpha = 0.5f), ink.copy(alpha = 0f)),
+            startY = center.y - radius * 0.78f, endY = center.y - radius * 0.02f,
+        )
+    }
+    /** D-pad pressed-arm highlight at base alpha 0.85; draw with alpha = opacity. */
+    fun armBrush(ink: Color, center: Offset, radius: Float): Brush = brush(
+        BrushKey(2, ink.toArgb(), center.x.toRawBits(), center.y.toRawBits(), radius.toRawBits())
+    ) {
+        Brush.radialGradient(
+            colors = listOf(Color.Transparent, ink.copy(alpha = 0.85f)),
+            center = center, radius = radius,
+        )
+    }
+
+    private val strokes = HashMap<Int, Stroke>()
+    fun stroke(w: Float): Stroke = strokes.getOrPut(w.toRawBits()) { Stroke(w) }
+}
+
 private fun DrawScope.drawControl(
     c: OnScreenControl, opacity: Float, contrast: Float, size: IntSize, density: Density,
+    cache: GamepadDrawCache,
     pressed: Boolean, dpadDirs: Set<Int>, activePos: Offset?,
 ) {
     val center = controlCenterPx(c, size)
@@ -376,15 +489,15 @@ private fun DrawScope.drawControl(
     // Coloured face buttons keep their face colour; only their light accents follow the ink.
     val ink = lerp(Color.White, OVERLAY_INK_BRIGHT, contrast)
     when (c) {
-        is OnScreenControl.Button -> drawButton(c, center, radius, strokeW, opacity, pressed, ink)
-        is OnScreenControl.Dpad -> drawDpad(center, radius, strokeW, opacity, dpadDirs, ink)
-        is OnScreenControl.AnalogStick -> drawStick(center, radius, strokeW, opacity, activePos, ink)
+        is OnScreenControl.Button -> drawButton(c, center, radius, strokeW, opacity, pressed, ink, cache)
+        is OnScreenControl.Dpad -> drawDpad(center, radius, strokeW, opacity, dpadDirs, ink, cache)
+        is OnScreenControl.AnalogStick -> drawStick(center, radius, strokeW, opacity, activePos, ink, cache)
     }
 }
 
 private fun DrawScope.drawButton(
     c: OnScreenControl.Button, center: Offset, radius: Float, strokeW: Float,
-    opacity: Float, pressed: Boolean, ink: Color,
+    opacity: Float, pressed: Boolean, ink: Color, cache: GamepadDrawCache,
 ) {
     fun white(a: Float) = ink.copy(alpha = a * opacity)
     val face = when (c.id) {
@@ -397,53 +510,44 @@ private fun DrawScope.drawButton(
             val a = (if (pressed) 0.9f else 0.68f) * opacity
             // Convex base: lit from above so the disc reads domed.
             drawCircle(
-                brush = Brush.radialGradient(
-                    colors = listOf(
-                        lerp(face, Color.White, 0.35f).copy(alpha = a),
-                        face.copy(alpha = a),
-                        lerp(face, Color.Black, 0.28f).copy(alpha = a),
-                    ),
-                    center = Offset(center.x, center.y - radius * 0.35f),
-                    radius = radius * 1.35f,
-                ),
-                radius = radius, center = center,
+                brush = cache.faceBrush(face, center, radius),
+                radius = radius, center = center, alpha = a,
             )
-            clipPath(Path().apply { addOval(Rect(center, radius)) }) {
+            clipPath(cache.geom(center, radius).clipOval) {
                 val gTop = center.y - radius * 0.78f
                 val gBot = center.y - radius * 0.02f
                 drawOval(
-                    brush = Brush.verticalGradient(
-                        colors = listOf(white(0.5f), white(0f)), startY = gTop, endY = gBot,
-                    ),
+                    brush = cache.specularBrush(ink, center, radius),
                     topLeft = Offset(center.x - radius * 0.6f, gTop),
                     size = Size(radius * 1.2f, gBot - gTop),
+                    alpha = opacity,
                 )
             }
-            drawCircle(white(0.55f), radius, center, style = Stroke(strokeW))
-            if (pressed) drawCircle(white(0.9f), radius + strokeW, center, style = Stroke(strokeW))
-            drawLabel(c.label, center, radius, white(0.95f), bold = true, fill = 0.68f)
+            drawCircle(white(0.55f), radius, center, style = cache.stroke(strokeW))
+            if (pressed) drawCircle(white(0.9f), radius + strokeW, center, style = cache.stroke(strokeW))
+            drawLabel(cache, c.label, center, radius, white(0.95f), bold = true, fill = 0.68f)
         }
         c.id in TRIGGER_IDS -> {                            // trigger: ~2x-long, thicker bar with softened corners
             val w = radius * 4.2f; val h = radius * 1.625f
             val tl = Offset(center.x - w / 2f, center.y - h / 2f)
             val cr = CornerRadius(radius * 0.42f, radius * 0.42f)
             drawRoundRect(white(if (pressed) 0.42f else 0.18f), tl, Size(w, h), cr)
-            drawRoundRect(white(0.5f), tl, Size(w, h), cr, style = Stroke(strokeW))
-            drawLabel(c.label, center, radius, white(0.85f))
+            drawRoundRect(white(0.5f), tl, Size(w, h), cr, style = cache.stroke(strokeW))
+            drawLabel(cache, c.label, center, radius, white(0.85f))
         }
         c.id in PILL_IDS -> {                               // bumper: straight bar with softened corners
             val w = radius * 3.15f; val h = radius * 1.15f
             val tl = Offset(center.x - w / 2f, center.y - h / 2f)
             val cr = CornerRadius(radius * 0.42f, radius * 0.42f)
             drawRoundRect(white(if (pressed) 0.42f else 0.18f), tl, Size(w, h), cr)
-            drawRoundRect(white(0.5f), tl, Size(w, h), cr, style = Stroke(strokeW))
-            drawLabel(c.label, center, radius, white(0.85f))
+            drawRoundRect(white(0.5f), tl, Size(w, h), cr, style = cache.stroke(strokeW))
+            drawLabel(cache, c.label, center, radius, white(0.85f))
         }
         else -> {                                           // L3/R3/Back/Start: small circle
             val rr = radius * 0.82f
             drawCircle(white(if (pressed) 0.42f else 0.16f), rr, center)
-            drawCircle(white(0.5f), rr, center, style = Stroke(strokeW))
-            drawLabel(c.label, center, rr, white(0.8f))
+            drawCircle(white(0.5f), rr, center, style = cache.stroke(strokeW))
+            drawLabel(cache, c.label, center, rr, white(0.8f))
         }
     }
 }
@@ -451,32 +555,23 @@ private fun DrawScope.drawButton(
 /** Xbox 360-style d-pad: a round disc with a raised plus/cross; the pressed arm lights up. */
 private fun DrawScope.drawDpad(
     center: Offset, radius: Float, strokeW: Float, opacity: Float, dirs: Set<Int>, ink: Color,
+    cache: GamepadDrawCache,
 ) {
+    val g = cache.geom(center, radius)
     drawCircle(ink.copy(alpha = 0.08f * opacity), radius, center)                          // disc
-    val reach = radius * 1.2f           // overshoot the disc; the clip below truncates the tips
-    val hw = radius * 0.324f            // arm half-width
-    val cross = dpadCrossPath(center, reach, hw)
-    clipPath(Path().apply { addOval(Rect(center, radius)) }) {                             // cut by the disc
-        drawPath(cross, ink.copy(alpha = 0.16f * opacity))                                // cross fill
-        drawPath(cross, ink.copy(alpha = 0.5f * opacity), style = Stroke(strokeW))        // cross outline
+    clipPath(g.clipOval) {                                                                 // cut by the disc
+        drawPath(g.cross, ink.copy(alpha = 0.16f * opacity))                              // cross fill
+        drawPath(g.cross, ink.copy(alpha = 0.5f * opacity), style = cache.stroke(strokeW))// cross outline
         // Pressed-arm highlight: the cross clipped to that arm's wedge, tapering to the center.
-        val b = radius * 2f
-        val tl = Offset(center.x - b, center.y - b); val tr = Offset(center.x + b, center.y - b)
-        val bl = Offset(center.x - b, center.y + b); val br = Offset(center.x + b, center.y + b)
-        val hiBrush = Brush.radialGradient(
-            colors = listOf(Color.Transparent, ink.copy(alpha = 0.85f * opacity)),
-            center = center, radius = radius,
-        )
-        fun litArm(code: Int, p1: Offset, p2: Offset) {
-            if (code !in dirs) return
-            clipPath(Path().apply {
-                moveTo(center.x, center.y); lineTo(p1.x, p1.y); lineTo(p2.x, p2.y); close()
-            }) { drawPath(cross, brush = hiBrush) }
+        if (dirs.isNotEmpty()) {
+            val hiBrush = cache.armBrush(ink, center, radius)
+            for (code in dirs) {
+                val clip = g.armClips.getOrNull(code) ?: continue
+                clipPath(clip) { drawPath(g.cross, brush = hiBrush, alpha = opacity) }
+            }
         }
-        litArm(Kc.DPAD_UP, tl, tr); litArm(Kc.DPAD_DOWN, bl, br)
-        litArm(Kc.DPAD_LEFT, tl, bl); litArm(Kc.DPAD_RIGHT, tr, br)
     }
-    drawCircle(ink.copy(alpha = 0.40f * opacity), radius, center, style = Stroke(strokeW)) // ring on top
+    drawCircle(ink.copy(alpha = 0.40f * opacity), radius, center, style = cache.stroke(strokeW)) // ring on top
 }
 
 /** A plus/cross outline with concave armpits (Xbox 360 look): arms extend |reach|
@@ -501,9 +596,10 @@ private fun dpadCrossPath(center: Offset, reach: Float, hw: Float): Path {
 
 private fun DrawScope.drawStick(
     center: Offset, radius: Float, strokeW: Float, opacity: Float, activePos: Offset?, ink: Color,
+    cache: GamepadDrawCache,
 ) {
     drawCircle(ink.copy(alpha = 0.10f * opacity), radius, center)                          // dish
-    drawCircle(ink.copy(alpha = 0.45f * opacity), radius, center, style = Stroke(strokeW)) // range ring
+    drawCircle(ink.copy(alpha = 0.45f * opacity), radius, center, style = cache.stroke(strokeW)) // range ring
     val knob = activePos?.let { p ->
         var dx = p.x - center.x; var dy = p.y - center.y
         val len = hypot(dx, dy)
@@ -513,7 +609,7 @@ private fun DrawScope.drawStick(
     val active = activePos != null
     val knobR = radius * 0.58f
     drawCircle(ink.copy(alpha = (if (active) 0.5f else 0.32f) * opacity), knobR, knob)
-    drawCircle(ink.copy(alpha = 0.7f * opacity), knobR, knob, style = Stroke(strokeW))
+    drawCircle(ink.copy(alpha = 0.7f * opacity), knobR, knob, style = cache.stroke(strokeW))
     // Cardinal cap markers (Xbox 360 stick).
     val dotD = knobR * 0.6f; val dotR = radius * 0.018f
     val dot = ink.copy(alpha = 0.6f * opacity)
@@ -531,40 +627,17 @@ private fun DrawScope.drawSelection(c: OnScreenControl, size: IntSize, density: 
 }
 
 private fun DrawScope.drawLabel(
-    label: String, center: Offset, radius: Float, color: Color,
+    cache: GamepadDrawCache, label: String, center: Offset, radius: Float, color: Color,
     bold: Boolean = false, fill: Float? = null,
 ) {
     if (label.isEmpty()) return
+    // Only color.alpha varies per draw; label RGB stays white regardless of the bright-scene ink.
+    val l = cache.label(label, radius, bold, fill)
     drawIntoCanvas { canvas ->
-        val paint = Paint().apply {
-            isAntiAlias = true
-            isFakeBoldText = bold
-            this.color = android.graphics.Color.argb(
-                (color.alpha * 255).toInt(), 255, 255, 255)
-            textAlign = if (fill != null) Paint.Align.CENTER else Paint.Align.LEFT
-            textSize = radius * 0.7f
-        }
-        val bounds = android.graphics.Rect()
-        paint.getTextBounds(label, 0, label.length, bounds)
-        if (fill != null) {                                  // size the glyph's extent to fill * button
-            val diag = hypot(bounds.width().toFloat(), bounds.height().toFloat())
-            if (diag > 0) {
-                paint.textSize = paint.textSize * (fill * 2f * radius) / diag
-                paint.getTextBounds(label, 0, label.length, bounds)
-            }
-        }
-        if (bold) {                                          // extra weight for the face-button letters
-            paint.style = Paint.Style.FILL_AND_STROKE
-            paint.strokeWidth = paint.textSize * 0.05f
-        }
-        val opticalDx = when (label) {
-            "◀" -> -bounds.width() / 6f
-            "▶" -> bounds.width() / 6f
-            else -> 0f
-        }
+        l.paint.alpha = (color.alpha * 255).toInt()
         val nudgeX = if (fill != null) ABXY_LABEL_NUDGE_X * radius else 0f
-        val baseline = center.y - bounds.exactCenterY()   // center the glyph itself, not the font line
-        val x = (if (fill != null) center.x else center.x - bounds.exactCenterX() + opticalDx) + nudgeX
-        canvas.nativeCanvas.drawText(label, x, baseline, paint)
+        val baseline = center.y - l.cy                    // center the glyph itself, not the font line
+        val x = (if (fill != null) center.x else center.x - l.cx + l.opticalDx) + nudgeX
+        canvas.nativeCanvas.drawText(label, x, baseline, l.paint)
     }
 }
