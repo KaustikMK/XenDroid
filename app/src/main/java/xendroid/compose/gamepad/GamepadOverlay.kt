@@ -388,7 +388,7 @@ private fun DrawScope.drawButton(
     }
     when {
         face != null -> {                                   // glossy convex colour face button + letter
-            val a = (if (pressed) 1f else 0.82f) * opacity
+            val a = (if (pressed) 0.9f else 0.68f) * opacity
             // Convex base: lit from above so the disc reads domed.
             drawCircle(
                 brush = Brush.radialGradient(
