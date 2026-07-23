@@ -28,6 +28,10 @@ android {
                 // -fno-strict-aliasing for the raw-memory-reinterpretation code.
                 cFlags '-O2', '-DNDEBUG', '-g', '-fno-strict-aliasing'
                 cppFlags '-O2', '-DNDEBUG', '-g', '-fno-strict-aliasing'
+                if (System.getenv('USE_CCACHE') == 'true') {
+                    arguments '-DCMAKE_C_COMPILER_LAUNCHER=ccache',
+                              '-DCMAKE_CXX_COMPILER_LAUNCHER=ccache'
+                }
             }
         }
     }

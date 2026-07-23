@@ -26,6 +26,11 @@ jobs:
       # Gradle tuning
       GRADLE_OPTS: -Dorg.gradle.daemon=false
 
+      # Native compile cache
+      USE_CCACHE: 'true'
+      CCACHE_BASEDIR: ${{ github.workspace }}
+      CCACHE_COMPILERCHECK: content
+
     steps:
 
     - name: Check APK keystore
@@ -70,6 +75,14 @@ jobs:
     ##################################################################
     # Android SDK / NDK
     ##################################################################
+    - name: Cache NDK + CMake
+      uses: actions/cache@v4
+      with:
+        path: |
+          /opt/android-sdk-linux/ndk/${{ env.ANDROID_NDK_VERSION }}
+          /opt/android-sdk-linux/cmake/3.30.3
+        key: sdk-ndk${{ env.ANDROID_NDK_VERSION }}-cmake3.30.3
+
     - name: Install Android NDK
       run: |
         export ANDROID_SDK_ROOT=/opt/android-sdk-linux
@@ -151,6 +164,15 @@ jobs:
         android.useAndroidX=true
         android.nonTransitiveRClass=true
         EOF
+
+    ##################################################################
+    # Native compile cache (ccache)
+    ##################################################################
+    - name: ccache
+      uses: hendrikmuhs/ccache-action@v1.2
+      with:
+        key: ${{ runner.os }}-ndk${{ env.ANDROID_NDK_VERSION }}-arm64
+        max-size: 2G
 
     ##################################################################
     # Build
