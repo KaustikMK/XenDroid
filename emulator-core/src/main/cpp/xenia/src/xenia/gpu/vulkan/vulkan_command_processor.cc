@@ -43,7 +43,7 @@ DECLARE_bool(clear_memory_page_state);
 DECLARE_bool(log_gpu_frame_time_breakdown);
 
 DEFINE_int32(
-    vulkan_mid_frame_submission_draws, 0,
+    vulkan_mid_frame_submission_draws, 1300,
     "If greater than 0, end and submit the current command buffer after this "
     "many draws instead of only at the swap, so the GPU overlaps the frame's "
     "rendering with the building of the rest of its command stream. 0 keeps "
@@ -51,6 +51,7 @@ DEFINE_int32(
     "values that are too small hurt tiled GPUs; try roughly half the title's "
     "per-frame draw count.",
     "GPU");
+UPDATE_from_int32(vulkan_mid_frame_submission_draws, 2026, 7, 24, 12, 0);
 
 DEFINE_bool(
     vulkan_cache_texture_descriptors, true,
