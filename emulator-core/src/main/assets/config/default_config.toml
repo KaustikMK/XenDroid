@@ -178,11 +178,11 @@ primitive_processor_cache_min_indices = 4096      	# Smallest number of guest in
                                                   	# Negative values disable caching.
 
 occlusion_query = 'fast'  # Guest occlusion-query (EVENT_WRITE_ZPD) mode: fake|fast|fast-alt|strict. 'fake' fabricates the result with zero GPU-query overhead (fastest; some effects e.g. lens flares may look slightly off); 'fast' issues real async queries without stalling. Seeded here so the value persists in the live config (it was absent, so SaveConfig kept reseeding it to the cvar default 'fast').
-vulkan_mid_frame_submission_draws = 0  # If >0, end+submit the command buffer every N real draws (mid-frame split) so the GPU overlaps rendering with CPU command-building instead of idling until swap. 0 = one submission per frame (off). Try ~half the title's per-frame draw count; too-small values hurt tiled GPUs. (Feature was lost in the xenia-edge rebase and re-ported.)
+vulkan_mid_frame_submission_draws = 1300  # If >0, end+submit the command buffer every N real draws (mid-frame split) so the GPU overlaps rendering with CPU command-building instead of idling until swap. 0 = one submission per frame (off). Try ~half the title's per-frame draw count; too-small values hurt tiled GPUs. (Feature was lost in the xenia-edge rebase and re-ported.)
 query_occlusion_sample_lower_threshold = 80       	# If set to -1 no sample counts are written, games may hang. Else, the sample count of every tile will be incremented on every EVENT_WRITE_ZPD by this number. Setting this to 0 means everything is reported as occluded.
 query_occlusion_sample_upper_threshold = 100      	# Set to higher number than query_occlusion_sample_lower_threshold. This value is ignored if query_occlusion_sample_lower_threshold is set to -1.
 readback_memexport = false                        	# [D3D12 Only] Read data written by memory export in shaders on the CPU. This may be needed in some games (but many only access exported data on the GPU, and this flag isn't needed to handle such behavior), but causes mid-frame synchronization, so it has a huge performance impact.
-readback_resolve = "fast"                         	# CPU readback of render-to-texture resolve results. Use: [fast, some, full, none]. Causes mid-frame synchronization, so it has a huge performance impact.
+readback_resolve = "uma"                          	# CPU readback of render-to-texture resolve results. Use: [fast, some, full, none]. Causes mid-frame synchronization, so it has a huge performance impact.
 render_target_path = "performance"                	# Render target emulation path to use across all GPU backends.
                                                   	# Use: [performance, accuracy]
                                                   	#  performance:
@@ -340,7 +340,7 @@ widescreen = true                                 	# Toggles between 16:9 and 4:
 
 [Vulkan]
 adrenotools_force_max_clocks = false              	# Custom Driver Force Max Clocks
-turnip_debug = ""                           	# TU_DEBUG flags for the Turnip (Mesa freedreno) Vulkan driver. 'sysmem' forces untiled rendering, avoiding a class of Adreno GPU hangs (device-loss). Empty leaves TU_DEBUG unset.
+turnip_debug = "sysmem"                           	# TU_DEBUG flags for the Turnip (Mesa freedreno) Vulkan driver. 'sysmem' forces untiled rendering, avoiding a class of Adreno GPU hangs (device-loss). Empty leaves TU_DEBUG unset.
 vulkan_allow_present_mode_fifo_relaxed = true     	# When available, allow the relaxed first-in-first-out presentation mode (3rd priority), which causes waiting for host display vertical sync, but may present with tearing if frames don't meet the host display refresh rate.
 vulkan_allow_present_mode_immediate = true        	# When available, allow the immediate presentation mode (1st priority), offering the lowest latency with the possibility of tearing in certain cases, and, depending on the configuration, variable refresh rate.
 vulkan_allow_present_mode_mailbox = true          	# When available, allow the mailbox presentation mode (2nd priority), offering low latency without the possibility of tearing.

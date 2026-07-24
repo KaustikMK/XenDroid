@@ -94,6 +94,7 @@ DEFINE_string(
     " full: Wait for GPU to finish (accurate but slow, GPU-CPU sync stall)\n"
     " none: Disable readback completely (some games render better without it)",
     "GPU");
+UPDATE_from_string(readback_resolve, 2026, 7, 24, 12, "fast");
 
 DEFINE_bool(
     precise_interpolation, true,

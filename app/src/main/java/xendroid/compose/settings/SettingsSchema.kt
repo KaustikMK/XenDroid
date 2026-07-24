@@ -33,7 +33,7 @@ object SettingsSchema {
             // (GMEM/tiled, fast); 'sysmem' forces untiled rendering (much slower) but avoids a
             // class of Adreno GPU hangs. Applied at vkCreateInstance, so it takes effect on the
             // next game launch.
-            l("Vulkan", "turnip_debug", "Turnip debug mode", "",
+            l("Vulkan", "turnip_debug", "Turnip debug mode", "sysmem",
                 "" to "None (no TU_DEBUG flags, GMEM)", "sysmem" to "sysmem (untiled, slower)",
                 "sysmem,nolrz" to "sysmem + nolrz (LRZ off, perf diagnostic)",
                 "sysmem,noubwc" to "sysmem + noubwc (UBWC off, perf diagnostic)"),
@@ -150,7 +150,7 @@ object SettingsSchema {
             // overlaps rendering with CPU command-building instead of idling until swap. 0 = one
             // submission per frame (off). ~half the per-frame draw count is a good start; too-small
             // values hurt tiled GPUs.
-            i("GPU", "vulkan_mid_frame_submission_draws", "Mid-frame submission (draws, 0=off)", 0, 0, 4096),
+            i("GPU", "vulkan_mid_frame_submission_draws", "Mid-frame submission (draws, 0=off)", 1300, 0, 4096),
             b("GPU", "snorm16_render_target_full_range", "snorm16 render target full range", true),
             // min == the real TOML default (384); a higher floor would silently coerce the default up.
             i("GPU", "texture_cache_memory_limit_soft", "Texture cache soft limit (MB)", 384, 384, 4096),
