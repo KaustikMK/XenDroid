@@ -21,6 +21,9 @@ tasks.named('preBuild').configure { dependsOn(syncGamePatches) }
 android {
     namespace 'xendroid.compose'
     compileSdk 35
+    // Pin like :emulator-core - without this AGP wants its default NDK for the
+    // strip task; when that NDK is absent (CI) it packages libe.so UNSTRIPPED.
+    ndkVersion '29.0.14206865'
 
     defaultConfig {
         applicationId 'xendroid.compose'
