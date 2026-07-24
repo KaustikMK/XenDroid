@@ -1,7 +1,7 @@
 # xenia-core: the loose .h/.cc files directly under src/xenia/ (emulator,
 # kernel_state, etc.) that aren't part of any specific submodule.
 add_library(xenia-core STATIC)
-file(GLOB _core_sources
+file(GLOB _core_sources CONFIGURE_DEPENDS
   "${CMAKE_CURRENT_SOURCE_DIR}/*.h"
   "${CMAKE_CURRENT_SOURCE_DIR}/*.cc"
 )

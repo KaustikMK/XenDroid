@@ -33,6 +33,7 @@
 #include "xenia/base/platform.h"
 #include "xenia/base/string.h"
 #include "xenia/base/system.h"
+#include "xenia/base/threading.h"
 #include "xenia/cpu/backend/code_cache.h"
 #include "xenia/cpu/backend/null_backend.h"
 #include "xenia/cpu/cpu_flags.h"
@@ -85,6 +86,14 @@
 DEFINE_double(time_scalar, 1.0,
               "Scalar used to speed or slow time (1x, 2x, 1/2x, etc).",
               "General");
+
+DEFINE_bool(
+    auto_reset_event_handoff, false,
+    "Strict NT SetEvent semantics for auto-reset events (directed FIFO "
+    "hand-off to a parked waiter). Fixes Ace Combat 6's audio-handshake "
+    "deadlock but can regress synchronization timing in other titles; enabled "
+    "per title via game quirks and overridable in the per-game config.",
+    "Kernel");
 
 DEFINE_string(
     launch_module, "",
@@ -2398,6 +2407,13 @@ X_STATUS Emulator::CompleteLaunch(const std::filesystem::path& path,
     if (title_version.value != 0) {
       title_version_ = format_version(title_version);
     }
+  }
+
+  // Before guest threads exist; quirks + per-game config already applied.
+  xe::threading::SetAutoResetEventHandoff(cvars::auto_reset_event_handoff);
+  if (cvars::auto_reset_event_handoff) {
+    XELOGI("Auto-reset event hand-off enabled for title {:08X}",
+           title_id_.value_or(0));
   }
 
   // Try and load the resource database (xex only).

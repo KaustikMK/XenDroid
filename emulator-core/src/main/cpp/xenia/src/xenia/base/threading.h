@@ -234,6 +234,10 @@ WaitResult Wait(
     WaitHandle* wait_handle, bool is_alertable,
     std::chrono::milliseconds timeout = std::chrono::milliseconds::max());
 
+// Strict NT auto-reset event hand-off; flipped per title at launch, before
+// guest threads exist. POSIX-only.
+void SetAutoResetEventHandoff(bool enabled);
+
 // Signals one object and waits on another object as a single operation.
 // Waits until the wait handle is in the signaled state, an alert triggers and
 // a user callback is queued to the thread, or the timeout interval elapses.

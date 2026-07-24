@@ -18,6 +18,7 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import xendroid.compose.core.EmuProcessLink
 import xendroid.compose.core.EmulatorRuntime
+import xendroid.compose.core.FrontendLaunch
 import xendroid.compose.core.EmulatorSession
 import xendroid.compose.core.ScreenBrightnessSampler
 import xendroid.compose.core.SessionLogs
@@ -129,9 +130,11 @@ class EmulatorHostActivity : ComponentActivity(), SurfaceHolder.Callback {
         // (crash / OOM / swipe). Android does not kill this sibling process for us.
         intent?.let { EmuProcessLink.bindToMainProcessDeath(it) }
 
-        val gameUri = intent?.getStringExtra(EXTRA_GAME_URI)
+        // In-app game_uri extra, or frontend shapes (AutoStartFile, data URI).
+        val gameUri = FrontendLaunch.resolveGamePath(this, intent)
         if (gameUri.isNullOrEmpty()) {
-            Log.e(TAG, "No game_uri extra; finishing")
+            Log.e(TAG, "No bootable game in launch intent; finishing")
+            Toast.makeText(this, "XenDroid: no game in launch intent", Toast.LENGTH_LONG).show()
             finish(); return
         }
         if (!EmulatorRuntime.supportsVulkan) {
@@ -139,8 +142,8 @@ class EmulatorHostActivity : ComponentActivity(), SurfaceHolder.Callback {
             finish(); return
         }
 
-        // Real-path (All Files Access) launch: the launch Intent carries an ABSOLUTE host
-        // path in the EXTRA_GAME_URI extra (real-path is the only library mode).
+        // Real-path (All Files Access) launch: the resolved gameUri is an ABSOLUTE
+        // host path (real-path is the only library mode).
 
         // PRE-surface native setup is async ONLY to ensureLoaded() off-main on delay-load
         // devices; the actual native setup_* calls are marshaled back to the main thread.
@@ -430,9 +433,10 @@ class EmulatorHostActivity : ComponentActivity(), SurfaceHolder.Callback {
 
     /** Joystick axes + hat (D-pad). Mirrors EmulatorActivity.onGenericMotion/handle_dpad. */
     private fun onGenericMotion(event: MotionEvent): Boolean {
-        if (isNonDpadSource(event) && handleHat(event)) return true
+        // No early return: sticks/triggers must still process while a hat is held.
+        val hatHandled = isNonDpadSource(event) && handleHat(event)
         if (event.source and InputDevice.SOURCE_JOYSTICK != InputDevice.SOURCE_JOYSTICK) {
-            return super.onGenericMotionEvent(event)
+            return hatHandled || super.onGenericMotionEvent(event)
         }
         // Left stick
         emitAxisPair(event.getAxisValue(MotionEvent.AXIS_X),
@@ -483,31 +487,34 @@ class EmulatorHostActivity : ComponentActivity(), SurfaceHolder.Callback {
         }
     }
 
-    /** Hat axes -> D-pad. Returns true if any direction is pressed. */
+    // Hat D-pad state, edge-detected: the hat only releases what IT pressed, so
+    // it can't clobber a D-pad held via real KEYCODE_DPAD_* key events.
+    private var hatLeft = false
+    private var hatUp = false
+    private var hatRight = false
+    private var hatDown = false
+
+    /** Hat axes -> D-pad; thresholds, not ==+-1f (some pads are inexact). */
     private fun handleHat(event: MotionEvent): Boolean {
-        var pressed = false
         val hx = event.getAxisValue(MotionEvent.AXIS_HAT_X)
         val hy = event.getAxisValue(MotionEvent.AXIS_HAT_Y)
-        when {
-            hx == -1f -> { dpad(KC_DPAD_LEFT, KC_DPAD_RIGHT); pressed = true }
-            hx == 1f  -> { dpad(KC_DPAD_RIGHT, KC_DPAD_LEFT); pressed = true }
+        val left = hx < -0.5f
+        val right = hx > 0.5f
+        val up = hy < -0.5f
+        val down = hy > 0.5f
+        if (left != hatLeft) {
+            session.keyEvent(KC_DPAD_LEFT, left, KEY_VALUE_UNUSED); hatLeft = left
         }
-        when {
-            hy == -1f -> { dpad(KC_DPAD_UP, KC_DPAD_DOWN); pressed = true }
-            hy == 1f  -> { dpad(KC_DPAD_DOWN, KC_DPAD_UP); pressed = true }
+        if (right != hatRight) {
+            session.keyEvent(KC_DPAD_RIGHT, right, KEY_VALUE_UNUSED); hatRight = right
         }
-        if (pressed) return true
-        // No hat direction -> release all four (legacy behavior).
-        session.keyEvent(KC_DPAD_LEFT, false, KEY_VALUE_UNUSED)
-        session.keyEvent(KC_DPAD_UP, false, KEY_VALUE_UNUSED)
-        session.keyEvent(KC_DPAD_RIGHT, false, KEY_VALUE_UNUSED)
-        session.keyEvent(KC_DPAD_DOWN, false, KEY_VALUE_UNUSED)
-        return false
-    }
-
-    private fun dpad(pressCode: Int, releaseCode: Int) {
-        session.keyEvent(pressCode, true, KEY_VALUE_UNUSED)
-        session.keyEvent(releaseCode, false, KEY_VALUE_UNUSED)
+        if (up != hatUp) {
+            session.keyEvent(KC_DPAD_UP, up, KEY_VALUE_UNUSED); hatUp = up
+        }
+        if (down != hatDown) {
+            session.keyEvent(KC_DPAD_DOWN, down, KEY_VALUE_UNUSED); hatDown = down
+        }
+        return left || right || up || down
     }
 
     /** Legacy isDpadDevice: TRUE when the device is NOT a SOURCE_DPAD (i.e. treat as

@@ -52,14 +52,15 @@ DEFINE_bool(
         "Custom Driver Force Max Clocks",
         "Vulkan");
 DEFINE_string(
-        turnip_debug, "",
+        turnip_debug, "sysmem",
         "TU_DEBUG flags passed to the Turnip (Mesa freedreno) Vulkan driver, "
-        "comma-separated. 'sysmem' forces sysmem (untiled) rendering, which "
-        "masks a class of tiled-rendering (GMEM) artifacts and Adreno GPU "
-        "hangs - but only on Turnip; proprietary drivers ignore it, so the "
-        "underlying command-stream bugs must be fixed rather than hidden. "
-        "Empty leaves TU_DEBUG unset.",
+        "comma-separated. 'sysmem' (the default) forces sysmem (untiled) "
+        "rendering, which masks a class of tiled-rendering (GMEM) artifacts "
+        "and Adreno GPU hangs - but only on Turnip; proprietary drivers "
+        "ignore it, so the underlying command-stream bugs must be fixed "
+        "rather than hidden. Empty leaves TU_DEBUG unset.",
         "Vulkan");
+UPDATE_from_string(turnip_debug, 2026, 7, 24, 12, "");
 #endif
 
 DEFINE_bool(
@@ -102,10 +103,25 @@ std::unique_ptr<VulkanInstance> VulkanInstance::Create(
     // Turnip reads TU_DEBUG from the environment at vkCreateInstance, so set it
     // before the driver is loaded. Default "sysmem" forces untiled rendering,
     // which avoids a class of Adreno GPU hangs (device-loss).
-    if (!cvars::turnip_debug.empty()) {
-      setenv("TU_DEBUG", cvars::turnip_debug.c_str(), 1);
-      XELOGI("Set TU_DEBUG={} for the Turnip Vulkan driver",
-             cvars::turnip_debug);
+    std::string tu_debug = cvars::turnip_debug;
+    // Adreno 6xx: Turnip's shared-consts push delivery is broken there.
+    if (tu_debug.find("push_consts_per_stage") == std::string::npos) {
+      char gpu_model[64] = {};
+      if (FILE* f = fopen("/sys/class/kgsl/kgsl-3d0/gpu_model", "r")) {
+        if (!fgets(gpu_model, sizeof(gpu_model), f)) {
+          gpu_model[0] = '\0';
+        }
+        fclose(f);
+      }
+      const char* model_digits = strpbrk(gpu_model, "0123456789");
+      if (model_digits && atoi(model_digits) / 100 == 6) {
+        tu_debug += tu_debug.empty() ? "push_consts_per_stage"
+                                     : ",push_consts_per_stage";
+      }
+    }
+    if (!tu_debug.empty()) {
+      setenv("TU_DEBUG", tu_debug.c_str(), 1);
+      XELOGI("Set TU_DEBUG={} for the Turnip Vulkan driver", tu_debug);
     }
     std::string custom_lib_path=cvars::vulkan_lib_path;
     bool custom_lib_exists =
