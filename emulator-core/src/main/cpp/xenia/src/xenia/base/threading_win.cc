@@ -252,6 +252,9 @@ WaitResult Wait(WaitHandle* wait_handle, bool is_alertable,
   }
 }
 
+// Win32 events already have NT semantics.
+void SetAutoResetEventHandoff(bool enabled) {}
+
 WaitResult SignalAndWait(WaitHandle* wait_handle_to_signal,
                          WaitHandle* wait_handle_to_wait_on, bool is_alertable,
                          std::chrono::milliseconds timeout) {

@@ -21,6 +21,7 @@
 #include "xenia/base/string_buffer.h"
 #include "xenia/base/system.h"
 #include "xenia/emulator.h"
+#include "xenia/game_quirks.h"
 #include "xenia/ui/config_helpers.h"
 #include "xenia/vfs/iso_metadata.h"
 #include "xenia/vfs/stfs_metadata.h"
@@ -318,6 +319,11 @@ uint32_t LoadGameConfigForFile(const std::filesystem::path& game_path) {
   // new title's overrides only.
   for (auto& it : *cvar::ConfigVars) {
     static_cast<cvar::IConfigVar*>(it.second)->ClearGameConfigValue();
+  }
+
+  // Per-title quirks at game-config priority; the file below wins per key.
+  if (xe::game_quirks::Apply(title_id) > 0) {
+    game_config_loaded = true;
   }
 
   if (!std::filesystem::exists(game_config_path)) {

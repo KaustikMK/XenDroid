@@ -91,6 +91,17 @@ DEFINE_bool(wfe_precise_sleep, false,
 namespace xe {
 namespace threading {
 
+// Strict NT auto-reset hand-off; off by default, enabled per title (AC6).
+static std::atomic<bool> auto_reset_event_handoff_{false};
+
+void SetAutoResetEventHandoff(bool enabled) {
+  auto_reset_event_handoff_.store(enabled, std::memory_order_release);
+}
+
+static inline bool AutoResetEventHandoff() {
+  return auto_reset_event_handoff_.load(std::memory_order_relaxed);
+}
+
 #if XE_PLATFORM_ANDROID
 // May be null if no dynamically loaded functions are required.
 static void* android_libc_;
@@ -423,6 +434,16 @@ class PosixConditionBase {
     return WaitResult::kTimeout;
   }
 
+  // Signal first and drop its lock (ABBA/self-deadlock otherwise), then wait
+  // through this object's own Wait() so type-specific machinery is kept.
+  virtual WaitResult SignalAndWaitOn(PosixConditionBase* to_signal,
+                                     std::chrono::milliseconds timeout) {
+    if (!to_signal->Signal()) {
+      return WaitResult::kFailed;
+    }
+    return Wait(timeout);
+  }
+
   // Wake this object's waiters and any parked WaitMultiple.
   void NotifyAll() {
     cond_.notify_all();
@@ -583,6 +604,9 @@ class PosixConditionBase {
 template <typename T>
 class PosixCondition {};
 
+// NT auto-reset SetEvent semantics (hand-off mode): a Set releases one
+// ALREADY-WAITING thread via a per-waiter FIFO, so the setter can never
+// reclaim its own signal; with no waiter it latches one idempotent token.
 template <>
 class PosixCondition<Event> : public PosixConditionBase {
  public:
@@ -590,20 +614,174 @@ class PosixCondition<Event> : public PosixConditionBase {
       : signal_(initial_state), manual_reset_(manual_reset) {}
   ~PosixCondition() override = default;
 
+  // SetEvent.
   bool Signal() override {
-    auto lock = std::unique_lock(mutex_);
+    auto lock = GuardedLock();
+    if (manual_reset_ || !AutoResetEventHandoff()) {
+      signal_ = true;
+      NotifyAll();
+      return true;
+    }
+    if (ReleaseOneWaiterLocked()) {
+      return true;
+    }
+    // No waiter: latch one idempotent token.
     signal_ = true;
     NotifyAll();
     return true;
   }
 
+  // ResetEvent.
   void Reset() {
-    auto lock = std::unique_lock(mutex_);
+    auto lock = GuardedLock();
     signal_ = false;
   }
 
+  // WaitForSingleObject.
+  WaitResult Wait(std::chrono::milliseconds timeout) override {
+    auto lock = GuardedLock();
+    return WaitLocked(lock, timeout);
+  }
+
+  // Signal first, drop its lock (see base); a Set in the gap latches a token.
+  WaitResult SignalAndWaitOn(PosixConditionBase* to_signal,
+                             std::chrono::milliseconds timeout) override {
+    if (!to_signal->Signal()) {
+      return WaitResult::kFailed;
+    }
+    auto lock = GuardedLock();
+    return WaitLocked(lock, timeout);
+  }
+
  private:
-  [[nodiscard]] bool signaled() const override { return signal_; }
+  // Intrusive per-waiter FIFO node on the waiter's stack.
+  struct Waiter {
+    bool released = false;
+    Waiter* prev = nullptr;
+    Waiter* next = nullptr;
+  };
+
+  // Robust-mutex aware lock (EOWNERDEAD recovery on Linux).
+  std::unique_lock<std::mutex> GuardedLock() {
+#if XE_PLATFORM_MAC || XE_PLATFORM_xendroid
+    return std::unique_lock<std::mutex>(mutex_);
+#else
+    auto native_mutex = static_cast<pthread_mutex_t*>(mutex_.native_handle());
+    int lock_result = pthread_mutex_lock(native_mutex);
+    if (lock_result == EOWNERDEAD) {
+      pthread_mutex_consistent(native_mutex);
+    }
+    return std::unique_lock<std::mutex>(mutex_, std::adopt_lock);
+#endif
+  }
+
+  bool ReleaseOneWaiterLocked() {
+    for (Waiter* w = head_; w != nullptr; w = w->next) {
+      if (!w->released) {
+        w->released = true;
+        NotifyAll();
+        return true;
+      }
+    }
+    return false;
+  }
+
+  WaitResult WaitLocked(std::unique_lock<std::mutex>& lock,
+                        std::chrono::milliseconds timeout) {
+    if (manual_reset_ || !AutoResetEventHandoff()) {
+      // Plain latch; legacy auto-reset consumes on wake.
+      auto predicate = [this] { return signal_; };
+      bool executed;
+      if (predicate()) {
+        executed = true;
+      } else if (timeout == std::chrono::milliseconds::max()) {
+        cond_.wait(lock, predicate);
+        executed = true;
+      } else {
+        executed = cond_.wait_for(lock, timeout, predicate);
+      }
+      if (executed) {
+        if (!manual_reset_) {
+          signal_ = false;
+        }
+        return WaitResult::kSuccess;
+      }
+      return WaitResult::kTimeout;
+    }
+
+    // Latched token with an empty queue: consume directly.
+    if (signal_ && head_ == nullptr) {
+      signal_ = false;
+      return WaitResult::kSuccess;
+    }
+
+    // Enqueue under the lock so a concurrent Set observes us; complete on our
+    // released flag or, as the head, on the latch.
+    Waiter node;
+    PushBack(&node);
+    auto predicate = [this, &node] {
+      return node.released || (signal_ && head_ == &node);
+    };
+    bool executed;
+    if (timeout == std::chrono::milliseconds::max()) {
+      cond_.wait(lock, predicate);
+      executed = true;
+    } else {
+      executed = cond_.wait_for(lock, timeout, predicate);
+    }
+
+    if (node.released) {
+      Unlink(&node);
+      return WaitResult::kSuccess;
+    }
+    if (signal_ && head_ == &node) {
+      signal_ = false;
+      Unlink(&node);
+      return WaitResult::kSuccess;
+    }
+    (void)executed;
+    Unlink(&node);
+    return WaitResult::kTimeout;
+  }
+
+  void PushBack(Waiter* node) {
+    node->prev = tail_;
+    node->next = nullptr;
+    if (tail_ != nullptr) {
+      tail_->next = node;
+    } else {
+      head_ = node;
+    }
+    tail_ = node;
+  }
+
+  void Unlink(Waiter* node) {
+    const bool was_head = (head_ == node);
+    if (node->prev != nullptr) {
+      node->prev->next = node->next;
+    } else {
+      head_ = node->next;
+    }
+    if (node->next != nullptr) {
+      node->next->prev = node->prev;
+    } else {
+      tail_ = node->prev;
+    }
+    node->prev = node->next = nullptr;
+    // A new head may now claim a latched token.
+    if (was_head && signal_ && head_ != nullptr) {
+      NotifyAll();
+    }
+  }
+
+  // WaitMultiple view: auto-reset reports signaled only when no queued
+  // single-object waiter could claim the token.
+  [[nodiscard]] bool signaled() const override {
+    if (manual_reset_) {
+      return signal_;
+    }
+    return signal_ && head_ == nullptr;
+  }
   void post_execution() override {
     if (!manual_reset_) {
       signal_ = false;
@@ -611,6 +789,8 @@ class PosixCondition<Event> : public PosixConditionBase {
   }
   bool signal_;
   const bool manual_reset_;
+  Waiter* head_ = nullptr;
+  Waiter* tail_ = nullptr;
 };
 
 template <>
@@ -1514,8 +1694,13 @@ WaitResult SignalAndWait(WaitHandle* wait_handle_to_signal,
   if (is_alertable) {
     alertable_state_ = true;
   }
-  if (posix_wait_handle_to_signal->condition().Signal()) {
-    result = posix_wait_handle_to_wait_on->condition().Wait(timeout);
+  if (AutoResetEventHandoff()) {
+    result = posix_wait_handle_to_wait_on->condition().SignalAndWaitOn(
+        &posix_wait_handle_to_signal->condition(), timeout);
+  } else {
+    if (posix_wait_handle_to_signal->condition().Signal()) {
+      result = posix_wait_handle_to_wait_on->condition().Wait(timeout);
+    }
   }
   if (is_alertable) {
     alertable_state_ = false;
