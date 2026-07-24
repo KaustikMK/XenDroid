@@ -18,6 +18,7 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import xendroid.compose.core.EmuProcessLink
 import xendroid.compose.core.EmulatorRuntime
+import xendroid.compose.core.FrontendLaunch
 import xendroid.compose.core.EmulatorSession
 import xendroid.compose.core.ScreenBrightnessSampler
 import xendroid.compose.core.SessionLogs
@@ -129,9 +130,11 @@ class EmulatorHostActivity : ComponentActivity(), SurfaceHolder.Callback {
         // (crash / OOM / swipe). Android does not kill this sibling process for us.
         intent?.let { EmuProcessLink.bindToMainProcessDeath(it) }
 
-        val gameUri = intent?.getStringExtra(EXTRA_GAME_URI)
+        // In-app game_uri extra, or frontend shapes (AutoStartFile, data URI).
+        val gameUri = FrontendLaunch.resolveGamePath(this, intent)
         if (gameUri.isNullOrEmpty()) {
-            Log.e(TAG, "No game_uri extra; finishing")
+            Log.e(TAG, "No bootable game in launch intent; finishing")
+            Toast.makeText(this, "XenDroid: no game in launch intent", Toast.LENGTH_LONG).show()
             finish(); return
         }
         if (!EmulatorRuntime.supportsVulkan) {
@@ -139,8 +142,8 @@ class EmulatorHostActivity : ComponentActivity(), SurfaceHolder.Callback {
             finish(); return
         }
 
-        // Real-path (All Files Access) launch: the launch Intent carries an ABSOLUTE host
-        // path in the EXTRA_GAME_URI extra (real-path is the only library mode).
+        // Real-path (All Files Access) launch: the resolved gameUri is an ABSOLUTE
+        // host path (real-path is the only library mode).
 
         // PRE-surface native setup is async ONLY to ensureLoaded() off-main on delay-load
         // devices; the actual native setup_* calls are marshaled back to the main thread.
