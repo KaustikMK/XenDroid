@@ -215,11 +215,14 @@ namespace xe {
                         // No keys!
                         return X_ERROR_EMPTY;
                     }
+                    // One keystroke per call, lowest index first, clearing only
+                    // its bit; the guest drains the rest by polling until EMPTY.
                     for(size_t i = 0; i < key_status_.size(); i++){
                         if(key_status_mask_&(1<<i)){
                             xinput_virtual_key=key_status_[i].id;
                             key_status_index=i;
                             key_status_mask_&=~(1<<i);
+                            break;
                         }
                     }
                 }
