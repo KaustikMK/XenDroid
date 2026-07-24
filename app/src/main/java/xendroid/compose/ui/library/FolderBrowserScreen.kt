@@ -1,6 +1,9 @@
 package xendroid.compose.ui.library
 
+import android.content.Context
+import android.os.Build
 import android.os.Environment
+import android.os.storage.StorageManager
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -30,15 +33,22 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import java.io.File
+
+/** A browsable storage root: internal storage or a mounted removable volume. */
+private data class StorageRoot(val label: String, val dir: File)
 
 /**
  * Self-contained java.io.File directory browser for REAL-PATH (All Files Access) mode.
  * Replaces the SAF OPEN_DOCUMENT_TREE picker, which MIUI/HyperOS refuses. Starts at the
  * primary external storage root, lists subdirectories only (sorted, hidden skipped), and
  * lets the user confirm the current directory as the games folder.
+ *
+ * Mounted removable volumes (USB/SD) get a "volumes" level above the storage roots;
+ * enumeration needs API 30+, below that only primary storage is offered.
  *
  * Two modes (the caller picks via which callback it passes):
  *  - folder-pick (default): [onFolderChosen] non-null -> a "Use this folder" button
@@ -56,49 +66,65 @@ fun FolderBrowserScreen(
     onFileChosen: ((path: String) -> Unit)? = null,
     onCancel: () -> Unit,
 ) {
-    val root = remember { Environment.getExternalStorageDirectory() ?: File("/") }
-    var current by remember { mutableStateOf(root) }
+    val context = LocalContext.current
+    val roots = remember { enumerateStorageRoots(context) }
+
+    // null = the volume-list level.
+    var current by remember {
+        mutableStateOf<File?>(if (roots.size > 1) null else roots.first().dir)
+    }
 
     // Subdirectories of the current dir: directories only, no hidden, sorted by name.
-    val subDirs = remember(current.absolutePath) {
-        current.listFiles()
+    val subDirs = remember(current?.absolutePath) {
+        current?.listFiles()
             ?.filter { it.isDirectory && !it.isHidden }
             ?.sortedBy { it.name.lowercase() }
             ?: emptyList()
     }
 
     // File-pick mode only: regular files in the current dir, sorted, hidden skipped.
-    val files = remember(current.absolutePath) {
-        if (onFileChosen == null) emptyList()
-        else current.listFiles()
+    val files = remember(current?.absolutePath) {
+        val dir = current
+        if (onFileChosen == null || dir == null) emptyList()
+        else dir.listFiles()
             ?.filter { it.isFile && !it.isHidden }
             ?.sortedBy { it.name.lowercase() }
             ?: emptyList()
     }
+
+    val atVolumeList = current == null
+    val atVolumeRoot = current != null &&
+        roots.any { it.dir.absolutePath == current!!.absolutePath }
 
     Scaffold(
         topBar = {
             TopAppBar(
                 title = {
                     Text(
-                        current.absolutePath,
+                        current?.absolutePath ?: "Storage",
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                         style = MaterialTheme.typography.titleMedium,
                     )
                 },
                 navigationIcon = {
-                    // Up to parent, but never above the storage root.
-                    val canGoUp = current.absolutePath != root.absolutePath &&
-                        current.parentFile != null
                     IconButton(
                         onClick = {
-                            if (canGoUp) current = current.parentFile!! else onCancel()
+                            val dir = current
+                            when {
+                                dir == null -> onCancel()
+                                atVolumeRoot ->
+                                    if (roots.size > 1) current = null else onCancel()
+                                dir.parentFile != null -> current = dir.parentFile
+                                else -> onCancel()
+                            }
                         },
                     ) {
                         Icon(
                             Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = if (canGoUp) "Up" else "Cancel",
+                            contentDescription =
+                                if (atVolumeList || (atVolumeRoot && roots.size == 1))
+                                    "Cancel" else "Up",
                         )
                     }
                 },
@@ -112,15 +138,40 @@ fun FolderBrowserScreen(
                 horizontalArrangement = Arrangement.End,
             ) {
                 TextButton(onClick = onCancel) { Text("Cancel") }
-                if (onFolderChosen != null) {
+                if (onFolderChosen != null && !atVolumeList) {
                     Spacer(Modifier.width(8.dp))
-                    TextButton(onClick = { onFolderChosen(current.absolutePath) }) {
+                    TextButton(onClick = { onFolderChosen(current!!.absolutePath) }) {
                         Text("Use this folder")
                     }
                 }
             }
 
-            if (subDirs.isEmpty() && files.isEmpty()) {
+            if (atVolumeList) {
+                LazyColumn(Modifier.fillMaxSize()) {
+                    items(roots, key = { it.dir.absolutePath }) { root ->
+                        ListItem(
+                            headlineContent = {
+                                Text(root.label, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            },
+                            supportingContent = {
+                                Text(
+                                    root.dir.absolutePath,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    style = MaterialTheme.typography.bodySmall,
+                                )
+                            },
+                            trailingContent = {
+                                Icon(
+                                    Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                                    contentDescription = "Open",
+                                )
+                            },
+                            modifier = Modifier.clickable { current = root.dir },
+                        )
+                    }
+                }
+            } else if (subDirs.isEmpty() && files.isEmpty()) {
                 Column(Modifier.fillMaxSize().padding(24.dp)) {
                     Text(
                         if (onFolderChosen != null)
@@ -160,4 +211,27 @@ fun FolderBrowserScreen(
             }
         }
     }
+}
+
+/** Primary storage plus mounted removable volumes (API 30+; primary-only below). */
+private fun enumerateStorageRoots(context: Context): List<StorageRoot> {
+    val primary = Environment.getExternalStorageDirectory() ?: File("/")
+    val roots = mutableListOf(StorageRoot("Internal storage", primary))
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+        try {
+            val sm = context.getSystemService(Context.STORAGE_SERVICE) as StorageManager
+            for (volume in sm.storageVolumes) {
+                if (volume.isPrimary) continue
+                if (volume.state != Environment.MEDIA_MOUNTED &&
+                    volume.state != Environment.MEDIA_MOUNTED_READ_ONLY
+                ) {
+                    continue
+                }
+                val dir = volume.directory ?: continue
+                roots.add(StorageRoot(volume.getDescription(context) ?: dir.name, dir))
+            }
+        } catch (_: Exception) {
+        }
+    }
+    return roots
 }
