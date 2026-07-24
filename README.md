@@ -39,13 +39,9 @@ Please check the LICENSE file under the appropriate file header and directory fo
 - Adreno GPU 740 or higher. Lower 7xx have not been tested.
 
 ## Recommended Drivers
-- [Adreno 8xx](https://github.com/StevenMXZ/Adreno-Tools-Drivers/releases/tag/v32) Turnip drivers
-  - Might work with 7xx series too, needs testing.
-- [Adreno 7xx](https://github.com/StevenMXZ/Adreno-Tools-Drivers/releases/tag/v26.2.0-R6) Turnip drivers
-
-You can check your device specs with [CPU X](https://play.google.com/store/apps/details?id=com.abs.cpu_z_advance&hl=it) to get the matching driver.
-
-To apply the drivers go to **Settings** > **Vulkan** > **Custom Vulkan Driver**, then select the zip file.
+- You can get the drivers for your GPU [here](https://github.com/StevenMXZ/Adreno-Tools-Drivers/releases)
+  - Check your device specs with [CPU X](https://play.google.com/store/apps/details?id=com.abs.cpu_z_advance&hl=it) to get the matching driver.
+  - To apply the drivers go to **Settings** > **Vulkan** > **Custom Vulkan Driver**, then select the zip file.
 
 ## About Donations
 I would like to take this opportunity to help a friend out. If you are willing to make donations, please consider donating to
