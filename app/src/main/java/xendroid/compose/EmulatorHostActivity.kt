@@ -417,7 +417,8 @@ class EmulatorHostActivity : ComponentActivity(), SurfaceHolder.Callback {
     // ---- Hardware input -> session.keyEvent ----
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
-        val gameKey = keyMap[keyCode] ?: return super.onKeyDown(keyCode, event)
+        val gameKey = keyMap[keyCode]
+            ?: return consumeIfGamepad(event) || super.onKeyDown(keyCode, event)
         if (event.repeatCount == 0) {
             session.keyEvent(gameKey, true, KEY_VALUE_UNUSED)
             return true
@@ -426,10 +427,19 @@ class EmulatorHostActivity : ComponentActivity(), SurfaceHolder.Callback {
     }
 
     override fun onKeyUp(keyCode: Int, event: KeyEvent): Boolean {
-        val gameKey = keyMap[keyCode] ?: return super.onKeyUp(keyCode, event)
+        val gameKey = keyMap[keyCode]
+            ?: return consumeIfGamepad(event) || super.onKeyUp(keyCode, event)
         session.keyEvent(gameKey, false, KEY_VALUE_UNUSED)
         return true
     }
+
+    /** Unmapped controller buttons (never BACK): unhandled gamepad input is what OEM
+     *  overlays latch onto. */
+    private fun consumeIfGamepad(event: KeyEvent): Boolean =
+        event.keyCode != KeyEvent.KEYCODE_BACK &&
+            (event.source and InputDevice.SOURCE_GAMEPAD == InputDevice.SOURCE_GAMEPAD ||
+                event.source and InputDevice.SOURCE_JOYSTICK == InputDevice.SOURCE_JOYSTICK)
+
 
     /** Joystick axes + hat (D-pad). Mirrors EmulatorActivity.onGenericMotion/handle_dpad. */
     private fun onGenericMotion(event: MotionEvent): Boolean {
