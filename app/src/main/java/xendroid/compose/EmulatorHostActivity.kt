@@ -440,6 +440,8 @@ class EmulatorHostActivity : ComponentActivity(), SurfaceHolder.Callback {
             (event.source and InputDevice.SOURCE_GAMEPAD == InputDevice.SOURCE_GAMEPAD ||
                 event.source and InputDevice.SOURCE_JOYSTICK == InputDevice.SOURCE_JOYSTICK)
 
+    /** The SurfaceView listener only fires while that view holds focus. */
+    override fun onGenericMotionEvent(event: MotionEvent): Boolean = onGenericMotion(event)
 
     /** Joystick axes + hat (D-pad). Mirrors EmulatorActivity.onGenericMotion/handle_dpad. */
     private fun onGenericMotion(event: MotionEvent): Boolean {
@@ -483,18 +485,30 @@ class EmulatorHostActivity : ComponentActivity(), SurfaceHolder.Callback {
         val v = if (invert) -axis else axis
         when {
             v < 0f -> {
-                session.keyEvent(posKey, false, 0)
-                session.keyEvent(negKey, true, (v * 32768f).toInt())          // negative magnitude
+                emitAxis(posKey, false, 0)
+                emitAxis(negKey, true, (v * 32768f).toInt())                  // negative magnitude
             }
             v > 0f -> {
-                session.keyEvent(negKey, false, 0)
-                session.keyEvent(posKey, true, (v * 32767f).toInt())
+                emitAxis(negKey, false, 0)
+                emitAxis(posKey, true, (v * 32767f).toInt())
             }
             else -> {
-                session.keyEvent(negKey, false, 0)
-                session.keyEvent(posKey, false, 0)
+                emitAxis(negKey, false, 0)
+                emitAxis(posKey, false, 0)
             }
         }
+    }
+
+    // Last value pushed per analog code. Motion events arrive per sample (~120Hz x 4 axes)
+    // and mostly repeat, so without this every sample costs ~10 JNI calls.
+    private val axisPressed = BooleanArray(24)
+    private val axisValue = IntArray(24) { Int.MIN_VALUE }
+
+    private fun emitAxis(code: Int, pressed: Boolean, value: Int) {
+        if (axisPressed[code] == pressed && axisValue[code] == value) return
+        axisPressed[code] = pressed
+        axisValue[code] = value
+        session.keyEvent(code, pressed, value)
     }
 
     // Hat D-pad state, edge-detected: the hat only releases what IT pressed, so
