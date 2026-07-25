@@ -260,12 +260,17 @@ namespace xe {
                 }*/
 
                 auto global_lock = global_critical_region_.Acquire();
+                const bool was_pressed = key_status_[key_index].pressed;
                 prev_key_status_[key_index] = key_status_[key_index];
 
                 key_status_[key_index].pressed = pressed;
                 key_status_[key_index].value = value;
 
-                key_status_mask_ |= (1 << key_index);
+                // Transitions only: analog axes re-send every motion sample, which
+                // would keep GetKeystroke from ever reaching EMPTY.
+                if (was_pressed != pressed) {
+                    key_status_mask_ |= (1 << key_index);
+                }
             }
 
 
