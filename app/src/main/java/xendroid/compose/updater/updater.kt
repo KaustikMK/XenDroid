@@ -1,5 +1,6 @@
 package xendroid.compose.updater
 
+import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.util.Log
@@ -55,6 +56,25 @@ interface GithubApi {
     suspend fun latestRelease(): GithubRelease
 }
 
+private const val PREFS_NAME = "updater"
+private const val KEY_LAST_CHECK = "last_update_check"
+private const val UPDATE_INTERVAL = 5 * 60 * 1000L
+
+fun shouldCheckForUpdates(context: Context): Boolean {
+    val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+
+    val lastCheck = prefs.getLong(KEY_LAST_CHECK, 0L)
+    val now = System.currentTimeMillis()
+
+    return now - lastCheck >= UPDATE_INTERVAL
+}
+
+fun saveLastCheck(context: Context) {
+    context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        .edit()
+        .putLong(KEY_LAST_CHECK, System.currentTimeMillis())
+        .apply()
+}
 
 private val retrofit = Retrofit.Builder()
     .baseUrl("https://api.github.com/")
@@ -157,6 +177,12 @@ fun UpdateDialog(
 
                 Text(
                     "Do you want to download now?"
+                )
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                Text(
+                    "If not the updater will ask again in 5 minutes (avoids API rate limit issues)."
                 )
             }
         },

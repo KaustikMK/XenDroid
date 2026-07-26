@@ -19,6 +19,8 @@ import xendroid.compose.updater.LatestVersionDialog
 import xendroid.compose.updater.UpdateDialog
 import xendroid.compose.updater.UpdateResult
 import xendroid.compose.updater.checkForUpdates
+import xendroid.compose.updater.shouldCheckForUpdates
+import xendroid.compose.updater.saveLastCheck
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
 
@@ -56,8 +58,18 @@ class MainActivity : ComponentActivity() {
                 AppNavHost(container)
 
                 LaunchedEffect(Unit) {
+                    if (!shouldCheckForUpdates(applicationContext)) {
+                        Log.d("Updater", "Skipping update check (less than 5 minutes)")
+                        return@LaunchedEffect
+                    }
+
                     try {
-                        updateResult = checkForUpdates()
+                        val result = checkForUpdates()
+
+                        updateResult = result
+
+                        // Export check result only if github replied with a valid response
+                        saveLastCheck(applicationContext)
                     } catch (e: Exception) {
                         Log.e(
                             "Updater",
