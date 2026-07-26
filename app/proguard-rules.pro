@@ -8,4 +8,13 @@
 }
 -keep,includedescriptorclasses class xendroid.compose.**$$serializer { *; }
 
+# Gson
+-keepattributes Signature
+-keepattributes RuntimeVisibleAnnotations
+-keepattributes *Annotation*
+
+# Retrofit API models
+-keep class xendroid.compose.updater.GithubRelease { *; }
+-keep interface xendroid.compose.updater.GithubApi { *; }
+
 # JNI keeps for :emulator-core come from its consumer-rules.pro automatically.
