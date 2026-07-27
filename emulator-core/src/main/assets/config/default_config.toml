@@ -21,6 +21,7 @@ clock_no_scaling = false                          	# Disable scaling code. Time 
 clock_source_raw = false                          	# On x64, Use the RDTSC instruction as the time source. Requires invariant TSC. On a64, Use the CNTVCT_EL0 register as the time source
 cpu = "any"                                       	# CPU backend [any, x64, a64].
 debugprint_trap_log = false                       	# Log debugprint traps to the active debugger
+disable_context_promotion = false                 	# Disables Context Promotion optimizations, this may be needed for some sports games, but will reduce performance.
 disable_global_lock = false                       	# Disables global lock usage in guest code. Does not affect host code.
 disassemble_functions = false                     	# Disassemble functions during generation.
 ignore_undefined_externs = true                   	# Don't exit when an undefined extern is called.

@@ -2,6 +2,7 @@ package xendroid.compose.settings
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import xendroid.compose.settings.Setting
@@ -13,25 +14,25 @@ class SettingsSchemaTest {
 
     private val all = SettingsSchema.allSettings
 
-    // Expected inventory: 99 Bool + 8 IntRange + 19 ListChoice + 1 Action = 127.
+    // Expected inventory: 82 Bool + 9 IntRange + 20 ListChoice + 2 Action = 113.
     // Notable typings: Display|host_present_from_non_ui_thread is intentionally absent
     // (must be true on Android -- forced natively, false black-screens the app -- so it
     // is not a valid user choice). GPU|readback_resolve and APU|xma_decoder are string
     // cvars (fast/some/full/none and the decoder name), hence ListChoice rather than Bool.
-    @Test fun total_entry_count_is_127() {
-        assertEquals(127, all.size)
+    @Test fun total_entry_count_is_113() {
+        assertEquals(113, all.size)
         assertEquals(
-            127,
+            113,
             all.count { it is Setting.Bool } + all.count { it is Setting.IntRange } +
                 all.count { it is Setting.ListChoice } + all.count { it is Setting.Action },
         )
     }
 
     @Test fun counts_by_type_match_verified_inventory() {
-        assertEquals(99, all.count { it is Setting.Bool })
-        assertEquals(8, all.count { it is Setting.IntRange })
-        assertEquals(19, all.count { it is Setting.ListChoice })
-        assertEquals(1, all.count { it is Setting.Action })
+        assertEquals(82, all.count { it is Setting.Bool })
+        assertEquals(9, all.count { it is Setting.IntRange })
+        assertEquals(20, all.count { it is Setting.ListChoice })
+        assertEquals(2, all.count { it is Setting.Action })
     }
 
     @Test fun keys_are_unique() {
@@ -47,14 +48,13 @@ class SettingsSchemaTest {
         assertEquals(expected, SettingsSchema.categories.map { it.title })
     }
 
-    @Test fun kernel_allow_nui_has_capital_A() {
-        assertNotNull(SettingsSchema.byKey["Kernel|Allow_nui_initialization"])
+    @Test fun removed_no_op_settings_stay_removed() {
+        assertNull(SettingsSchema.byKey["Kernel|Allow_nui_initialization"])
     }
 
-    @Test fun vulkan_lib_path_is_the_only_action() {
-        val actions = all.filterIsInstance<Setting.Action>()
-        assertEquals(1, actions.size)
-        assertEquals("Vulkan|vulkan_lib_path", actions.single().key)
+    @Test fun actions_are_the_driver_picker_and_the_log_export() {
+        val actions = all.filterIsInstance<Setting.Action>().map { it.key }
+        assertEquals(listOf("Vulkan|vulkan_lib_path", "Logging|dump_session_logs"), actions)
     }
 
     @Test fun list_defaults_are_empty_or_a_member_of_options() {

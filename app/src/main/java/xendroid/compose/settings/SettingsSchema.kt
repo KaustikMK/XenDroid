@@ -196,6 +196,7 @@ object SettingsSchema {
             b("CPU", "break_on_start", "Break on start", false),
             b("CPU", "inline_mmio_access", "Inline MMIO access", true),
             b("CPU", "clock_no_scaling", "Clock no scaling", false),
+            b("CPU", "disable_context_promotion", "Disable context promotion", false),
         )),
 
         SettingsCategory("Logging", listOf(
