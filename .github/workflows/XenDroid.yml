@@ -4,8 +4,7 @@ on:
     branches: main
     
   push:
-    branches: main
-    tags:  "v*" 
+    branches: main 
 
 permissions:
   contents: write
@@ -174,6 +173,10 @@ jobs:
         key: ${{ runner.os }}-ndk${{ env.ANDROID_NDK_VERSION }}-arm64
         max-size: 2G
 
+    - name: Get Git hash
+      id: git
+      run: echo "hash=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+
     ##################################################################
     # Build
     ##################################################################
@@ -182,31 +185,11 @@ jobs:
         chmod +x gradlew
 
         ./gradlew assembleRelease \
+          -PgitHash=${{ steps.git.outputs.hash }} \
           --build-cache \
           --parallel \
           --max-workers=$(nproc) \
           --no-daemon
-
-    ##################################################################
-    # Get Commit SHA for tag
-    ##################################################################
-
-    - name: Create Git tag with commit SHA
-      if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-      run: |
-        SHORT_SHA=$(git rev-parse --short HEAD)
-        TAG="XenDroid-${SHORT_SHA}"
-
-        git config user.name "github-actions[bot]"
-        git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-        if git ls-remote --tags origin "$TAG" | grep -q "$TAG"; then
-          echo "Tag '$TAG' already exists."
-          exit 0
-        fi
-
-        git tag "$TAG"
-        git push origin "refs/tags/$TAG"
 
     ##################################################################
     # Sign APK
