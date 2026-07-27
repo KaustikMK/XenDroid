@@ -22,6 +22,7 @@ import xendroid.compose.core.FrontendLaunch
 import xendroid.compose.core.EmulatorSession
 import xendroid.compose.core.ScreenBrightnessSampler
 import xendroid.compose.core.SessionLogs
+import kotlin.math.abs
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.firstOrNull
@@ -93,6 +94,9 @@ class EmulatorHostActivity : ComponentActivity(), SurfaceHolder.Callback {
         private const val KC_RTHUMB_LEFT = 20; private const val KC_RTHUMB_UP = 21
         private const val KC_RTHUMB_RIGHT = 22; private const val KC_RTHUMB_DOWN = 23
         private const val KEY_VALUE_UNUSED = -1
+        // Analog hardware never reports exactly 0; without this the drift
+        // crosses into native on every sample.
+        private const val AXIS_DEADZONE = 0.08f
         private const val FOCUS_PAUSE_DEBOUNCE_MS = 250L
     }
 
@@ -482,7 +486,9 @@ class EmulatorHostActivity : ComponentActivity(), SurfaceHolder.Callback {
      *  negative -> negKey pressed with |v|, posKey released; positive -> posKey; 0 -> both released.
      *  invert flips sign first (screen Y is up-negative; X360 up is positive). */
     private fun emitAxisPair(axis: Float, negKey: Int, posKey: Int, invert: Boolean) {
-        val v = if (invert) -axis else axis
+        val raw = if (invert) -axis else axis
+        // Snap to exactly zero so emitAxis' equality check can match.
+        val v = if (abs(raw) < AXIS_DEADZONE) 0f else raw
         when {
             v < 0f -> {
                 emitAxis(posKey, false, 0)

@@ -10,6 +10,7 @@
 #ifndef xendroid_XE_ANDROID_INPUT_DRIVER_H
 #define xendroid_XE_ANDROID_INPUT_DRIVER_H
 
+#include <mutex>
 #include <queue>
 #include <vector>
 
@@ -29,7 +30,9 @@ namespace xe {
                     int value;
                 };
 
-                xe::global_critical_region global_critical_region_;
+                // Deliberately not the global critical region: analog axes push a
+                // sample per motion event and nothing here needs its semantics.
+                std::mutex key_status_mutex_;
 
                 std::array<KeyStatus, 24> key_status_;
                 std::array<KeyStatus, 24> prev_key_status_;
