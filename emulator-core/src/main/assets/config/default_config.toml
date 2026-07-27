@@ -6,7 +6,6 @@ ffmpeg_verbose = false                            	# Verbose FFmpeg output (debu
 mute = false                                      	# Mutes all audio output.
 use_dedicated_xma_thread = true                   	# Enables XMA decoding on separate thread. Disabled should produce better results, but decrease performance a bit.
 xma_decoder = "new"                               	# Decoder version used to process XMA audio. Use: [fake, master, old, new]. 'old' has an edge-case stall on some streams; 'new' is the maintained default.
-xmp_default_volume = 70                           	# Default music volume if game doesn't set it [0-100].
 
 
 [CPU]
@@ -42,7 +41,7 @@ validate_hir = false                              	# Perform validation checks o
 
 
 [Config]
-defaults_date = 2020123113                        	# Do not modify - internal version of the default values in the config, for seamless updates if default value of any option is changed.
+defaults_date = 2026072714                        	# Do not modify - internal version of the default values in the config, for seamless updates if default value of any option is changed.
 
 
 [Content]
@@ -245,11 +244,11 @@ kernel_debug_monitor = false                      	# Enable debug monitor.
 kernel_display_gamma_power = 2.22222233           	# Display gamma to use with kernel_display_gamma_type 3.
 kernel_display_gamma_type = 2                     	# Display gamma type: 0 - linear, 1 - sRGB (CRT), 2 - BT.709 (HDTV), 3 - power specified via kernel_display_gamma_power.
 kernel_pix = false                                	# Enable PIX.
-log_high_frequency_kernel_calls = false           	# Log kernel calls with the kHighFrequency tag.
 staging_mode = false                              	# Enables preview mode in dashboards to render debug information.
 
 
 [Logging]
+log_high_frequency_kernel_calls = false           	# Log kernel calls with the kHighFrequency tag.
 flush_log = true                                  	# Flush log file after each log line batch.
 log_file = ""                                     	# Logs are written to the given file
 log_level = 2                                     	# Maximum level to be logged. (0=error, 1=warning, 2=info, 3=debug)
@@ -305,37 +304,11 @@ avpack = 8                                        	# Video modes
 
 enable_3d_mode = false                            	# Enables usage of stereoscopic mode in titles.
 interlaced = false                                	# Toggles interlaced mode.
-internal_display_resolution = 8                   	# Allow games that support different resolutions to render in a specific resolution.
-                                                  	# This is not guaranteed to work with all games or improve performance.
-                                                  	#    0=640x480
-                                                  	#    1=640x576
-                                                  	#    2=720x480
-                                                  	#    3=720x576
-                                                  	#    4=800x600
-                                                  	#    5=848x480
-                                                  	#    6=1024x768
-                                                  	#    7=1152x864
-                                                  	#    8=1280x720 (Default)
-                                                  	#    9=1280x768
-                                                  	#    10=1280x960
-                                                  	#    11=1280x1024
-                                                  	#    12=1360x768
-                                                  	#    13=1440x900
-                                                  	#    14=1680x1050
-                                                  	#    15=1920x540
-                                                  	#    16=1920x1080
-                                                  	#    17=internal_display_resolution_x/y
 
 internal_display_resolution_x = 1280              	# Custom width. See internal_display_resolution. Range 1-1920.
 internal_display_resolution_y = 720               	# Custom height. See internal_display_resolution. Range 1-1080.
 
-use_50Hz_mode = false                             	# Enables usage of PAL-50 mode.
-video_standard = 1                                	# Enables switching between different video signals.
-                                                  	#    1=NTSC
-                                                  	#    2=NTSC-J
-                                                  	#    3=PAL
 
-widescreen = true                                 	# Toggles between 16:9 and 4:3 aspect ratio.
 
 
 [Vulkan]
@@ -356,37 +329,8 @@ vulkan_validation = false                         	# Enable the Vulkan validatio
 
 
 [XConfig]
-audio_flag = 65537                                	# Audio Mode Analog.
-                                                  	#  0x00000001 = Dolby Pro Logic
-                                                  	#  0x00000002 = Analog Mono
-                                                  	# Audio Mode Digital.
-                                                  	#  0x00000000 = Digital Stereo (choose one of the above by itself)
-                                                  	#  0x00010000 = Dolby Digital
-                                                  	#  0x00030000 = Dolby Digital with WMA PRO
-                                                  	# Special Flags.
-                                                  	#  0x00000003 = Stereo Bypass
-                                                  	#  0x80000000 = Low Latency
-                                                  	#  This Config requires you to pair an analog and digitial flag together
-                                                  	#  while digital stereo only requires an analog flag. Bonus flags are
-                                                  	#  optional. Ex) 0x00010001
 
-user_country = 103                                	# User country ID.
-                                                  	#    1=AE   2=AL   3=AM   4=AR   5=AT   6=AU   7=AZ   8=BE   9=BG
-                                                  	#   10=BH  11=BN  12=BO  13=BR  14=BY  15=BZ  16=CA  18=CH  19=CL
-                                                  	#   20=CN  21=CO  22=CR  23=CZ  24=DE  25=DK  26=DO  27=DZ  28=EC
-                                                  	#   29=EE  30=EG  31=ES  32=FI  33=FO  34=FR  35=GB  36=GE  37=GR
-                                                  	#   38=GT  39=HK  40=HN  41=HR  42=HU  43=ID  44=IE  45=IL  46=IN
-                                                  	#   47=IQ  48=IR  49=IS  50=IT  51=JM  52=JO  53=JP  54=KE  55=KG
-                                                  	#   56=KR  57=KW  58=KZ  59=LB  60=LI  61=LT  62=LU  63=LV  64=LY
-                                                  	#   65=MA  66=MC  67=MK  68=MN  69=MO  70=MV  71=MX  72=MY  73=NI
-                                                  	#   74=NL  75=NO  76=NZ  77=OM  78=PA  79=PE  80=PH  81=PK  82=PL
-                                                  	#   83=PR  84=PT  85=PY  86=QA  87=RO  88=RU  89=SA  90=SE  91=SG
-                                                  	#   92=SI  93=SK  95=SV  96=SY  97=TH  98=TN  99=TR 100=TT 101=TW
-                                                  	#  102=UA 103=US 104=UY 105=UZ 106=VE 107=VN 108=YE 109=ZA
 
-user_language = 1                                 	# User language ID.
-                                                  	#   1=en  2=ja  3=de  4=fr  5=es  6=it  7=ko  8=zh
-                                                  	#   9=pt 11=pl 12=ru 13=sv 14=tr 15=nb 16=nl 17=zh
 
 
 [a64]
@@ -401,3 +345,61 @@ a64_vmx_nan_fixup = true                          	# Emulate PPC NaN propagation
 
 a64_enable_host_guest_stack_synchronization = true   	# Records entries for guest/host stack mappings at function starts and checks for reentry at return sites. Has slight performance impact, but fixes crashes in games that use setjmp/longjmp.
 a64_max_stackpoints = 65536                           	# Max number of host->guest stack mappings we can record.
+
+[Console]
+xmp_default_volume = 70                           	# Default music volume if game doesn't set it [0-100].
+internal_display_resolution = 8                   	# Allow games that support different resolutions to render in a specific resolution.
+                                                  	# This is not guaranteed to work with all games or improve performance.
+                                                  	#    0=640x480
+                                                  	#    1=640x576
+                                                  	#    2=720x480
+                                                  	#    3=720x576
+                                                  	#    4=800x600
+                                                  	#    5=848x480
+                                                  	#    6=1024x768
+                                                  	#    7=1152x864
+                                                  	#    8=1280x720 (Default)
+                                                  	#    9=1280x768
+                                                  	#    10=1280x960
+                                                  	#    11=1280x1024
+                                                  	#    12=1360x768
+                                                  	#    13=1440x900
+                                                  	#    14=1680x1050
+                                                  	#    15=1920x540
+                                                  	#    16=1920x1080
+                                                  	#    17=internal_display_resolution_x/y
+use_50Hz_mode = false                             	# Enables usage of PAL-50 mode.
+video_standard = 1                                	# Enables switching between different video signals.
+                                                  	#    1=NTSC
+                                                  	#    2=NTSC-J
+                                                  	#    3=PAL
+widescreen = true                                 	# Toggles between 16:9 and 4:3 aspect ratio.
+audio_flag = 65537                                	# Audio Mode Analog.
+                                                  	#  0x00000001 = Dolby Pro Logic
+                                                  	#  0x00000002 = Analog Mono
+                                                  	# Audio Mode Digital.
+                                                  	#  0x00000000 = Digital Stereo (choose one of the above by itself)
+                                                  	#  0x00010000 = Dolby Digital
+                                                  	#  0x00030000 = Dolby Digital with WMA PRO
+                                                  	# Special Flags.
+                                                  	#  0x00000003 = Stereo Bypass
+                                                  	#  0x80000000 = Low Latency
+                                                  	#  This Config requires you to pair an analog and digitial flag together
+                                                  	#  while digital stereo only requires an analog flag. Bonus flags are
+                                                  	#  optional. Ex) 0x00010001
+user_country = 103                                	# User country ID.
+                                                  	#    1=AE   2=AL   3=AM   4=AR   5=AT   6=AU   7=AZ   8=BE   9=BG
+                                                  	#   10=BH  11=BN  12=BO  13=BR  14=BY  15=BZ  16=CA  18=CH  19=CL
+                                                  	#   20=CN  21=CO  22=CR  23=CZ  24=DE  25=DK  26=DO  27=DZ  28=EC
+                                                  	#   29=EE  30=EG  31=ES  32=FI  33=FO  34=FR  35=GB  36=GE  37=GR
+                                                  	#   38=GT  39=HK  40=HN  41=HR  42=HU  43=ID  44=IE  45=IL  46=IN
+                                                  	#   47=IQ  48=IR  49=IS  50=IT  51=JM  52=JO  53=JP  54=KE  55=KG
+                                                  	#   56=KR  57=KW  58=KZ  59=LB  60=LI  61=LT  62=LU  63=LV  64=LY
+                                                  	#   65=MA  66=MC  67=MK  68=MN  69=MO  70=MV  71=MX  72=MY  73=NI
+                                                  	#   74=NL  75=NO  76=NZ  77=OM  78=PA  79=PE  80=PH  81=PK  82=PL
+                                                  	#   83=PR  84=PT  85=PY  86=QA  87=RO  88=RU  89=SA  90=SE  91=SG
+                                                  	#   92=SI  93=SK  95=SV  96=SY  97=TH  98=TN  99=TR 100=TT 101=TW
+                                                  	#  102=UA 103=US 104=UY 105=UZ 106=VE 107=VN 108=YE 109=ZA
+user_language = 1                                 	# User language ID.
+                                                  	#   1=en  2=ja  3=de  4=fr  5=es  6=it  7=ko  8=zh
+                                                  	#   9=pt 11=pl 12=ru 13=sv 14=tr 15=nb 16=nl 17=zh

@@ -69,14 +69,14 @@ class SettingsSchemaTest {
     }
 
     @Test fun user_language_skips_10_and_maps_8_and_17_to_zh() {
-        val lc = SettingsSchema.byKey["XConfig|user_language"] as Setting.ListChoice
+        val lc = SettingsSchema.byKey["Console|user_language"] as Setting.ListChoice
         assertTrue(lc.options.none { it.value == "10" })
         assertEquals("zh", lc.options.first { it.value == "8" }.label)
         assertEquals("zh", lc.options.first { it.value == "17" }.label)
     }
 
     @Test fun user_country_has_107_options_skips_17_and_94_and_default_103_resolves() {
-        val lc = SettingsSchema.byKey["XConfig|user_country"] as Setting.ListChoice
+        val lc = SettingsSchema.byKey["Console|user_country"] as Setting.ListChoice
         assertEquals(107, lc.options.size)
         assertTrue(lc.options.none { it.value == "17" })
         assertTrue(lc.options.none { it.value == "94" })
@@ -100,7 +100,7 @@ class SettingsSchemaTest {
         ir("General|time_scalar").let {
             assertEquals(1, it.min); assertEquals(8, it.max)
         }
-        ir("APU|xmp_default_volume").let {
+        ir("Console|xmp_default_volume").let {
             assertEquals(0, it.min); assertEquals(100, it.max)
         }
         ir("APU|apu_max_queued_frames").let {

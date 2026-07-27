@@ -45,16 +45,16 @@ object SettingsSchema {
         )),
 
         SettingsCategory("Video", listOf(
-            b("Video", "widescreen", "Widescreen", true),
-            l("Video", "video_standard", "Video standard", "1",
+            b("Console", "widescreen", "Widescreen", true),
+            l("Console", "video_standard", "Video standard", "1",
                 "1" to "NTSC", "2" to "NTSC-J", "3" to "PAL-60"),
-            l("Video", "internal_display_resolution", "Internal display resolution", "8",
+            l("Console", "internal_display_resolution", "Internal display resolution", "8",
                 "0" to "640x480", "1" to "640x576", "2" to "720x480", "3" to "720x576",
                 "4" to "800x600", "5" to "848x480", "6" to "1024x768", "7" to "1152x864",
                 "8" to "1280x720", "9" to "1280x768", "10" to "1280x960", "11" to "1280x1024",
                 "12" to "1360x768", "13" to "1440x900", "14" to "1680x1050", "15" to "1920x540",
                 "16" to "1920x1080"),
-            b("Video", "use_50Hz_mode", "Use 50Hz mode", false),
+            b("Console", "use_50Hz_mode", "Use 50Hz mode", false),
             l("Video", "avpack", "AV pack", "8",
                 "0" to "PAL-60 Component (SD)", "1" to "Unused", "2" to "PAL-60 SCART",
                 "3" to "480p Component (HD)", "4" to "HDMI+A", "5" to "PAL-60 Composite/S-Video",
@@ -76,7 +76,7 @@ object SettingsSchema {
 
         SettingsCategory("Kernel", listOf(
             b("Kernel", "staging_mode", "Staging mode", false),
-            b("Kernel", "log_high_frequency_kernel_calls", "Log high-frequency kernel calls", false),
+            b("Logging", "log_high_frequency_kernel_calls", "Log high-frequency kernel calls", false),
             l("Kernel", "kernel_display_gamma_type", "Display gamma type", "2",
                 "0" to "linear", "1" to "sRGB (CRT)", "2" to "BT.709 (HDTV)"),
             b("Kernel", "ignore_thread_affinities", "Ignore thread affinities", true),
@@ -103,11 +103,11 @@ object SettingsSchema {
         )),
 
         SettingsCategory("XConfig", listOf(
-            l("XConfig", "user_language", "User language", "1",
+            l("Console", "user_language", "User language", "1",
                 "1" to "en", "2" to "ja", "3" to "de", "4" to "fr", "5" to "es", "6" to "it",
                 "7" to "ko", "8" to "zh", "9" to "pt", "11" to "pl", "12" to "ru", "13" to "sv",
                 "14" to "tr", "15" to "nb", "16" to "nl", "17" to "zh"), // value 10 skipped; 8 & 17 both zh
-            l("XConfig", "user_country", "User country", "103", *userCountryOptions()),
+            l("Console", "user_country", "User country", "103", *userCountryOptions()),
         )),
 
         SettingsCategory("Display", listOf(
@@ -215,7 +215,7 @@ object SettingsSchema {
         )),
 
         SettingsCategory("APU", listOf(
-            i("APU", "xmp_default_volume", "XMP default volume", 70, 0, 100),
+            i("Console", "xmp_default_volume", "XMP default volume", 70, 0, 100),
             b("APU", "ffmpeg_verbose", "FFmpeg verbose", false),
             b("APU", "mute", "Mute", false),
             i("APU", "apu_max_queued_frames", "Max queued frames", 8, 4, 64),
