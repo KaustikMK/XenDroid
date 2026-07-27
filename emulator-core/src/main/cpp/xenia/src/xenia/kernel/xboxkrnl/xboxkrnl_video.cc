@@ -28,6 +28,7 @@ DEFINE_int32(
 
 // Defined in gpu_flags.cc
 DECLARE_bool(use_50Hz_mode);
+DECLARE_uint32(internal_display_resolution);
 DEFINE_bool(interlaced, false, "Toggles interlaced mode.", "Video");
 
 // TODO: This is stored in XConfig somewhere, probably in video flags.
@@ -209,6 +210,18 @@ void VdQueryVideoMode(X_VIDEO_MODE* video_mode,
   std::memset(video_mode, 0, sizeof(X_VIDEO_MODE));
 
   auto display_res = gpu::GraphicsSystem::GetInternalDisplayResolution();
+
+  {
+    // Whether the title ever asks, and what it is told, decides if
+    // internal_display_resolution can have any effect for it at all.
+    static std::atomic<uint32_t> queries{0};
+    const uint32_t n = queries.fetch_add(1, std::memory_order_relaxed);
+    if (n < 4) {
+      XELOGI("VdQueryVideoMode #{}: reporting {}x{} (cvar mode {})", n,
+             display_res.first, display_res.second,
+             cvars::internal_display_resolution);
+    }
+  }
 
   video_mode->display_width = display_res.first;
   video_mode->display_height = display_res.second;

@@ -25,6 +25,8 @@ object SettingDescriptions {
         "depth_float24_convert_in_pixel_shader" to "Convert depth to 24-bit float in pixel shaders; fixes striped depth artifacts at some speed cost",
         "depth_float24_round" to "Round to nearest instead of truncating when converting depth to 24-bit float; off is recommended",
         "depth_transfer_not_equal_test" to "Skip rewriting unchanged depth during depth transfers to keep depth compression effective",
+        "draw_resolution_scale_x" to "Render the game at this multiple of its native width; costs GPU time and memory",
+        "draw_resolution_scale_y" to "Render the game at this multiple of its native height; costs GPU time and memory",
         "draw_resolution_scaled_texture_offsets" to "Scale texture fetch offsets with the resolution scale for more correct shadows and bloom",
         "dump_session_logs" to "Exports this session's emulator log and logcat as a zip to Downloads",
         "enable_3d_mode" to "Lets titles enable stereoscopic 3D output if they support it",
