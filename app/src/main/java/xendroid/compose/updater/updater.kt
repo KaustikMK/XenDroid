@@ -48,6 +48,10 @@ sealed class UpdateResult {
     data class Latest(
         val commitHash: String
     ) : UpdateResult()
+
+     data class Cooldown(
+        val remainingMillis: Long
+    ) : UpdateResult()
 }
 
 interface GithubApi {
@@ -59,6 +63,15 @@ interface GithubApi {
 private const val PREFS_NAME = "updater"
 private const val KEY_LAST_CHECK = "last_update_check"
 private const val UPDATE_INTERVAL = 5 * 60 * 1000L
+
+fun getRemainingCooldown(context: Context): Long {
+    val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+
+    val lastCheck = prefs.getLong(KEY_LAST_CHECK, 0L)
+    val now = System.currentTimeMillis()
+
+    return (UPDATE_INTERVAL - (now - lastCheck)).coerceAtLeast(0L)
+}
 
 fun shouldCheckForUpdates(context: Context): Boolean {
     val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -235,6 +248,33 @@ fun LatestVersionDialog(
             TextButton(
                 onClick = onDismiss
             ) {
+                Text("OK")
+            }
+        }
+    )
+}
+
+@Composable
+fun CooldownDialog(
+    remainingMillis: Long,
+    onDismiss: () -> Unit
+) {
+    val minutes = remainingMillis / 1000 / 60
+    val seconds = (remainingMillis / 1000) % 60
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text("Updater cooldown")
+        },
+        text = {
+            Text(
+                "Updater is in cooldown.\n\n" +
+                "You can check again in ${minutes}m ${seconds}s."
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
                 Text("OK")
             }
         }

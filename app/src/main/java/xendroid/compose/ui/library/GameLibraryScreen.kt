@@ -36,6 +36,8 @@ import xendroid.compose.data.GameFormat
 import xendroid.compose.ui.compress.GameCompressViewModel
 import xendroid.compose.ui.compress.GameCompressViewModel.CompressState
 import xendroid.compose.ui.userdata.openUserData
+import xendroid.compose.updater.CooldownDialog
+import xendroid.compose.updater.getRemainingCooldown
 import xendroid.compose.updater.LatestVersionDialog
 import xendroid.compose.updater.UpdateDialog
 import xendroid.compose.updater.UpdateResult
@@ -235,7 +237,7 @@ fun GameLibraryScreen(
         }
     }
 
-    when (val result = updateResult) {
+   when (val result = updateResult) {
         is UpdateResult.Available -> {
             UpdateDialog(
                 release = result.release,
@@ -246,6 +248,13 @@ fun GameLibraryScreen(
         is UpdateResult.Latest -> {
             LatestVersionDialog(
                 commitHash = result.commitHash,
+                onDismiss = { updateResult = null }
+            )
+        }
+
+        is UpdateResult.Cooldown -> {
+            CooldownDialog(
+                remainingMillis = result.remainingMillis,
                 onDismiss = { updateResult = null }
             )
         }
@@ -531,6 +540,7 @@ fun checkForUpdatesClicked(
     scope.launch {
         if (!shouldCheckForUpdates(context)) {
             Log.d("Updater", "Skipping update check")
+            onResult(UpdateResult.Cooldown(getRemainingCooldown(context)))
             return@launch
         }
 

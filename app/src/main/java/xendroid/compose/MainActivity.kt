@@ -15,6 +15,8 @@ import xendroid.compose.core.EmulatorRuntime
 import xendroid.compose.core.SessionLogs
 import xendroid.compose.ui.AppNavHost
 import xendroid.compose.ui.theme.xendroidTheme
+import xendroid.compose.updater.CooldownDialog
+import xendroid.compose.updater.getRemainingCooldown
 import xendroid.compose.updater.LatestVersionDialog
 import xendroid.compose.updater.UpdateDialog
 import xendroid.compose.updater.UpdateResult
@@ -60,6 +62,7 @@ class MainActivity : ComponentActivity() {
                 LaunchedEffect(Unit) {
                     if (!shouldCheckForUpdates(applicationContext)) {
                         Log.d("Updater", "Skipping update check (less than 5 minutes)")
+                          updateResult = UpdateResult.Cooldown(getRemainingCooldown(applicationContext))
                         return@LaunchedEffect
                     }
 
@@ -80,22 +83,24 @@ class MainActivity : ComponentActivity() {
                 }
 
                 when (val result = updateResult) {
-
                     is UpdateResult.Available -> {
                         UpdateDialog(
                             release = result.release,
-                            onDismiss = {
-                                updateResult = null
-                            }
+                            onDismiss = { updateResult = null }
                         )
                     }
 
                     is UpdateResult.Latest -> {
                         LatestVersionDialog(
                             commitHash = result.commitHash,
-                            onDismiss = {
-                                updateResult = null
-                            }
+                            onDismiss = { updateResult = null }
+                        )
+                    }
+
+                    is UpdateResult.Cooldown -> {
+                        CooldownDialog(
+                            remainingMillis = result.remainingMillis,
+                            onDismiss = { updateResult = null }
                         )
                     }
 
