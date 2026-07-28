@@ -35,6 +35,19 @@ class SettingsSchemaTest {
         assertEquals(2, all.count { it is Setting.Action })
     }
 
+    /** Keys the app looks up by string with a hard cast, so a section move that
+     *  changes the key must not go unnoticed. */
+    @Test fun keys_referenced_by_code_resolve_to_the_right_type() {
+        listOf("Console|user_language", "Console|user_country").forEach { key ->
+            val s = SettingsSchema.byKey[key]
+            assertNotNull("missing schema key referenced in code: $key", s)
+            assertTrue(
+                "$key must be a ListChoice for the profile screens",
+                s is Setting.ListChoice,
+            )
+        }
+    }
+
     @Test fun keys_are_unique() {
         assertEquals(all.size, SettingsSchema.byKey.size)
         assertEquals(all.size, all.map { it.key }.toSet().size)

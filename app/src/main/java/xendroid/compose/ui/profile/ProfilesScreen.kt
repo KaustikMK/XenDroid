@@ -40,14 +40,17 @@ import xendroid.compose.ui.profile.ProfileManagerViewModel.ListState
 import xendroid.compose.ui.profile.ProfileManagerViewModel.OpState
 import xendroid.compose.ui.profile.ProfileManagerViewModel.ProfileEntry
 
-private val LANGUAGE_OPTIONS =
-    (SettingsSchema.byKey["XConfig|user_language"] as Setting.ListChoice).options
-private val COUNTRY_OPTIONS =
-    (SettingsSchema.byKey["XConfig|user_country"] as Setting.ListChoice).options
+// Top-level vals, so a hard cast on a key whose toml section moved would throw
+// during class init, before anything can catch it.
+private fun listChoice(key: String) =
+    SettingsSchema.byKey[key] as? Setting.ListChoice
+
+private val LANGUAGE_OPTIONS = listChoice("Console|user_language")?.options.orEmpty()
+private val COUNTRY_OPTIONS = listChoice("Console|user_country")?.options.orEmpty()
 private val DEFAULT_LANGUAGE =
-    (SettingsSchema.byKey["XConfig|user_language"] as Setting.ListChoice).default.toInt()
+    listChoice("Console|user_language")?.default?.toIntOrNull() ?: 1     // en
 private val DEFAULT_COUNTRY =
-    (SettingsSchema.byKey["XConfig|user_country"] as Setting.ListChoice).default.toInt()
+    listChoice("Console|user_country")?.default?.toIntOrNull() ?: 103    // United States
 
 private sealed interface Editing {
     data object None : Editing
