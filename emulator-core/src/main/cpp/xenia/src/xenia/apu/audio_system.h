@@ -116,7 +116,8 @@ class AudioSystem {
   std::unique_ptr<xe::threading::Event> shutdown_event_;
   xe::threading::WaitHandle* wait_handles_[kMaximumClientCount + 1];
 
-  bool paused_ = false;
+  // The worker's exit from a pause depends on observing this.
+  std::atomic<bool> paused_ = {false};
   threading::Fence pause_fence_;
   std::unique_ptr<threading::Event> resume_event_;
 };
