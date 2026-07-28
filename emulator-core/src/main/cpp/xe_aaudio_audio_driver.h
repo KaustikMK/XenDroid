@@ -52,6 +52,9 @@ class AAudioAudioDriver : public AudioDriver {
   // Callback thread only.
   void ConcealGap(float* output, int32_t out_samples, int32_t copy_samples);
   void ApplyFadeIn();
+  // AAudio has no stream volume control, so this is done in software.
+  // Callback thread only.
+  void ApplyGainAndClamp();
 
   // (Re)opens the stream on the current default device; caller holds stream_mutex_.
   bool BuildStream();
@@ -105,7 +108,12 @@ class AAudioAudioDriver : public AudioDriver {
   std::atomic<uint32_t> stat_queue_depth_max_{0};
   // A block size we did not ask for silently changes the drain rate.
   std::atomic<int32_t> stat_unexpected_frames_{0};
+  // Samples the downmix pushed past full scale.
+  std::atomic<uint64_t> stat_clipped_{0};
   void LogAndResetStats();
+
+  // Per-driver volume (XMP): written by other threads, read by the callback.
+  std::atomic<float> driver_volume_{1.0f};
 };
 
 }  // namespace aaudio

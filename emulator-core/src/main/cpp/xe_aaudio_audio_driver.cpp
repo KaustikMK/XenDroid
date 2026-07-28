@@ -154,7 +154,9 @@ void AAudioAudioDriver::Resume() {
 }
 
 void AAudioAudioDriver::SetVolume(float volume) {
-    //FIXME
+  // AAudio has no per-stream volume; applied to the samples in the callback.
+  driver_volume_.store(std::clamp(volume, 0.0f, 1.0f),
+                       std::memory_order_relaxed);
 }
 
 aaudio_data_callback_result_t AAudioAudioDriver::AudioCallback(
@@ -207,23 +209,17 @@ aaudio_data_callback_result_t AAudioAudioDriver::AudioCallback(
     return AAUDIO_CALLBACK_RESULT_CONTINUE;
   }
 
-  if (cvars::volume == 0) {  // 0 == mute
-    std::memset(output_buffer, 0, out_samples * sizeof(float));
-    driver->last_block_valid_ = false;
-  } else {
-    // Always convert a full block into our own scratch, then copy out only what
-    // this callback asked for.
-    conversion::sequential_6_BE_to_interleaved_2_LE(driver->last_block_, buffer,
-                                                    channel_samples_);
-    driver->ApplyFadeIn();
-    std::memcpy(output_buffer, driver->last_block_,
-                copy_samples * sizeof(float));
-    if (out_samples > copy_samples) {
-      std::memset(output_buffer + copy_samples, 0,
-                  (out_samples - copy_samples) * sizeof(float));
-    }
-    driver->last_block_valid_ = true;
+
+  conversion::sequential_6_BE_to_interleaved_2_LE(driver->last_block_, buffer,
+                                                  channel_samples_);
+  driver->ApplyGainAndClamp();
+  driver->ApplyFadeIn();
+  std::memcpy(output_buffer, driver->last_block_, copy_samples * sizeof(float));
+  if (out_samples > copy_samples) {
+    std::memset(output_buffer + copy_samples, 0,
+                (out_samples - copy_samples) * sizeof(float));
   }
+  driver->last_block_valid_ = true;
   driver->gap_blocks_ = 0;
 
   {
@@ -270,6 +266,31 @@ void AAudioAudioDriver::ConcealGap(float* output, int32_t out_samples,
   fade_in_pending_ = true;
 }
 
+void AAudioAudioDriver::ApplyGainAndClamp() {
+  const uint32_t master = std::min<uint32_t>(cvars::volume, 100);
+  const float gain =
+      driver_volume_.load(std::memory_order_relaxed) * (master / 100.0f);
+
+  // The 5.1->2.0 fold peaks at ~2.9 gain, so loud content can exceed full
+  // scale. Bound it here so the result is the same on every device, and count
+  // it: the fix for persistent clipping is less gain, not a harder limit.
+  uint32_t clipped = 0;
+  for (uint32_t i = 0; i < host_block_samples_; ++i) {
+    float s = last_block_[i] * gain;
+    if (s > 1.0f) {
+      s = 1.0f;
+      ++clipped;
+    } else if (s < -1.0f) {
+      s = -1.0f;
+      ++clipped;
+    }
+    last_block_[i] = s;
+  }
+  if (clipped) {
+    stat_clipped_.fetch_add(clipped, std::memory_order_relaxed);
+  }
+}
+
 void AAudioAudioDriver::ApplyFadeIn() {
   if (!fade_in_pending_) {
     return;
@@ -298,6 +319,8 @@ void AAudioAudioDriver::LogAndResetStats() {
       stat_queue_depth_max_.exchange(0, std::memory_order_relaxed);
   const int32_t odd_frames =
       stat_unexpected_frames_.exchange(0, std::memory_order_relaxed);
+  const uint64_t clipped = stat_clipped_.exchange(0, std::memory_order_relaxed);
+  const uint64_t played = (callbacks - gaps) * host_block_samples_;
 
   int32_t xruns = -1;
   {
@@ -308,9 +331,11 @@ void AAudioAudioDriver::LogAndResetStats() {
   }
 
   XELOGI(
-      "AAudio: {} cb, {} gaps ({:.1f}%), queue avg {:.2f} max {}, xruns {}{}",
+      "AAudio: {} cb, {} gaps ({:.1f}%), queue avg {:.2f} max {}, xruns {}, "
+      "clipped {} ({:.3f}%){}",
       callbacks, gaps, 100.0 * double(gaps) / double(callbacks),
-      double(depth_sum) / double(callbacks), depth_max, xruns,
+      double(depth_sum) / double(callbacks), depth_max, xruns, clipped,
+      played ? 100.0 * double(clipped) / double(played) : 0.0,
       odd_frames ? fmt::format(", UNEXPECTED framesPerCallback {}", odd_frames)
                  : "");
 }
