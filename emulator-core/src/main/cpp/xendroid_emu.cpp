@@ -38,6 +38,7 @@
 
 #include "xe_android_hid.h"
 #include "xe_android_input_driver.h"
+#include "xe_android_text_input.h"
 #include "xe_opensles_audio_system.h"
 #include "xe_aaudio_audio_system.h"
 
@@ -50,6 +51,10 @@
 DEFINE_string(apu, "aaudio", "Audio system. Use: [any, nop, opensles, aaudio]", "APU");
 DEFINE_string(gpu, "vulkan", "Graphics system. Use: [vulkan, null]",
               "GPU");
+DEFINE_bool(android_soft_keyboard, true,
+            "Show the Android keyboard when a game asks for text input, "
+            "instead of answering the prompt with its default text.",
+            "UI");
 DEFINE_string(hid, "android", "Input system. Use: [android, nop]",
               "HID");
 
@@ -314,6 +319,12 @@ bool EmulatorApp::OnInitialize() {
     // needs, so this must be true regardless of what the (possibly stale/edited)
     // global config says -- otherwise nothing presents (black screen, audio/input OK).
     cvars::host_present_from_non_ui_thread = true;
+
+    // Must precede any title boot: without a provider XamShowKeyboardUI answers
+    // itself with the title's own default text.
+    if (cvars::android_soft_keyboard) {
+        xendroid::InstallTextInputProvider();
+    }
 
 #if XE_ARCH_AMD64 == 1
     xe::amd64::InitFeatureFlags();

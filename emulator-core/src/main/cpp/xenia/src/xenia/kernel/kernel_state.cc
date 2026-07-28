@@ -29,6 +29,7 @@
 #include "xenia/kernel/xnotifylistener.h"
 #include "xenia/kernel/xobject.h"
 #include "xenia/kernel/xthread.h"
+#include "xenia/ui/host_text_input.h"
 #include "xenia/ui/imgui_host_notification.h"
 
 #include "third_party/crypto/TinySHA1.hpp"
@@ -102,6 +103,9 @@ KernelState::~KernelState() {
 
 void KernelState::ShutdownDispatchThread() {
   if (dispatch_thread_running_) {
+    // The wait below is infinite and dispatch_cond_ cannot wake a thread parked
+    // in a text request, so release those first.
+    xe::ui::CancelHostTextInput();
     dispatch_thread_running_ = false;
     dispatch_cond_.notify_all();
     dispatch_thread_->Wait(0, 0, 0, nullptr);

@@ -38,6 +38,7 @@ target_sources(emu
         xe_aaudio_audio_system.cpp
         xe_android_hid.cpp
         xe_android_input_driver.cpp
+        xe_android_text_input.cpp
         xe_android_util.cpp
         xe_opensles_audio_driver.cpp
         xe_opensles_audio_system.cpp

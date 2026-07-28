@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: WTFPL
 #include "emulator_xendroid.h"
 #include "xendroid_emu.h"
+#include "xe_android_text_input.h"
 
 #include <atomic>   // single-xe::Memory-per-process guard in extract_xex_meta
 #include <filesystem>  // std::filesystem::path/u8path for the zar extract/create JNI bridge
@@ -1458,6 +1459,62 @@ static jint j_rename_profile(JNIEnv* env, jobject self, jstring contentRoot,
 #endif
 }
 
+// Guest text entry. UTF-16 throughout: the modified-UTF-8 accessors mangle
+// characters guest strings routinely contain.
+static jobject j_keyboard_request(JNIEnv* env, jobject self) {
+#if XE_PLATFORM_xendroid
+    xendroid::PendingTextInput req;
+    if (!xendroid::PeekTextInputRequest(req)) return nullptr;
+
+    jclass cls = env->FindClass("xendroid/compose/Emulator$KeyboardRequest");
+    if (!cls) return nullptr;
+    jmethodID ctor = env->GetMethodID(cls, "<init>", "()V");
+    jobject o = env->NewObject(cls, ctor);
+    if (!o) return nullptr;
+
+    auto set_string = [&](const char* field, const std::string& utf8) {
+        std::u16string u16 = xe::to_utf16(utf8);
+        jstring s = env->NewString(reinterpret_cast<const jchar*>(u16.data()),
+                                   (jsize)u16.size());
+        env->SetObjectField(o, env->GetFieldID(cls, field, "Ljava/lang/String;"), s);
+        env->DeleteLocalRef(s);
+    };
+
+    env->SetLongField(o, env->GetFieldID(cls, "id", "J"), (jlong)req.id);
+    set_string("title", req.title);
+    set_string("description", req.description);
+    set_string("defaultText", req.default_text);
+    env->SetIntField(o, env->GetFieldID(cls, "maxLength", "I"), (jint)req.max_length);
+    env->SetIntField(o, env->GetFieldID(cls, "flags", "I"), (jint)req.flags);
+    return o;
+#else
+    return nullptr;
+#endif
+}
+
+static void j_keyboard_submit(JNIEnv* env, jobject self, jlong id,
+                              jboolean accepted, jstring text) {
+#if XE_PLATFORM_xendroid
+    std::string utf8;
+    if (text) {
+        const jchar* chars = env->GetStringChars(text, nullptr);
+        jsize count = env->GetStringLength(text);
+        if (chars) {
+            utf8 = xe::to_utf8(std::u16string_view(
+                    reinterpret_cast<const char16_t*>(chars), (size_t)count));
+            env->ReleaseStringChars(text, chars);
+        }
+    }
+    xendroid::SubmitTextInput((uint64_t)id, accepted == JNI_TRUE, utf8);
+#endif
+}
+
+static void j_keyboard_cancel_all(JNIEnv* env, jobject self) {
+#if XE_PLATFORM_xendroid
+    xendroid::CancelAllTextInput();
+#endif
+}
+
 int register_xendroid_Emulator(JNIEnv* env){
 
     g_class_Emulator = env->FindClass("xendroid/compose/Emulator");
@@ -1487,6 +1544,9 @@ int register_xendroid_Emulator(JNIEnv* env){
             ,{"create_profile", "(Ljava/lang/String;Ljava/lang/String;II)Ljava/lang/String;", (void *) j_create_profile}
             ,{"list_profiles", "(Ljava/lang/String;)[Lxendroid/compose/Emulator$ProfileInfo;", (void *) j_list_profiles}
             ,{"rename_profile", "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;II)I", (void *) j_rename_profile}
+            ,{"keyboard_request", "()Lxendroid/compose/Emulator$KeyboardRequest;", (void *) j_keyboard_request}
+            ,{"keyboard_submit", "(JZLjava/lang/String;)V", (void *) j_keyboard_submit}
+            ,{"keyboard_cancel_all", "()V", (void *) j_keyboard_cancel_all}
     };
     return env->RegisterNatives(g_class_Emulator,methods, sizeof(methods)/sizeof(methods[0]));
 }

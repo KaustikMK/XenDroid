@@ -14,22 +14,22 @@ class SettingsSchemaTest {
 
     private val all = SettingsSchema.allSettings
 
-    // Expected inventory: 82 Bool + 9 IntRange + 20 ListChoice + 2 Action = 113.
+    // Expected inventory: 83 Bool + 9 IntRange + 20 ListChoice + 2 Action = 114.
     // Notable typings: Display|host_present_from_non_ui_thread is intentionally absent
     // (must be true on Android -- forced natively, false black-screens the app -- so it
     // is not a valid user choice). GPU|readback_resolve and APU|xma_decoder are string
     // cvars (fast/some/full/none and the decoder name), hence ListChoice rather than Bool.
-    @Test fun total_entry_count_is_113() {
-        assertEquals(113, all.size)
+    @Test fun total_entry_count_is_114() {
+        assertEquals(114, all.size)
         assertEquals(
-            113,
+            114,
             all.count { it is Setting.Bool } + all.count { it is Setting.IntRange } +
                 all.count { it is Setting.ListChoice } + all.count { it is Setting.Action },
         )
     }
 
     @Test fun counts_by_type_match_verified_inventory() {
-        assertEquals(82, all.count { it is Setting.Bool })
+        assertEquals(83, all.count { it is Setting.Bool })
         assertEquals(9, all.count { it is Setting.IntRange })
         assertEquals(20, all.count { it is Setting.ListChoice })
         assertEquals(2, all.count { it is Setting.Action })

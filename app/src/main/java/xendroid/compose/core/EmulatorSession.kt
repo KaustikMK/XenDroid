@@ -105,4 +105,17 @@ class EmulatorSession {
      *  xenia applied at boot. The overlay lands on the detached boot thread, so callers
      *  must POLL this after boot (a one-shot read can fire before LoadGameConfig). */
     fun showDebugOverlayEnabled(): Boolean = if (booted) core.show_debug_overlay_enabled() else false
+
+    /** A pending guest text prompt, or null. The emulator holds a dispatch thread
+     *  until [keyboardSubmit] answers, so every shown panel must be answered. */
+    fun keyboardRequest(): Emulator.KeyboardRequest? =
+        if (booted) core.keyboard_request() else null
+
+    fun keyboardSubmit(id: Long, accepted: Boolean, text: String) {
+        if (booted) core.keyboard_submit(id, accepted, text)
+    }
+
+    fun keyboardCancelAll() {
+        if (booted) core.keyboard_cancel_all()
+    }
 }

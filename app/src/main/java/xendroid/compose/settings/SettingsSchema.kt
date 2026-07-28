@@ -67,6 +67,7 @@ object SettingsSchema {
             b("UI", "show_achievement_notification", "Show achievement notification", true),
             b("UI", "storage_selection_dialog", "Storage selection dialog", false),
             b("UI", "headless", "Headless", true),
+            b("UI", "android_soft_keyboard", "Android keyboard for game text input", true),
         )),
 
         SettingsCategory("Storage", listOf(

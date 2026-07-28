@@ -57,6 +57,7 @@ import kotlinx.coroutines.flow.StateFlow
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.viewinterop.AndroidView
+import xendroid.compose.ui.keyboard.GuestKeyboardPanel
 import xendroid.compose.ui.theme.xendroidTheme
 import xendroid.compose.gamepad.GamepadConfigDto
 import xendroid.compose.gamepad.GamepadController
@@ -78,6 +79,7 @@ class EmulatorHostActivity : ComponentActivity(), SurfaceHolder.Callback {
 
     companion object {
         private const val TAG = "EmuHost"
+        private const val KEYBOARD_POLL_MS = 150L
         const val EXTRA_GAME_URI = "game_uri"   // matches GameLibraryViewModel.EXTRA_GAME_URI
 
         // Default Android-KeyEvent -> VirtualControl KEY_CODE map (KeyMapConfig defaults).
@@ -115,6 +117,8 @@ class EmulatorHostActivity : ComponentActivity(), SurfaceHolder.Callback {
     private val bootedState = mutableStateOf(false)   // gates the overlay (post-boot only)
     private val showFpsOverlay = mutableStateOf(false) // Display|show_debug_overlay (native TOML config)
     private val menuOpenState = mutableStateOf(false)  // in-game menu (back pauses + shows Quit)
+    private val keyboardRequestState =
+        mutableStateOf<Emulator.KeyboardRequest?>(null) // guest text-entry prompt, if any
 
     // User hardware-key bindings (Android keycode -> game KEY_CODE), loaded from
     // KeymapStore in onCreate; falls back to GameButtons.DEFAULT_LOOKUP until loaded.
@@ -305,12 +309,49 @@ class EmulatorHostActivity : ComponentActivity(), SurfaceHolder.Callback {
                         visible = booted && showFps,
                         modifier = Modifier.fillMaxSize(),
                     )
+
+                    // The emulator blocks a dispatch thread until answered.
+                    val keyboardRequest by keyboardRequestState
+                    LaunchedEffect(booted) {
+                        if (!booted) return@LaunchedEffect
+                        while (isActive) {
+                            if (keyboardRequestState.value == null) {
+                                keyboardRequestState.value = session.keyboardRequest()
+                            }
+                            delay(KEYBOARD_POLL_MS)
+                        }
+                    }
+                    keyboardRequest?.let { req ->
+                        xendroidTheme {
+                            GuestKeyboardPanel(
+                                request = req,
+                                onAccept = { text ->
+                                    session.keyboardSubmit(req.id, true, text)
+                                    keyboardRequestState.value = null
+                                },
+                                onCancel = {
+                                    session.keyboardSubmit(req.id, false, "")
+                                    keyboardRequestState.value = null
+                                },
+                                modifier = Modifier.fillMaxSize(),
+                            )
+                        }
+                    }
                 }
 
                 // In-game menu: back / swipe-back PAUSES the game and opens a menu (Quit) instead
                 // of leaving to the library. The dialog itself catches back / tap-outside -> resume.
                 val menuOpen by menuOpenState
-                BackHandler(enabled = !menuOpen) {
+                // Back cancels a text prompt instead of opening the menu. The gate below
+                // is what gives it priority; without it back pauses behind the prompt.
+                val keyboardOpen = keyboardRequestState.value != null
+                BackHandler(enabled = keyboardOpen) {
+                    keyboardRequestState.value?.let { req ->
+                        session.keyboardSubmit(req.id, false, "")
+                        keyboardRequestState.value = null
+                    }
+                }
+                BackHandler(enabled = !menuOpen && !keyboardOpen) {
                     menuOpenState.value = true
                     if (session.booted) session.pause()
                 }
@@ -412,6 +453,9 @@ class EmulatorHostActivity : ComponentActivity(), SurfaceHolder.Callback {
 
     override fun onDestroy() {
         super.onDestroy()
+        // A pending prompt must not hold a dispatch thread through teardown.
+        keyboardRequestState.value = null
+        session.keyboardCancelAll()
         // Hard-kill via SIGKILL (single-shot core). killProcess skips the C++ atexit
         // static-destructor path that System.exit(0) ran, which can deadlock joining a
         // paused audio worker and wedge :emu instead of closing it.
