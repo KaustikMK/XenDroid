@@ -176,7 +176,12 @@ class TimerQueue {
   std::thread dispatch_thread_;
 };
 
-xe::threading::TimerQueue timer_queue_;
+// Constructed on first use: the dispatch thread spin-waits while its queue is
+// empty, so a process that never arms a timer must not start one.
+static TimerQueue& timer_queue() {
+  static TimerQueue timer_queue_;
+  return timer_queue_;
+}
 
 void TimerQueueWaitItem::Disarm() {
   State state;
@@ -211,20 +216,21 @@ void TimerQueueWaitItem::Disarm() {
     spinner.spin_once();
   }
 }
-// unused
 std::weak_ptr<WaitItem> QueueTimerOnce(std::function<void(void*)> callback,
                                        void* userdata,
                                        WaitItem::clock::time_point due) {
-  return timer_queue_.QueueTimer(
-      std::make_shared<WaitItem>(std::move(callback), userdata, &timer_queue_,
-                                 due, WaitItem::clock::duration::zero()));
+  auto& queue = timer_queue();
+  return queue.QueueTimer(
+      std::make_shared<WaitItem>(std::move(callback), userdata, &queue, due,
+                                 WaitItem::clock::duration::zero()));
 }
-// only used by HighResolutionTimer
+
 std::weak_ptr<WaitItem> QueueTimerRecurring(
     std::function<void(void*)> callback, void* userdata,
     WaitItem::clock::time_point due, WaitItem::clock::duration interval) {
-  return timer_queue_.QueueTimer(std::make_shared<WaitItem>(
-      std::move(callback), userdata, &timer_queue_, due, interval));
+  auto& queue = timer_queue();
+  return queue.QueueTimer(std::make_shared<WaitItem>(
+      std::move(callback), userdata, &queue, due, interval));
 }
 
 }  // namespace threading
