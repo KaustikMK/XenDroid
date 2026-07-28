@@ -15,6 +15,7 @@ object SettingDescriptions {
         "apply_patches" to "Applies user patch files to games when they load",
         "apply_title_update" to "Applies installed title updates when launching a game",
         "apu" to "Audio output backend to use (AAudio, OpenSL ES, or no audio)",
+        "apu_aaudio_buffer_bursts" to "How much audio the device buffers ahead. Lower means less audio delay; too low and audio breaks up on slower devices",
         "apu_max_queued_frames" to "Max buffered audio frames (4-64); lower cuts audio delay but may cause stutter",
         "avpack" to "Emulated AV cable/connection type reported to games (component, SCART, HDMI, VGA, etc.)",
         "break_condition_truncate" to "Truncates the conditional-breakpoint register value to 32 bits before comparing",
