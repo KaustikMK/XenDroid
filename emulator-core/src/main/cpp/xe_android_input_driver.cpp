@@ -210,7 +210,7 @@ namespace xe {
                 int key_status_index=-1;
 
                 {
-                    auto global_lock = global_critical_region_.Acquire();
+                    std::lock_guard<std::mutex> key_lock(key_status_mutex_);
                     if (key_status_mask_==0) {
                         // No keys!
                         return X_ERROR_EMPTY;
@@ -259,7 +259,7 @@ namespace xe {
                     return;
                 }*/
 
-                auto global_lock = global_critical_region_.Acquire();
+                std::lock_guard<std::mutex> key_lock(key_status_mutex_);
                 const bool was_pressed = key_status_[key_index].pressed;
                 prev_key_status_[key_index] = key_status_[key_index];
 

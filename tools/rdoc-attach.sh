@@ -18,7 +18,8 @@
 #      presented frame (API flips to Vulkan), then capture.
 set -euo pipefail
 
-PKG="xendroid"
+# run-as/simpleperf need the debuggable variant; override with XENDROID_PKG.
+PKG="${XENDROID_PKG:-xendroid.compose.debug}"
 EMU_PROC="${PKG}:emu"
 HOST_PORT="${1:-38920}"
 

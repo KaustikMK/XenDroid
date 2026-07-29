@@ -58,6 +58,7 @@
             android:launchMode="singleTask"
             android:screenOrientation="sensorLandscape"
             android:configChanges="layoutDirection|locale|orientation|uiMode|screenLayout|screenSize|smallestScreenSize|keyboard|keyboardHidden|navigation"
+            android:windowSoftInputMode="adjustNothing"
             android:theme="@style/Theme.xendroidEmu">
             <!-- In-app launch: GameLibraryViewModel.buildLaunchIntent (xendroid + setPackage). -->
             <intent-filter>

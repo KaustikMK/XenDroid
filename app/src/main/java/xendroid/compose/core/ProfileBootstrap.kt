@@ -26,9 +26,13 @@ object ProfileBootstrap {
         ensured = true
     }
 
+    // A cvar's toml section can move, which changes its schema key; fall back
+    // rather than hard-cast.
     private fun defaultLanguage() =
-        (SettingsSchema.byKey["XConfig|user_language"] as Setting.ListChoice).default.toInt()
+        (SettingsSchema.byKey["Console|user_language"] as? Setting.ListChoice)
+            ?.default?.toIntOrNull() ?: 1   // en
 
     private fun defaultCountry() =
-        (SettingsSchema.byKey["XConfig|user_country"] as Setting.ListChoice).default.toInt()
+        (SettingsSchema.byKey["Console|user_country"] as? Setting.ListChoice)
+            ?.default?.toIntOrNull() ?: 103 // United States
 }

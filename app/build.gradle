@@ -61,6 +61,12 @@ android {
     }
 
     buildTypes {
+        // Own application id so a debug build installs alongside a release one.
+        // The java namespace stays xendroid.compose, so JNI FindClass is unaffected.
+        debug {
+            applicationIdSuffix '.debug'
+            versionNameSuffix '-debug'
+        }
         release {
             minifyEnabled true
             shrinkResources true

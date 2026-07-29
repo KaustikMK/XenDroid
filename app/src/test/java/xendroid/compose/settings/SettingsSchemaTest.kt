@@ -2,6 +2,7 @@ package xendroid.compose.settings
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import xendroid.compose.settings.Setting
@@ -13,25 +14,38 @@ class SettingsSchemaTest {
 
     private val all = SettingsSchema.allSettings
 
-    // Expected inventory: 99 Bool + 8 IntRange + 19 ListChoice + 1 Action = 127.
+    // Expected inventory: 83 Bool + 9 IntRange + 20 ListChoice + 2 Action = 114.
     // Notable typings: Display|host_present_from_non_ui_thread is intentionally absent
     // (must be true on Android -- forced natively, false black-screens the app -- so it
     // is not a valid user choice). GPU|readback_resolve and APU|xma_decoder are string
     // cvars (fast/some/full/none and the decoder name), hence ListChoice rather than Bool.
-    @Test fun total_entry_count_is_127() {
-        assertEquals(127, all.size)
+    @Test fun total_entry_count_is_114() {
+        assertEquals(114, all.size)
         assertEquals(
-            127,
+            114,
             all.count { it is Setting.Bool } + all.count { it is Setting.IntRange } +
                 all.count { it is Setting.ListChoice } + all.count { it is Setting.Action },
         )
     }
 
     @Test fun counts_by_type_match_verified_inventory() {
-        assertEquals(99, all.count { it is Setting.Bool })
-        assertEquals(8, all.count { it is Setting.IntRange })
-        assertEquals(19, all.count { it is Setting.ListChoice })
-        assertEquals(1, all.count { it is Setting.Action })
+        assertEquals(83, all.count { it is Setting.Bool })
+        assertEquals(9, all.count { it is Setting.IntRange })
+        assertEquals(20, all.count { it is Setting.ListChoice })
+        assertEquals(2, all.count { it is Setting.Action })
+    }
+
+    /** Keys the app looks up by string with a hard cast, so a section move that
+     *  changes the key must not go unnoticed. */
+    @Test fun keys_referenced_by_code_resolve_to_the_right_type() {
+        listOf("Console|user_language", "Console|user_country").forEach { key ->
+            val s = SettingsSchema.byKey[key]
+            assertNotNull("missing schema key referenced in code: $key", s)
+            assertTrue(
+                "$key must be a ListChoice for the profile screens",
+                s is Setting.ListChoice,
+            )
+        }
     }
 
     @Test fun keys_are_unique() {
@@ -47,14 +61,13 @@ class SettingsSchemaTest {
         assertEquals(expected, SettingsSchema.categories.map { it.title })
     }
 
-    @Test fun kernel_allow_nui_has_capital_A() {
-        assertNotNull(SettingsSchema.byKey["Kernel|Allow_nui_initialization"])
+    @Test fun removed_no_op_settings_stay_removed() {
+        assertNull(SettingsSchema.byKey["Kernel|Allow_nui_initialization"])
     }
 
-    @Test fun vulkan_lib_path_is_the_only_action() {
-        val actions = all.filterIsInstance<Setting.Action>()
-        assertEquals(1, actions.size)
-        assertEquals("Vulkan|vulkan_lib_path", actions.single().key)
+    @Test fun actions_are_the_driver_picker_and_the_log_export() {
+        val actions = all.filterIsInstance<Setting.Action>().map { it.key }
+        assertEquals(listOf("Vulkan|vulkan_lib_path", "Logging|dump_session_logs"), actions)
     }
 
     @Test fun list_defaults_are_empty_or_a_member_of_options() {
@@ -69,14 +82,14 @@ class SettingsSchemaTest {
     }
 
     @Test fun user_language_skips_10_and_maps_8_and_17_to_zh() {
-        val lc = SettingsSchema.byKey["XConfig|user_language"] as Setting.ListChoice
+        val lc = SettingsSchema.byKey["Console|user_language"] as Setting.ListChoice
         assertTrue(lc.options.none { it.value == "10" })
         assertEquals("zh", lc.options.first { it.value == "8" }.label)
         assertEquals("zh", lc.options.first { it.value == "17" }.label)
     }
 
     @Test fun user_country_has_107_options_skips_17_and_94_and_default_103_resolves() {
-        val lc = SettingsSchema.byKey["XConfig|user_country"] as Setting.ListChoice
+        val lc = SettingsSchema.byKey["Console|user_country"] as Setting.ListChoice
         assertEquals(107, lc.options.size)
         assertTrue(lc.options.none { it.value == "17" })
         assertTrue(lc.options.none { it.value == "94" })
@@ -100,7 +113,7 @@ class SettingsSchemaTest {
         ir("General|time_scalar").let {
             assertEquals(1, it.min); assertEquals(8, it.max)
         }
-        ir("APU|xmp_default_volume").let {
+        ir("Console|xmp_default_volume").let {
             assertEquals(0, it.min); assertEquals(100, it.max)
         }
         ir("APU|apu_max_queued_frames").let {

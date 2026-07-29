@@ -93,6 +93,12 @@ public class Emulator extends xendroid.emulator.Emulator{
     // Returns X_STATUS (0 == success). Off-main.
     public native int rename_profile(String contentRoot, String xuid, String gamertag, int language, int country);
 
+    // ---- Guest text entry. Blocks a kernel dispatch thread until answered.
+    public native KeyboardRequest keyboard_request();
+    public native void keyboard_submit(long id, boolean accepted, String text);
+    // Fail every waiting request.
+    public native void keyboard_cancel_all();
+
     // ---- Real-path (All Files Access) scan probes: take an ABSOLUTE host path
     // (no Context: no ContentResolver / fd). The core's real-path DiscImageDevice /
     // DiscZarchiveDevice / Extract*Metadata back these. format: 0=ISO, 1=XEX_FOLDER,
@@ -179,5 +185,15 @@ public class Emulator extends xendroid.emulator.Emulator{
         public int language;      // XLanguage
         public int country;       // XOnlineCountry
         public boolean hasAvatar; // tile_64.png present
+    }
+
+    /** A pending guest text-entry prompt. */
+    public static class KeyboardRequest {
+        public long id;            // stale ids are ignored
+        public String title;
+        public String description;
+        public String defaultText; // clamped to maxLength
+        public int maxLength;      // UTF-16 code units, terminator excluded
+        public int flags;          // raw guest flags
     }
 }

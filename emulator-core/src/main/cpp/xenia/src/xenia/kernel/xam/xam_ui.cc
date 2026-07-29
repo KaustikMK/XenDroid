@@ -17,6 +17,7 @@
 #include "xenia/kernel/xam/xam_content_device.h"
 #include "xenia/kernel/xam/xam_private.h"
 #include "xenia/ui/file_picker.h"
+#include "xenia/ui/host_text_input.h"
 #include "xenia/ui/imgui_dialog.h"
 #include "xenia/ui/imgui_drawer.h"
 #include "xenia/ui/imgui_guest_notification.h"
@@ -182,6 +183,57 @@ X_RESULT xeXamDispatchHeadlessEx(
                                                  post);
     return X_ERROR_IO_PENDING;
   }
+}
+
+// Reproduces the guest-visible state xeXamDispatchDialogEx maintains around its
+// fence wait: XamIsUIActive, and the game input blocker.
+struct HostDialogScope {
+  explicit HostDialogScope(xe::hid::InputSystem* input_system)
+      : input_system_(input_system) {
+    if (input_system_) {
+      input_system_->AddUIInputBlocker();
+    }
+    kernel_state()->xam_state()->xam_dialogs_shown_++;
+  }
+  ~HostDialogScope() {
+    kernel_state()->xam_state()->xam_dialogs_shown_--;
+    if (input_system_) {
+      input_system_->RemoveUIInputBlocker();
+    }
+  }
+  xe::hid::InputSystem* input_system_;
+};
+
+// Trims to the guest buffer's UTF-16 budget without splitting a surrogate pair.
+static std::string XeClampToUtf16Units(const std::string& text,
+                                       uint32_t max_units) {
+  auto utf16 = xe::to_utf16(text);
+  if (utf16.size() <= max_units) {
+    return text;
+  }
+  size_t cut = max_units;
+  if (cut > 0 && utf16[cut - 1] >= 0xD800 && utf16[cut - 1] <= 0xDBFF) {
+    --cut;
+  }
+  return xe::to_utf8(utf16.substr(0, cut));
+}
+
+// Titles that pass no default text expect the signed-in gamertag to be offered.
+static std::string XeKeyboardDefaultText(uint32_t user_index,
+                                         const std::string& default_text) {
+  if (!default_text.empty()) {
+    return default_text;
+  }
+  auto profile_manager = kernel_state()->xam_state()->profile_manager();
+  if (!profile_manager) {
+    return default_text;
+  }
+  // Try the specified user_index first, fall back to slot 0
+  auto profile = profile_manager->GetProfile(static_cast<uint8_t>(user_index));
+  if (!profile) {
+    profile = profile_manager->GetProfile(static_cast<uint8_t>(0));
+  }
+  return profile ? profile->name() : default_text;
 }
 
 template <typename T>
@@ -514,6 +566,51 @@ dword_result_t XamShowKeyboardUI_entry(
   auto buffer_size = static_cast<size_t>(buffer_length) * 2;
 
   X_RESULT result;
+  // Preferred over headless: headless means "no UI to ask with", which stops
+  // being true once a provider is installed. Only text entry is affected.
+  if (xe::ui::HasHostTextInputProvider()) {
+    xe::ui::HostTextInputRequest request;
+    request.title = title ? xe::to_utf8(title.value()) : "";
+    request.description = description ? xe::to_utf8(description.value()) : "";
+    request.default_text = XeKeyboardDefaultText(
+        user_index, default_text ? xe::to_utf8(default_text.value()) : "");
+    // buffer_length includes the terminator copy_and_swap_truncating reserves.
+    request.max_length =
+        buffer_length ? static_cast<uint32_t>(buffer_length) - 1 : 0;
+    // The ImGui dialog clamps its prefill too; keep both front-ends the same.
+    request.default_text =
+        XeClampToUtf16Units(request.default_text, request.max_length);
+    request.flags = flags;
+
+    // On the guest thread, where the ImGui path takes it. Deferred into the run
+    // lambda the game would read live pad state for another ~25ms.
+    auto ui_scope = std::make_shared<HostDialogScope>(
+        kernel_state()->emulator()->input_system());
+
+    auto run = [request, ui_scope, buffer, buffer_length](
+                   uint32_t& extended_error, uint32_t& length) mutable
+        -> X_RESULT {
+      // Released before the overlapped completes, as the ImGui path does.
+      struct Releaser {
+        std::shared_ptr<HostDialogScope>& scope;
+        ~Releaser() { scope.reset(); }
+      } releaser{ui_scope};
+      xe::ui::HostTextInputResult host_result;
+      length = 0;
+      if (!xe::ui::RequestHostTextInput(request, host_result) ||
+          !host_result.accepted) {
+        // As the ImGui cancel path: success, cancelled in the extended error.
+        extended_error = X_ERROR_CANCELLED;
+        return X_ERROR_SUCCESS;
+      }
+      auto text = xe::to_utf16(host_result.text);
+      string_util::copy_and_swap_truncating(buffer, text, buffer_length);
+      extended_error = X_ERROR_SUCCESS;
+      return X_ERROR_SUCCESS;
+    };
+    return xeXamDispatchHeadlessEx(run, overlapped);
+  }
+
   if (cvars::headless) {
     auto run = [default_text, buffer, buffer_length,
                 buffer_size]() -> X_RESULT {
@@ -550,24 +647,8 @@ dword_result_t XamShowKeyboardUI_entry(
 
     std::string title_str = title ? xe::to_utf8(title.value()) : "";
     std::string desc_str = description ? xe::to_utf8(description.value()) : "";
-    std::string def_text_str =
-        default_text ? xe::to_utf8(default_text.value()) : "";
-
-    // If no default text provided, use the user's gamertag
-    if (def_text_str.empty()) {
-      auto profile_manager = kernel_state()->xam_state()->profile_manager();
-      if (profile_manager) {
-        // Try the specified user_index first, fall back to slot 0
-        auto profile =
-            profile_manager->GetProfile(static_cast<uint8_t>(user_index));
-        if (!profile) {
-          profile = profile_manager->GetProfile(static_cast<uint8_t>(0));
-        }
-        if (profile) {
-          def_text_str = profile->name();
-        }
-      }
-    }
+    std::string def_text_str = XeKeyboardDefaultText(
+        user_index, default_text ? xe::to_utf8(default_text.value()) : "");
 
     result = xeXamDispatchDialogEx<KeyboardInputDialog>(
         new KeyboardInputDialog(imgui_drawer, input_system, title_str, desc_str,
