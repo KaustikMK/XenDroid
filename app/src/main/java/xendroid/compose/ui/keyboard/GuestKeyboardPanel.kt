@@ -2,16 +2,20 @@ package xendroid.compose.ui.keyboard
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -29,6 +33,7 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import xendroid.compose.Emulator
 
@@ -38,6 +43,11 @@ import xendroid.compose.Emulator
  * An in-window Surface, not a Dialog: a Dialog takes window focus and would trip
  * the host activity's focus-loss pause. The emulator holds a kernel dispatch
  * thread until answered, so [onAccept]/[onCancel] must fire for every request.
+ *
+ * Laid out for a landscape-locked window with windowSoftInputMode=adjustNothing:
+ * the IME leaves very little height and the window never resizes, so the panel is
+ * top-aligned rather than centred, which also survives the API 29 devices that do
+ * not report IME insets at all.
  */
 @Composable
 fun GuestKeyboardPanel(
@@ -46,7 +56,7 @@ fun GuestKeyboardPanel(
     onCancel: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val maxUnits = request.maxLength.coerceAtLeast(0)
+    val maxUnits = request.maxLength.let { if (it <= 0) Int.MAX_VALUE else it }
     var text by remember(request.id) {
         mutableStateOf(clampToUtf16Units(request.defaultText.orEmpty(), maxUnits))
     }
@@ -54,34 +64,39 @@ fun GuestKeyboardPanel(
 
     LaunchedEffect(request.id) { focusRequester.requestFocus() }
 
-    Box(
+    BoxWithConstraints(
         modifier
             .fillMaxSize()
             .background(Color.Black.copy(alpha = 0.6f))
             // Swallow taps meant for the game surface underneath.
             .pointerInput(request.id) { awaitPointerEventScope { while (true) awaitPointerEvent() } }
             .imePadding(),
-        contentAlignment = Alignment.Center,
+        contentAlignment = Alignment.TopCenter,
     ) {
+        val compact = maxHeight < 400.dp
+        val outerPadding = if (compact) 8.dp else 24.dp
+        val innerPadding = if (compact) 12.dp else 20.dp
+
         Surface(
             modifier = Modifier
                 .widthIn(max = 520.dp)
                 .fillMaxWidth()
-                .padding(24.dp),
-            shape = androidx.compose.material3.MaterialTheme.shapes.large,
+                .padding(outerPadding),
+            shape = MaterialTheme.shapes.large,
             tonalElevation = 6.dp,
         ) {
-            Column(Modifier.padding(20.dp)) {
-                val title = request.title.orEmpty()
-                if (title.isNotEmpty()) {
-                    Text(title, style = androidx.compose.material3.MaterialTheme.typography.titleLarge)
-                }
+            Column(
+                Modifier
+                    .padding(innerPadding)
+                    .verticalScroll(rememberScrollState())
+            ) {
                 val description = request.description.orEmpty()
                 if (description.isNotEmpty()) {
                     Text(
                         description,
-                        modifier = Modifier.padding(top = 8.dp),
-                        style = androidx.compose.material3.MaterialTheme.typography.bodyMedium,
+                        maxLines = if (compact) 1 else 3,
+                        overflow = TextOverflow.Ellipsis,
+                        style = MaterialTheme.typography.bodyMedium,
                     )
                 }
                 OutlinedTextField(
@@ -90,13 +105,15 @@ fun GuestKeyboardPanel(
                     singleLine = true,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(top = 16.dp)
+                        .padding(top = if (description.isEmpty()) 0.dp
+                                 else if (compact) 8.dp else 16.dp)
+                        .heightIn(min = 56.dp)
                         .focusRequester(focusRequester),
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
                     keyboardActions = KeyboardActions(onDone = { onAccept(text) }),
                 )
                 Row(
-                    Modifier.fillMaxWidth().padding(top = 12.dp),
+                    Modifier.fillMaxWidth().padding(top = if (compact) 4.dp else 12.dp),
                     horizontalArrangement = Arrangement.End,
                 ) {
                     TextButton(onClick = onCancel) { Text("Cancel") }
