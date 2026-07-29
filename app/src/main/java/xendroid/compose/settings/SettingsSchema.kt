@@ -225,6 +225,7 @@ object SettingsSchema {
             b("APU", "ffmpeg_verbose", "FFmpeg verbose", false),
             b("APU", "mute", "Mute", false),
             i("APU", "apu_max_queued_frames", "Max queued frames", 8, 4, 64),
+            i("APU", "apu_aaudio_buffer_bursts", "Audio buffer depth", 4, 2, 8),
             b("APU", "enable_xmp", "Enable XMP", true),
             l("APU", "xma_decoder", "XMA decoder", "new",
                 "new" to "new", "old" to "old", "master" to "master", "fake" to "fake"),

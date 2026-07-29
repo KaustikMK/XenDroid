@@ -112,14 +112,18 @@ void AudioSystem::WorkerThreadMain() {
       continue;
     }
 
+    // A wait-any reports the LOWEST signalled handle and the client semaphores
+    // sit below shutdown_event_, so a pause request is invisible while audio
+    // flows. Test the flag rather than infer it from the handle.
+    if (paused_) {
+      pause_fence_.Signal();
+      threading::Wait(resume_event_.get(), false);
+      continue;
+    }
+
     if (result.first == threading::WaitResult::kSuccess &&
         result.second == kMaximumClientCount) {
       // Shutdown event signaled.
-      if (paused_) {
-        pause_fence_.Signal();
-        threading::Wait(resume_event_.get(), false);
-      }
-
       continue;
     }
 
@@ -183,6 +187,10 @@ void AudioSystem::Initialize() {}
 void AudioSystem::Shutdown() {
   worker_running_ = false;
   shutdown_event_->Set();
+  // A worker parked on resume_event_ never sees worker_running_ go false.
+  if (paused_) {
+    Resume();
+  }
   if (worker_thread_) {
     worker_thread_->Wait(0, 0, 0, nullptr);
     worker_thread_.reset();

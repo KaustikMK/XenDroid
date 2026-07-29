@@ -49,6 +49,13 @@ class AAudioAudioDriver : public AudioDriver {
       void* userdata,
       aaudio_result_t error);
 
+  // Callback thread only.
+  void ConcealGap(float* output, int32_t out_samples, int32_t copy_samples);
+  void ApplyFadeIn();
+  // AAudio has no stream volume control, so this is done in software.
+  // Callback thread only.
+  void ApplyGainAndClamp();
+
   // (Re)opens the stream on the current default device; caller holds stream_mutex_.
   bool BuildStream();
   // Rebuilds the stream on the current default device; true once a stream is
@@ -76,13 +83,37 @@ class AAudioAudioDriver : public AudioDriver {
   bool recovery_quit_ = false;
   std::atomic<bool> shutting_down_{false};
 
-  static const uint32_t host_frame_frequency_ = 48000;
-  static const uint32_t host_frame_channels_ = 2;
-  static const uint32_t channel_samples_ = 256;
-  static const uint32_t x360_frame_samples_ = 6 * channel_samples_;
+  static constexpr uint32_t host_frame_frequency_ = 48000;
+  static constexpr uint32_t host_frame_channels_ = 2;
+  static constexpr uint32_t channel_samples_ = 256;
+  static constexpr uint32_t x360_frame_samples_ = 6 * channel_samples_;
+  static constexpr uint32_t host_block_samples_ = host_frame_channels_ * channel_samples_;
   std::queue<float*> frames_queued_ = {};
   std::stack<float*> frames_unused_ = {};
   std::mutex frames_mutex_ = {};
+
+  // Underrun concealment: silence would put a step at both edges of every
+  // gap, a ~187Hz click train at a 5.3ms block. Callback thread only.
+  float last_block_[host_block_samples_] = {};
+  bool last_block_valid_ = false;
+  uint32_t gap_blocks_ = 0;
+
+  bool fade_in_pending_ = false;
+
+  // Written by the realtime callback, drained by recovery_thread_: relaxed
+  // atomics only, nothing that could block the callback.
+  std::atomic<uint64_t> stat_callbacks_{0};
+  std::atomic<uint64_t> stat_gaps_{0};
+  std::atomic<uint64_t> stat_queue_depth_sum_{0};
+  std::atomic<uint32_t> stat_queue_depth_max_{0};
+  // A block size we did not ask for silently changes the drain rate.
+  std::atomic<int32_t> stat_unexpected_frames_{0};
+  // Samples the downmix pushed past full scale.
+  std::atomic<uint64_t> stat_clipped_{0};
+  void LogAndResetStats();
+
+  // Per-driver volume (XMP): written by other threads, read by the callback.
+  std::atomic<float> driver_volume_{1.0f};
 };
 
 }  // namespace aaudio
