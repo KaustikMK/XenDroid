@@ -3416,24 +3416,6 @@ bool MetalCommandProcessor::IssueDrawMsl(
         return false;
     }
 
-    auto request_guest_index_range = [&](uint64_t index_base,
-                                         uint32_t index_count,
-                                         MTL::IndexType index_type) -> bool {
-      if (!shared_memory_) {
-        return false;
-      }
-      uint32_t index_stride = (index_type == MTL::IndexTypeUInt16)
-                                  ? sizeof(uint16_t)
-                                  : sizeof(uint32_t);
-      uint64_t index_length = uint64_t(index_count) * index_stride;
-      if (index_base > SharedMemory::kBufferSize ||
-          SharedMemory::kBufferSize - index_base < index_length) {
-        return false;
-      }
-      return shared_memory_->RequestRange(static_cast<uint32_t>(index_base),
-                                          static_cast<uint32_t>(index_length));
-    };
-
     bool use_expansion_triangle_list_fallback = false;
     uint32_t draw_index_count =
         primitive_processing_result.host_draw_vertex_count;
@@ -3484,11 +3466,11 @@ bool MetalCommandProcessor::IssueDrawMsl(
         case PrimitiveProcessor::ProcessedIndexBufferType::kGuestDMA:
           index_buffer = shared_memory_ ? shared_memory_->GetBuffer() : nullptr;
           index_offset = primitive_processing_result.guest_index_base;
-          if (!request_guest_index_range(index_offset, draw_index_count,
-                                         index_type)) {
-            XELOGE("SPIRV-Cross: Failed to validate guest index buffer range");
-            return false;
-          }
+          // The primitive processor has already validated and requested the
+          // guest index range using the guest index count and format. Don't
+          // revalidate it here with the host draw count, which may be larger
+          // after primitive conversion or VS expansion and can incorrectly drop
+          // otherwise valid draws.
           break;
         case PrimitiveProcessor::ProcessedIndexBufferType::kHostConverted:
           if (primitive_processor_) {
