@@ -49,6 +49,16 @@ dword_result_t XamVoiceGetMicArrayStatus_entry() {
 }
 DECLARE_XAM_EXPORT1(XamVoiceGetMicArrayStatus, kNone, kStub);
 
+dword_result_t XamVoiceSetMicArrayIdleUsers_entry(dword_t idle_user_mask) {
+  // The microphone array is not exposed by the emulator. Titles may still call
+  // this while initializing voice/NUI systems, so accept the mask and report
+  // success to match a no-op device state change rather than failing import
+  // resolution for ordinal 0x48C.
+  XELOGD("XamVoiceSetMicArrayIdleUsers({:08X})", uint32_t(idle_user_mask));
+  return X_ERROR_SUCCESS;
+}
+DECLARE_XAM_EXPORT1(XamVoiceSetMicArrayIdleUsers, kNone, kStub);
+
 }  // namespace xam
 }  // namespace kernel
 }  // namespace xe
