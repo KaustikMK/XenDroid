@@ -1423,7 +1423,7 @@ bool COMMAND_PROCESSOR::ExecutePacketType3Draw(
       }
 
       if (!draw_succeeded) {
-        XELOGE("{}({}, {}, {}): Failed in backend", opcode_name,
+        XELOGW("{}({}, {}, {}): Failed in backend", opcode_name,
                vgt_draw_initiator.num_indices,
                uint32_t(vgt_draw_initiator.prim_type),
                uint32_t(vgt_draw_initiator.source_select));
