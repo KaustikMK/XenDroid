@@ -26,8 +26,15 @@ namespace xe {
 namespace memory {
 
 bool IsWritableExecutableMemoryPreferred() {
+#if XE_PLATFORM_ANDROID || XE_PLATFORM_xendroid
+  // Android app SELinux policies enforce W^X for JIT pages. Prefer the split
+  // mapping path (RW alias + RX alias) even if the cvar still has its desktop
+  // default, avoiding execstack/RWX denials on ARM64 devices.
+  return false;
+#else
   return IsWritableExecutableMemorySupported() &&
          cvars::writable_executable_memory;
+#endif
 }
 
 using xe::swcache::CacheLine;
