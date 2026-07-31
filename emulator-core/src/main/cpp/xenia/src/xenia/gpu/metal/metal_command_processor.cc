@@ -3410,10 +3410,21 @@ bool MetalCommandProcessor::IssueDrawMsl(
       case xenos::PrimitiveType::kTriangleStrip:
         mtl_primitive = MTL::PrimitiveTypeTriangleStrip;
         break;
-      default:
-        XELOGE("SPIRV-Cross: Unsupported host primitive type {}",
-               uint32_t(primitive_processing_result.host_primitive_type));
-        return false;
+      default: {
+        // Treat a backend-only primitive gap as a dropped draw rather than a
+        // command processor failure. Some titles (for example GTA V during the
+        // prologue) can hit long runs of these while continuing to install
+        // scratch callbacks; returning false floods PM4_DRAW_INDX backend
+        // failures and can make the guest look hung even though skipping the
+        // unsupported draw is recoverable.
+        static std::atomic<uint32_t> unsupported_primitive_log_budget{16};
+        if (unsupported_primitive_log_budget.load() > 0 &&
+            unsupported_primitive_log_budget.fetch_sub(1) > 0) {
+          XELOGW("SPIRV-Cross: Skipping unsupported host primitive type {}",
+                 uint32_t(primitive_processing_result.host_primitive_type));
+        }
+        return true;
+      }
     }
 
     bool use_expansion_triangle_list_fallback = false;
@@ -3494,14 +3505,23 @@ bool MetalCommandProcessor::IssueDrawMsl(
             }
           }
           break;
-        default:
-          XELOGE("SPIRV-Cross: Unsupported index buffer type {}",
-                 uint32_t(primitive_processing_result.index_buffer_type));
-          return false;
+        default: {
+          static std::atomic<uint32_t> unsupported_index_log_budget{16};
+          if (unsupported_index_log_budget.load() > 0 &&
+              unsupported_index_log_budget.fetch_sub(1) > 0) {
+            XELOGW("SPIRV-Cross: Skipping unsupported index buffer type {}",
+                   uint32_t(primitive_processing_result.index_buffer_type));
+          }
+          return true;
+        }
       }
       if (!index_buffer) {
-        XELOGE("SPIRV-Cross: Index buffer is null");
-        return false;
+        static std::atomic<uint32_t> null_index_log_budget{16};
+        if (null_index_log_budget.load() > 0 &&
+            null_index_log_budget.fetch_sub(1) > 0) {
+          XELOGW("SPIRV-Cross: Skipping draw with null index buffer");
+        }
+        return true;
       }
       UseRenderEncoderResource(index_buffer, MTL::ResourceUsageRead);
       current_render_encoder_->drawIndexedPrimitives(
