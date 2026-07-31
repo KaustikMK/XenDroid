@@ -154,9 +154,14 @@ Entry* VirtualFileSystem::ResolvePath(const std::string_view path) {
         return xe::utf8::starts_with_case(normalized_path, d->mount_path());
       });
   if (it == devices_.cend()) {
-    // Supress logging the error for ShaderDumpxe:\CompareBackEnds as this is
-    // not an actual problem nor something we care about.
-    if (path != "ShaderDumpxe:\\CompareBackEnds") {
+    const bool is_optional_runtime_device =
+        xe::utf8::starts_with_case(normalized_path, "cache:") ||
+        xe::utf8::starts_with_case(normalized_path, "update:");
+    // Suppress logging the error for ShaderDumpxe:\CompareBackEnds and
+    // optional cache/update devices. Some titles probe these devices during
+    // startup even when no cache volume or title update image is mounted.
+    if (path != "ShaderDumpxe:\\CompareBackEnds" &&
+        !is_optional_runtime_device) {
       XELOGE("ResolvePath({}) failed - device not found", path);
     }
     return nullptr;
