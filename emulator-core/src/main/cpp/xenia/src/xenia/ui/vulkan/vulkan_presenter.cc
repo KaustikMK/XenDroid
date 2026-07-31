@@ -1118,7 +1118,7 @@ VkSwapchainKHR VulkanPresenter::PaintContext::CreateSwapchainForVulkanSurface(
 #endif
   VkSurfaceFormatKHR image_format;
   if (surface_formats.empty() ||
-      (surface_formats.size() == 1 ||
+      (surface_formats.size() == 1 &&
        surface_formats[0].format == VK_FORMAT_UNDEFINED)) {
     // Can choose any format if the implementation specifies only UNDEFINED.
     image_format.format = kFormat8888Primary;
@@ -1174,11 +1174,33 @@ VkSwapchainKHR VulkanPresenter::PaintContext::CreateSwapchainForVulkanSurface(
       // Only secondary 8888.
       image_format = *format_8888_secondary_it;
     } else if (any_non_8888_srgb_it != surface_formats.cend()) {
+#if XE_PLATFORM_ANDROID || XE_PLATFORM_xendroid
+      // Some Android drivers advertise 10-bit / vendor-private surface formats
+      // that the platform gralloc rejects later (for example HAL format 0x3b),
+      // producing dead AHardwareBuffer handles and cascading backend draw
+      // failures. Do not select a non-8888 fallback on Android; fail surface
+      // setup so the caller can recreate the presenter instead of submitting
+      // against an invalid swapchain.
+      XELOGE(
+          "Android Vulkan surface exposes no RGBA/BGRA 8888 format; refusing "
+          "non-8888 format {} to avoid gralloc allocation failure",
+          uint32_t(any_non_8888_srgb_it->format));
+      return VK_NULL_HANDLE;
+#else
       // No 8888, but some sRGB format is available.
       image_format = *any_non_8888_srgb_it;
+#endif
     } else {
+#if XE_PLATFORM_ANDROID || XE_PLATFORM_xendroid
+      XELOGE(
+          "Android Vulkan surface exposes no RGBA/BGRA 8888 format; refusing "
+          "format {} to avoid gralloc allocation failure",
+          uint32_t(surface_formats.front().format));
+      return VK_NULL_HANDLE;
+#else
       // Just pick any format.
       image_format = surface_formats.front();
+#endif
     }
   }
 

@@ -11,6 +11,7 @@
 
 #include <fcntl.h>
 #include <sys/mman.h>
+#include <sys/syscall.h>
 #include <unistd.h>
 #include <algorithm>
 #include <cerrno>
@@ -37,6 +38,12 @@
 
 #if XE_PLATFORM_xendroid
 #include <android/sharedmem.h>
+#ifdef __linux__
+#include <linux/memfd.h>
+#ifndef MFD_CLOEXEC
+#define MFD_CLOEXEC 0x0001U
+#endif
+#endif
 #endif
 // Both ANDROID and xendroid are defined on the fork; the allocation path below is
 // exclusive (#if xendroid #elif ANDROID), but upstream's standalone dlopen setup
@@ -365,13 +372,43 @@ bool QueryProtect(void* base_address, size_t& length, PageAccess& access_out) {
 #endif  // XE_PLATFORM_MAC
 }
 
+#if XE_PLATFORM_xendroid
+static int CreateExecutableSharedMemory(const char* name, size_t length) {
+#ifdef SYS_memfd_create
+  unsigned int flags = MFD_CLOEXEC;
+#ifdef MFD_ALLOW_SEALING
+  flags |= MFD_ALLOW_SEALING;
+#endif
+#ifdef MFD_EXEC
+  flags |= MFD_EXEC;
+#endif
+  int fd = static_cast<int>(syscall(SYS_memfd_create, name, flags));
+  if (fd >= 0) {
+    if (ftruncate(fd, length) == 0) {
+      return fd;
+    }
+    XELOGE("ftruncate(memfd {}, 0x{:X}) failed: {} ({})", name, length,
+           strerror(errno), errno);
+    close(fd);
+  } else {
+    XELOGW("memfd_create({}) failed: {} ({}); falling back to ASharedMemory",
+           name, strerror(errno), errno);
+  }
+#endif
+  int sharedmem_fd = ASharedMemory_create(name, length);
+  return sharedmem_fd >= 0 ? sharedmem_fd : kFileMappingHandleInvalid;
+}
+#endif
+
 FileMappingHandle CreateFileMappingHandle(const std::filesystem::path& path,
                                           size_t length, PageAccess access,
                                           bool commit) {
 #if XE_PLATFORM_xendroid
-    //XELOGI("CreateFileMappingHandle: {} 0x{:X}", path.string(), length);
-    int sharedmem_fd = ASharedMemory_create(path.c_str(), length);
-    return sharedmem_fd >= 0 ? sharedmem_fd : kFileMappingHandleInvalid;
+  // Android SELinux rejects executable stacks and may also reject PROT_EXEC on
+  // anonymous/noexec mappings. Back JIT code with memfd (or ASharedMemory on
+  // old devices) so the code cache can be mapped RX and RW without ever
+  // executing from the thread stack or requiring RWX pages.
+  return CreateExecutableSharedMemory(path.c_str(), length);
 #elif XE_PLATFORM_ANDROID
   // TODO(Triang3l): Check if memfd can be used instead on API 30+.
   if (android_ASharedMemory_create_) {
