@@ -122,6 +122,40 @@ dword_result_t NtOpenFile_entry(
 }
 DECLARE_XBOXKRNL_EXPORT1(NtOpenFile, kFileSystem, kImplemented);
 
+dword_result_t IoDismountVolume_entry(dword_t file_handle) {
+  auto file = kernel_state()->object_table()->LookupObject<XFile>(file_handle);
+  if (!file) {
+    return X_STATUS_INVALID_HANDLE;
+  }
+
+  // Xenia's VFS doesn't maintain guest mount reference counts per opened file.
+  // Treat a valid file handle as a successful no-op dismount request so titles
+  // waiting for removable/installer media state transitions can continue.
+  XELOGD("IoDismountVolume({:08X})", uint32_t(file_handle));
+  return X_STATUS_SUCCESS;
+}
+DECLARE_XBOXKRNL_EXPORT1(IoDismountVolume, kFileSystem, kStub);
+
+dword_result_t IoDismountVolumeByFileHandle_entry(dword_t file_handle) {
+  return IoDismountVolume_entry(file_handle);
+}
+DECLARE_XBOXKRNL_EXPORT1(IoDismountVolumeByFileHandle, kFileSystem, kStub);
+
+dword_result_t IoDismountVolumeByName_entry(pointer_t<X_ANSI_STRING> name) {
+  if (!name) {
+    return X_STATUS_INVALID_PARAMETER;
+  }
+
+  auto path = util::TranslateAnsiPath(kernel_memory(), name);
+  if (!IsValidPath(path, true)) {
+    return X_STATUS_OBJECT_NAME_INVALID;
+  }
+
+  XELOGD("IoDismountVolumeByName({})", path);
+  return X_STATUS_SUCCESS;
+}
+DECLARE_XBOXKRNL_EXPORT1(IoDismountVolumeByName, kFileSystem, kStub);
+
 dword_result_t NtReadFile_entry(dword_t file_handle, dword_t event_handle,
                                 lpvoid_t apc_routine_ptr, lpvoid_t apc_context,
                                 pointer_t<X_IO_STATUS_BLOCK> io_status_block,
