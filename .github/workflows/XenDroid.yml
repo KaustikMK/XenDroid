@@ -68,9 +68,12 @@ jobs:
           } > local.properties
 
       - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
+        uses: gradle/actions/setup-gradle@v6
         with:
           gradle-home-cache-strict-match: false
+          # Third-party submodules can contain Gradle wrappers that are not used by
+          # the XenDroid build and may not be in Gradle's checksum allowlist.
+          validate-wrappers: false
 
       - name: Set up ccache
         uses: hendrikmuhs/ccache-action@v1.2
