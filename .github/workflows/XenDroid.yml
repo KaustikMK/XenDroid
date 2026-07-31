@@ -64,11 +64,24 @@ jobs:
     ##################################################################
     # Cache Gradle
     ##################################################################
+    - name: Remove third-party Gradle wrappers from validation scope
+      run: |
+        # setup-gradle validates every gradle-wrapper.jar in the checked-out
+        # workspace, including nested third-party Android sample projects from
+        # submodules that are not used by XenDroid's build. Keep validation on
+        # for the repository wrapper by removing those vendored wrappers first.
+        if [ -d emulator-core/src/main/cpp/xenia/third_party ]; then
+          find emulator-core/src/main/cpp/xenia/third_party \
+            -path '*/gradle/wrapper/gradle-wrapper.jar' \
+            -type f \
+            -delete
+        fi
+
     - name: Cache Gradle
-      uses:  gradle/actions/setup-gradle@v4
+      uses: gradle/actions/setup-gradle@v4
       with:
         gradle-home-cache-strict-match: false
-        validate-wrappers: false
+        validate-wrappers: true
 
 
     ##################################################################
