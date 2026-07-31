@@ -5,6 +5,8 @@
 
 <h1 align="center">XenDroid - Android Xbox 360 Emulator</h1>
 
+Any changes were done with AI. I (kaustikmk) am no programmer. I'm just messing around with it, so disregard any sort of release.
+
 ## History
 XenDroid was initially forked form xa360e, which was based off [Xenia Canary](https://github.com/xenia-canary/xenia-canary).
 However, a complete rebase was made on [Xenia Edge](https://github.com/has207/xenia-edge) with a new Kotlin backend.
