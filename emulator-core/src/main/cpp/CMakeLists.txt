@@ -15,8 +15,16 @@ add_compile_options(-stdlib=libc++)
 add_compile_options(-fno-omit-frame-pointer)
 add_compile_options(-funwind-tables)
 
-# 16 KB max page size: required for Android 15+ on arm64.
+# 16 KB max page size: required for Android 15+ on arm64. Also force a
+# non-executable process stack. Some vendored assembler objects don't carry a
+# .note.GNU-stack marker, and Android will refuse to start an untrusted app if
+# the final JNI library advertises an executable stack (SELinux execstack).
 add_link_options(-Wl,-z,max-page-size=16384)
+add_link_options(-Wl,-z,noexecstack)
+
+# Ensure any hand-written assembly assembled in this native tree contributes a
+# non-executable GNU-stack note instead of relying on linker defaults.
+add_compile_options($<$<COMPILE_LANGUAGE:ASM>:-Wa,--noexecstack>)
 
 add_library(hardware_ProcessorInfo SHARED hardware_ProcessorInfo.cpp)
 target_link_libraries(hardware_ProcessorInfo PRIVATE vulkan)
