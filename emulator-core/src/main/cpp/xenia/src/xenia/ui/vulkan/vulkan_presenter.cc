@@ -1132,6 +1132,14 @@ VkSwapchainKHR VulkanPresenter::PaintContext::CreateSwapchainForVulkanSurface(
     auto any_non_8888_srgb_it = surface_formats.cend();
     for (auto it = surface_formats.cbegin(); it != surface_formats.cend();
          ++it) {
+#if XE_PLATFORM_ANDROID || XE_PLATFORM_xendroid
+      if (uint32_t(it->format) == 0x3B) {
+        XELOGW(
+            "Android Vulkan surface rejected HAL/vendor format 0x3b before "
+            "swapchain selection");
+        continue;
+      }
+#endif
       if (it->format != kFormat8888Primary &&
           it->format != kFormat8888Secondary) {
         if (it->colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR &&

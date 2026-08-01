@@ -24,6 +24,7 @@
 #include <mutex>
 #include <sstream>
 #include <string>
+#include <vector>
 
 #if XE_PLATFORM_MAC
 #include <mach/mach.h>
@@ -56,6 +57,8 @@
 
 #include "xenia/base/main_android.h"
 #endif
+
+extern std::string g_code_cache_dir;
 
 namespace xe {
 namespace memory {
@@ -374,45 +377,45 @@ bool QueryProtect(void* base_address, size_t& length, PageAccess& access_out) {
 
 #if XE_PLATFORM_xendroid
 static int CreateExecutableSharedMemory(const char* name, size_t length) {
-#ifdef SYS_memfd_create
-  unsigned int flags = MFD_CLOEXEC;
-#ifdef MFD_ALLOW_SEALING
-  flags |= MFD_ALLOW_SEALING;
-#endif
-#ifdef MFD_EXEC
-  // MFD_EXEC is only accepted by newer Android kernels. Some NDK headers expose
-  // the flag while the device kernel still returns EINVAL for it, so retry below
-  // without the flag before falling back to ASharedMemory. The retry keeps JIT
-  // code cache allocations on memfd, which Android SELinux permits to be mapped
-  // RX/RW without requiring executable stacks.
-  flags |= MFD_EXEC;
-#endif
-  int fd = static_cast<int>(syscall(SYS_memfd_create, name, flags));
-#ifdef MFD_EXEC
-  if (fd < 0 && errno == EINVAL && (flags & MFD_EXEC)) {
-    const int first_errno = errno;
-    const unsigned int retry_flags = flags & ~unsigned(MFD_EXEC);
-    fd = static_cast<int>(syscall(SYS_memfd_create, name, retry_flags));
-    if (fd >= 0) {
-      XELOGI("memfd_create({}) accepted without MFD_EXEC after {} ({})", name,
-             strerror(first_errno), first_errno);
+  // Android 10+ enforces W^X for JIT code. Avoid anonymous executable memory
+  // and memfd-without-MFD_EXEC fallbacks that can trip SELinux execstack / noexec
+  // policy. ART-approved app code cache files are file-backed and can be mapped
+  // writable while emitting, then switched to RX by Protect() / mprotect before
+  // execution.
+  if (g_code_cache_dir.empty()) {
+    XELOGE("Code cache directory is not initialized for executable mapping {}",
+           name);
+    return kFileMappingHandleInvalid;
+  }
+
+  std::string sanitized_name(name ? name : "xenia_jit");
+  for (char& c : sanitized_name) {
+    if (c == '/' || c == '\\') {
+      c = '_';
     }
   }
-#endif
-  if (fd >= 0) {
-    if (ftruncate(fd, length) == 0) {
-      return fd;
-    }
-    XELOGE("ftruncate(memfd {}, 0x{:X}) failed: {} ({})", name, length,
+  std::string path = g_code_cache_dir + "/" + sanitized_name + ".XXXXXX";
+  std::vector<char> path_template(path.begin(), path.end());
+  path_template.push_back('\0');
+
+  int fd = mkstemp(path_template.data());
+  if (fd < 0) {
+    XELOGE("mkstemp({}) failed for executable mapping: {} ({})", path,
            strerror(errno), errno);
-    close(fd);
-  } else {
-    XELOGW("memfd_create({}) failed: {} ({}); falling back to ASharedMemory",
-           name, strerror(errno), errno);
+    return kFileMappingHandleInvalid;
   }
-#endif
-  int sharedmem_fd = ASharedMemory_create(name, length);
-  return sharedmem_fd >= 0 ? sharedmem_fd : kFileMappingHandleInvalid;
+
+  // The fd keeps the file-backed mapping alive. Unlink the directory entry so
+  // each emulator process gets a private temporary JIT object in code_cache.
+  unlink(path_template.data());
+
+  if (ftruncate(fd, length) == 0) {
+    return fd;
+  }
+  XELOGE("ftruncate(code cache {}, 0x{:X}) failed: {} ({})", path_template.data(),
+         length, strerror(errno), errno);
+  close(fd);
+  return kFileMappingHandleInvalid;
 }
 #endif
 

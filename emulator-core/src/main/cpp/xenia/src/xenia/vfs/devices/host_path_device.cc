@@ -7,6 +7,9 @@
  ******************************************************************************
  */
 
+#include <algorithm>
+#include <string>
+
 #include "xenia/vfs/devices/host_path_device.h"
 
 #include "xenia/base/filesystem.h"
@@ -56,8 +59,10 @@ Entry* HostPathDevice::ResolvePath(const std::string_view path) {
   // The filesystem will have stripped our prefix off already, so the path will
   // be in the form:
   // some\PATH.foo
-  XELOGFS("HostPathDevice::ResolvePath({})", path);
-  return root_entry_->ResolvePath(path);
+  std::string normalized_path(path);
+  std::replace(normalized_path.begin(), normalized_path.end(), '\\', '/');
+  XELOGFS("HostPathDevice::ResolvePath({})", normalized_path);
+  return root_entry_->ResolvePath(normalized_path);
 }
 
 void HostPathDevice::PopulateEntry(HostPathEntry* parent_entry) {
