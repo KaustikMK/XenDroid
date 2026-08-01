@@ -98,6 +98,9 @@ DECLARE_bool(debug);
 // (black screen with working CPU/audio). We force it true after config load so a
 // stale/edited global config can't black-screen the app.
 DECLARE_bool(host_present_from_non_ui_thread);
+DECLARE_bool(force_convert_triangle_fans_to_lists);
+DECLARE_bool(force_convert_quad_lists_to_triangle_lists);
+DECLARE_bool(force_convert_line_loops_to_strips);
 
 DEFINE_bool(discord, false, "Enable Discord rich presence", "General");
 
@@ -319,6 +322,15 @@ bool EmulatorApp::OnInitialize() {
     // needs, so this must be true regardless of what the (possibly stale/edited)
     // global config says -- otherwise nothing presents (black screen, audio/input OK).
     cvars::host_present_from_non_ui_thread = true;
+
+    // Mobile Vulkan drivers may expose primitive topologies that are legal in
+    // Xenia's guest command stream but unreliable or unsupported by the device.
+    // Always CPU-transcode them on Android before the GPU command processor is
+    // initialized, preventing backend PM4_DRAW_INDX failures without hiding the
+    // underlying draw errors.
+    cvars::force_convert_triangle_fans_to_lists = true;
+    cvars::force_convert_quad_lists_to_triangle_lists = true;
+    cvars::force_convert_line_loops_to_strips = true;
 
     // Must precede any title boot: without a provider XamShowKeyboardUI answers
     // itself with the title's own default text.

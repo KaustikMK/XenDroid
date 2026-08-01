@@ -52,6 +52,7 @@ enum : jint { TID_FMT_ISO = 0, TID_FMT_XEX_FOLDER = 1, TID_FMT_ZAR = 2 };
 std::vector<std::string> g_launch_args;
 std::string g_uri_info_list_file_path;
 std::string g_native_lib_dir;
+std::string g_code_cache_dir;
 static void j_setup_context(JNIEnv* env,jobject self,jobject context ){
     g_context = env->NewGlobalRef(context);
     //getApplicationInfo().nativeLibraryDir;
@@ -62,6 +63,14 @@ static void j_setup_context(JNIEnv* env,jobject self,jobject context ){
     const char* native_library_dir_c_str=env->GetStringUTFChars(native_library_dir,NULL);
     g_native_lib_dir=native_library_dir_c_str;
     env->ReleaseStringUTFChars(native_library_dir,native_library_dir_c_str);
+
+    jmethodID mid_get_code_cache_dir = env->GetMethodID(env->GetObjectClass(context), "getCodeCacheDir", "()Ljava/io/File;");
+    jobject code_cache_file = env->CallObjectMethod(context, mid_get_code_cache_dir);
+    jmethodID mid_get_absolute_path = env->GetMethodID(env->GetObjectClass(code_cache_file), "getAbsolutePath", "()Ljava/lang/String;");
+    jstring code_cache_path = (jstring)env->CallObjectMethod(code_cache_file, mid_get_absolute_path);
+    const char* code_cache_path_c_str = env->GetStringUTFChars(code_cache_path, NULL);
+    g_code_cache_dir = code_cache_path_c_str;
+    env->ReleaseStringUTFChars(code_cache_path, code_cache_path_c_str);
 }
 
 //public native void setup_launch_args(String[] args);

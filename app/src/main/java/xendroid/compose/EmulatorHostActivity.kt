@@ -1,5 +1,6 @@
 package xendroid.compose
 
+import android.graphics.PixelFormat
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
@@ -242,6 +243,7 @@ class EmulatorHostActivity : ComponentActivity(), SurfaceHolder.Callback {
 
     private fun installSurfaceView() {
         val sv = SurfaceView(this).apply {
+            holder.setFormat(PixelFormat.RGBA_8888)
             isFocusable = true
             isFocusableInTouchMode = true
             holder.addCallback(this@EmulatorHostActivity)

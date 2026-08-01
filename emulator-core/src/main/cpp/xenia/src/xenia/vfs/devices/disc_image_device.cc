@@ -7,6 +7,9 @@
  ******************************************************************************
  */
 
+#include <algorithm>
+#include <string>
+
 #include "xenia/vfs/devices/disc_image_device.h"
 
 #include "xenia/base/literals.h"
@@ -63,8 +66,10 @@ Entry* DiscImageDevice::ResolvePath(const std::string_view path) {
   // The filesystem will have stripped our prefix off already, so the path will
   // be in the form:
   // some\PATH.foo
-  XELOGFS("DiscImageDevice::ResolvePath({})", path);
-  return root_entry_->ResolvePath(path);
+  std::string normalized_path(path);
+  std::replace(normalized_path.begin(), normalized_path.end(), '\\', '/');
+  XELOGFS("DiscImageDevice::ResolvePath({})", normalized_path);
+  return root_entry_->ResolvePath(normalized_path);
 }
 
 DiscImageDevice::Error DiscImageDevice::Verify(ParseState* state) {
