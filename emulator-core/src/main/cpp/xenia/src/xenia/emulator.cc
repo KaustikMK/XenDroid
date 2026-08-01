@@ -1752,6 +1752,17 @@ void Emulator::ResetTitle() {
 void Emulator::MountStandardDrives() {
   auto fs = file_system_.get();
 
+  // HostPathDevice::Initialize scans existing directories only. Create the
+  // backing storage eagerly so cache/update image probes resolve to real devices
+  // instead of spamming ResolvePath(device not found) and leaving titles without
+  // their utility/cache partitions.
+  std::error_code storage_error;
+  std::filesystem::create_directories(storage_root_ / "scratch", storage_error);
+  std::filesystem::create_directories(storage_root_ / "cache0", storage_error);
+  std::filesystem::create_directories(storage_root_ / "cache1", storage_error);
+  std::filesystem::create_directories(storage_root_ / "cache", storage_error);
+  std::filesystem::create_directories(storage_root_ / "mu", storage_error);
+
   if (cvars::mount_scratch) {
     auto scratch_device = std::make_unique<xe::vfs::HostPathDevice>(
         "\\SCRATCH", storage_root_ / "scratch", false);

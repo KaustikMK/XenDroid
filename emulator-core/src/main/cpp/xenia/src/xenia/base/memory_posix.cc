@@ -380,9 +380,25 @@ static int CreateExecutableSharedMemory(const char* name, size_t length) {
   flags |= MFD_ALLOW_SEALING;
 #endif
 #ifdef MFD_EXEC
+  // MFD_EXEC is only accepted by newer Android kernels. Some NDK headers expose
+  // the flag while the device kernel still returns EINVAL for it, so retry below
+  // without the flag before falling back to ASharedMemory. The retry keeps JIT
+  // code cache allocations on memfd, which Android SELinux permits to be mapped
+  // RX/RW without requiring executable stacks.
   flags |= MFD_EXEC;
 #endif
   int fd = static_cast<int>(syscall(SYS_memfd_create, name, flags));
+#ifdef MFD_EXEC
+  if (fd < 0 && errno == EINVAL && (flags & MFD_EXEC)) {
+    const int first_errno = errno;
+    const unsigned int retry_flags = flags & ~unsigned(MFD_EXEC);
+    fd = static_cast<int>(syscall(SYS_memfd_create, name, retry_flags));
+    if (fd >= 0) {
+      XELOGI("memfd_create({}) accepted without MFD_EXEC after {} ({})", name,
+             strerror(first_errno), first_errno);
+    }
+  }
+#endif
   if (fd >= 0) {
     if (ftruncate(fd, length) == 0) {
       return fd;
