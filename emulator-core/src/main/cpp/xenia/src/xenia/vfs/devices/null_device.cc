@@ -46,7 +46,7 @@ void NullDevice::Dump(StringBuffer* string_buffer) {
 Entry* NullDevice::ResolvePath(const std::string_view path) {
   XELOGFS("NullDevice::ResolvePath({})", path);
 
-  auto root = root_entry_.get();
+  auto root = static_cast<NullEntry*>(root_entry_.get());
   if (path.empty()) {
     return root_entry_.get();
   }
