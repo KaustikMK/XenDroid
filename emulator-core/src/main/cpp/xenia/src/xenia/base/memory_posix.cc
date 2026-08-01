@@ -12,6 +12,7 @@
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/syscall.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #include <algorithm>
 #include <cerrno>
@@ -152,6 +153,13 @@ bool IsWritableExecutableMemorySupported() {
     return true;
   }();
   return supported;
+}
+#elif XE_PLATFORM_xendroid
+bool IsWritableExecutableMemorySupported() {
+  // Android SELinux enforces W^X for app JIT code. Never request RWX
+  // mappings on xendroid; the code cache must use separate RW and RX views of
+  // the Context.getCodeCacheDir()-backed temporary file.
+  return false;
 }
 #else
 bool IsWritableExecutableMemorySupported() { return true; }
@@ -394,6 +402,12 @@ static int CreateExecutableSharedMemory(const char* name, size_t length) {
       c = '_';
     }
   }
+  if (mkdir(g_code_cache_dir.c_str(), 0700) != 0 && errno != EEXIST) {
+    XELOGE("mkdir({}) failed for executable mapping: {} ({})",
+           g_code_cache_dir, strerror(errno), errno);
+    return kFileMappingHandleInvalid;
+  }
+
   std::string path = g_code_cache_dir + "/" + sanitized_name + ".XXXXXX";
   std::vector<char> path_template(path.begin(), path.end());
   path_template.push_back('\0');
