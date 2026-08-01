@@ -10,6 +10,7 @@
 #include "xenia/ui/vulkan/vulkan_presenter.h"
 
 #include <cstdint>
+#include <ctime>
 
 #include "xenia/base/assert.h"
 #include "xenia/base/cvar.h"
@@ -2227,6 +2228,18 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(
     }
   }
 
+  timespec monotonic_present_time = {};
+#if XE_PLATFORM_ANDROID || XE_PLATFORM_xendroid
+  // Android Choreographer and the graphics HAL use CLOCK_MONOTONIC for vsync.
+  // Sample the same timebase immediately before queue present so driver-side
+  // diagnostics and any display-timing integration are not based on wall clock
+  // time, which may move independently of vsync and cause "frame time in the
+  // future" drift warnings.
+  if (clock_gettime(CLOCK_MONOTONIC, &monotonic_present_time) != 0) {
+    XELOGW("VulkanPresenter: clock_gettime(CLOCK_MONOTONIC) failed before present");
+  }
+#endif
+
   VkPresentInfoKHR present_info;
   present_info.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
   present_info.pNext = nullptr;
@@ -2245,6 +2258,12 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(
   }
   switch (present_result) {
     case VK_SUCCESS:
+#if XE_PLATFORM_ANDROID || XE_PLATFORM_xendroid
+      XELOGFS(
+          "VulkanPresenter: presented swapchain image {} at monotonic {}.{:09d}",
+          swapchain_image_index, uint64_t(monotonic_present_time.tv_sec),
+          int(monotonic_present_time.tv_nsec));
+#endif
       return PaintResult::kPresented;
     case VK_SUBOPTIMAL_KHR:
       return PaintResult::kPresentedSuboptimal;
