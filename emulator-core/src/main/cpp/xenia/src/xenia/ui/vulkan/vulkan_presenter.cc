@@ -1134,10 +1134,12 @@ VkSwapchainKHR VulkanPresenter::PaintContext::CreateSwapchainForVulkanSurface(
     for (auto it = surface_formats.cbegin(); it != surface_formats.cend();
          ++it) {
 #if XE_PLATFORM_ANDROID || XE_PLATFORM_xendroid
-      if (uint32_t(it->format) == 0x3B) {
+      if (it->format == VK_FORMAT_A2B10G10R10_UNORM_PACK32 ||
+          uint32_t(it->format) == 0x3B) {
         XELOGW(
-            "Android Vulkan surface rejected HAL/vendor format 0x3b before "
-            "swapchain selection");
+            "Android Vulkan surface rejected 10-bit/HAL format {} before "
+            "swapchain selection",
+            uint32_t(it->format));
         continue;
       }
 #endif
