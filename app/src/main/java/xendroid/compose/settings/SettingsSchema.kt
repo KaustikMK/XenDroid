@@ -71,8 +71,8 @@ object SettingsSchema {
         )),
 
         SettingsCategory("Storage", listOf(
-            b("Storage", "mount_scratch", "Mount scratch", false),
-            b("Storage", "mount_cache", "Mount cache", false),
+            b("Storage", "mount_scratch", "Mount scratch", true),
+            b("Storage", "mount_cache", "Mount cache", true),
         )),
 
         SettingsCategory("Kernel", listOf(

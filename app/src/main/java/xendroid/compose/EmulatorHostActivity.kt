@@ -456,6 +456,7 @@ class EmulatorHostActivity : ComponentActivity(), SurfaceHolder.Callback {
         // A pending prompt must not hold a dispatch thread through teardown.
         keyboardRequestState.value = null
         session.keyboardCancelAll()
+        EmuProcessLink.unbindFromMainProcessDeath()
         // Hard-kill via SIGKILL (single-shot core). killProcess skips the C++ atexit
         // static-destructor path that System.exit(0) ran, which can deadlock joining a
         // paused audio worker and wedge :emu instead of closing it.

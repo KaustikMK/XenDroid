@@ -31,6 +31,7 @@ object EmuProcessLink {
     private val selfKill = object : IBinder.DeathRecipient {
         override fun binderDied() = Process.killProcess(Process.myPid())
     }
+    private var linkedMainToken: IBinder? = null
 
     /** MAIN process: attach the liveness token to a live launch Intent. NOT for the
      *  pinned-shortcut Intent (a Binder cannot be persisted). */
@@ -45,8 +46,18 @@ object EmuProcessLink {
     fun bindToMainProcessDeath(intent: Intent) {
         val token = intent.getBundleExtra(EXTRA_ALIVE_BUNDLE)?.getBinder(KEY_MAIN_ALIVE)
             ?: return
-        runCatching { token.linkToDeath(selfKill, 0) }
-            .onFailure { Process.killProcess(Process.myPid()) }  // main already gone
+        runCatching {
+            token.linkToDeath(selfKill, 0)
+            linkedMainToken = token
+        }.onFailure { Process.killProcess(Process.myPid()) }  // main already gone
+    }
+
+    /** :emu process: remove the death link during orderly teardown. */
+    fun unbindFromMainProcessDeath() {
+        linkedMainToken?.let { token ->
+            runCatching { token.unlinkToDeath(selfKill, 0) }
+        }
+        linkedMainToken = null
     }
 
     /** MAIN process: kill any leftover :emu before launching, so a wedged/orphaned
