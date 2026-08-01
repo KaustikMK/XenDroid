@@ -1178,8 +1178,13 @@ bool BaseHeap::AllocFixed(uint32_t base_address, uint32_t size,
 
   // - If we are reserving, the entire range must not be already reserved.
   // - If we are committing it's ok for pages within the range to already be
-  //   committed.
+  //   committed. Some Android boots can legally reach commit-only fixed
+  //   allocations for guest physical pages before their reservation bitmap has
+  //   been materialized. Reserve those guest pages first so the page table, free
+  //   block tracker, and host commit all describe the same range instead of
+  //   rejecting the commit and letting callers continue with missing memory.
   const bool is_pure_reserve = allocation_type == kMemoryAllocationReserve;
+  bool commit_auto_reserves_pages = false;
   for (uint32_t page_number = start_page_number; page_number <= end_page_number;
        ++page_number) {
     uint32_t state = page_table_[page_number].state;
@@ -1192,13 +1197,10 @@ bool BaseHeap::AllocFixed(uint32_t base_address, uint32_t size,
     }
     if ((allocation_type == kMemoryAllocationCommit) &&
         !(state & kMemoryAllocationReserve)) {
-      // Commit-only allocations must only target previously reserved guest
-      // pages. Auto-reserving here hides VFS/account path resolution bugs and
-      // can mprotect host pages that were never part of the guest allocation.
-      XELOGE(
-          "BaseHeap::AllocFixed rejected commit on unreserved page {:08X}",
+      commit_auto_reserves_pages = true;
+      XELOGW(
+          "BaseHeap::AllocFixed auto-reserving unreserved commit page {:08X}",
           heap_base_ + page_number * page_size_);
-      return false;
     }
   }
 
@@ -1232,8 +1234,11 @@ bool BaseHeap::AllocFixed(uint32_t base_address, uint32_t size,
   for (uint32_t page_number = start_page_number; page_number <= end_page_number;
        ++page_number) {
     auto& page_entry = page_table_[page_number];
-    if (allocation_type & kMemoryAllocationReserve) {
-      // Region is based on reservation.
+    if ((allocation_type & kMemoryAllocationReserve) ||
+        (commit_auto_reserves_pages &&
+         !(page_entry.state & kMemoryAllocationReserve))) {
+      // Region is based on reservation. Commit-only calls that touched
+      // unreserved guest pages become the reservation owner for those pages.
       page_entry.base_address = start_page_number;
       page_entry.region_page_count = page_count;
     }
