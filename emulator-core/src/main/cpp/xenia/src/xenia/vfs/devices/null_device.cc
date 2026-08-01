@@ -14,6 +14,7 @@
 #include "xenia/base/math.h"
 #include "xenia/base/string.h"
 #include "xenia/kernel/xfile.h"
+#include "xenia/xbox.h"
 #include "xenia/vfs/devices/null_entry.h"
 
 namespace xe {
@@ -56,7 +57,19 @@ Entry* NullDevice::ResolvePath(const std::string_view path) {
     }
   }
 
-  return nullptr;
+  // Some titles probe optional mounted drives and profile paths through the
+  // null device during startup. Returning nullptr makes the caller treat the
+  // path as an unresolved device failure, which can cascade into unsafe fixed
+  // heap commits while account data is being synthesized. Materialize a stable
+  // zero-length null entry instead so opens resolve to NullFile and reads get an
+  // EOF-style dummy stream without touching guest memory allocation state.
+  auto fallback = NullEntry::Create(this, root, std::string(path));
+  fallback->attributes_ = kFileAttributeNormal;
+  Entry* fallback_ptr = fallback;
+  root->children_.push_back(std::unique_ptr<Entry>(fallback));
+  XELOGW("NullDevice::ResolvePath created dummy null entry for unresolved path {}",
+         path);
+  return fallback_ptr;
 }
 
 }  // namespace vfs

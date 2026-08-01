@@ -1192,11 +1192,13 @@ bool BaseHeap::AllocFixed(uint32_t base_address, uint32_t size,
     }
     if ((allocation_type == kMemoryAllocationCommit) &&
         !(state & kMemoryAllocationReserve)) {
-      // Attempting a commit-only op on an unreserved page.
-      // This may be OK.
-      XELOGW("BaseHeap::AllocFixed attempting commit on unreserved page");
-      allocation_type |= kMemoryAllocationReserve;
-      break;
+      // Commit-only allocations must only target previously reserved guest
+      // pages. Auto-reserving here hides VFS/account path resolution bugs and
+      // can mprotect host pages that were never part of the guest allocation.
+      XELOGE(
+          "BaseHeap::AllocFixed rejected commit on unreserved page {:08X}",
+          heap_base_ + page_number * page_size_);
+      return false;
     }
   }
 
